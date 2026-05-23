@@ -1,0 +1,10 @@
+</$objtype/mkfile
+BIN=/$objtype/bin
+
+TARG=vts-attach
+OFILES=\
+	main.$O\
+
+</sys/src/cmd/mkone
+
+$O.out:	/$objtype/lib/libc.a

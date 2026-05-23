@@ -1,0 +1,8 @@
+# pi9 binaries
+pi9.plan9.amd64
+pi9-host
+pi9
+
+# Go local cache
+*.test
+*.out

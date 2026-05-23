@@ -1,0 +1,6 @@
+#!/bin/rc
+# run-install.rc — install nsport inside the 9front VM.
+cd /usr/glenda/nsport
+rm -f /tmp/nsinstall.log /tmp/nsinstall.done
+mk install >/tmp/nsinstall.log >[2=1]
+echo $status > /tmp/nsinstall.done

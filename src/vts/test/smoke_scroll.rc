@@ -1,0 +1,40 @@
+#!/bin/rc
+# Phase 7 smoke: scrollback as /sess/scroll file.
+fn fail { echo 'FAIL: '^$*; exit 1 }
+fn ok { echo '  ok' }
+
+mount -c /srv/vts /n/vts >[2]/dev/null || fail mount
+
+echo '=== 1. /sess/scroll file exists ==='
+ls /n/vts/1/scroll || fail 'scroll file missing'
+ok
+
+echo '=== 2. empty initially ==='
+sz=`{cat /n/vts/1/scroll | wc -c | awk '{print $1}'}
+if(! ~ $sz 0) fail 'expected empty scroll, got '$sz' bytes'
+ok
+
+echo '=== 3. write enough data to scroll past 24 rows ==='
+# Need to trigger CR+LF * 25+ times to scroll one line off
+# Use awk to emit lines: "LINE_001\n" * 30
+awk 'BEGIN{for(i=1;i<=30;i++) printf "LINE_%02d\r\n", i}' > /n/vts/1/cons
+sleep 1
+ok
+
+echo '=== 4. scroll file now has content ==='
+cat /n/vts/1/scroll > /tmp/sc
+sz=`{wc -c /tmp/sc | awk '{print $1}'}
+echo '  scroll bytes: '$sz
+if(~ $sz 0) fail 'expected nonzero scroll size'
+ok
+
+echo '=== 5. scroll content has LINE_01 ==='
+grep -s LINE_01 /tmp/sc || fail 'LINE_01 not found in scroll'
+ok
+
+echo '=== 6. content has LINE_06 (should be in scrollback by now) ==='
+grep -s LINE_06 /tmp/sc || fail 'LINE_06 not found in scroll'
+ok
+
+echo
+echo '=== ALL PASS ==='

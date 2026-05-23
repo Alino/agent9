@@ -1,0 +1,31 @@
+#!/bin/rc
+# Phase 4 vts-attach smoke test.
+# Assumes vts already running.
+
+mount -c /srv/vts /n/vts >[2]/dev/null
+
+# Run vts-attach for ~3s capturing output
+echo step1: capture vts-attach output for 3s
+/amd64/bin/vts-attach > /tmp/attach.out &
+ATTACH_PID=$apid
+sleep 3
+# Send a write
+echo step2: send a command
+echo PHASE4_TEST > /n/vts/1/cons
+sleep 3
+echo step3: stop vts-attach
+echo kill > /proc/$ATTACH_PID/note >[2]/dev/null
+
+sleep 1
+echo step4: dump output
+ls -l /tmp/attach.out
+echo
+echo === xd ===
+xd -b /tmp/attach.out > /tmp/attach.xd
+wc -l /tmp/attach.xd
+echo === first 20 hex lines ===
+sed 20q /tmp/attach.xd
+
+# Copy out for Mac decoding
+cp /tmp/attach.out /sys/src/cmd/vts/attach_dump
+echo DONE

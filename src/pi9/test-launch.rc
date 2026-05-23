@@ -1,0 +1,10 @@
+#!/bin/rc
+rm -f /tmp/new-pi9.log
+window new-pi9 &
+sleep 8
+echo --- log ---
+if(test -e /tmp/new-pi9.log) cat /tmp/new-pi9.log
+if(! test -e /tmp/new-pi9.log) echo no log
+echo --- ctl ---
+mount /srv/vts /n/vts >[2]/dev/null
+cat /n/vts/ctl | tail -5

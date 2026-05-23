@@ -1,0 +1,34 @@
+bind -a $home/bin/rc /bin
+bind -a $home/bin/$cputype /bin
+if(! syscall create /tmp/xxx 1 0666 >[2]/dev/null)
+	ramfs	# in case we're running off a cd
+# Antialiased TTF rendering via fontsrv(8). See wiki/concepts/vtwin-typography.md.
+# Falls back gracefully: if fontsrv isn't mounted or /n/font/Inconsolata/16a/font
+# isn't openable, vtwin reverts to display->defaultfont.
+9fs fontsrv >[2]/dev/null
+font=/n/font/Inconsolata/16a/font
+switch($service){
+case terminal
+	if(! webcookies >[2]/dev/null)
+		webcookies -f /tmp/webcookies
+	webfs
+	plumber
+	echo -n accelerated > '#m/mousectl'
+	echo -n 'res 3' > '#m/mousectl'
+	prompt=('term% ' '	')
+	fn term%{ $* }
+	/amd64/bin/mxio -i riostart >[2] /tmp/mxio.log
+case cpu
+	bind /mnt/term/dev/cons /dev/cons
+	bind -q /mnt/term/dev/consctl /dev/consctl
+	>[2] /dev/null {
+		cp /dev/sysname /mnt/term/dev/label
+		if(test -s /mnt/term/env/wsys)
+			wsys=/mnt/term^`{cat /mnt/term/env/wsys}
+	} 
+	bind -a /mnt/term/dev /dev
+	prompt=('cpu% ' '	')
+	fn cpu%{ $* }
+case con
+	prompt=('cpu% ' '	')
+}

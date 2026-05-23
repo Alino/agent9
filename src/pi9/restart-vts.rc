@@ -1,0 +1,29 @@
+#!/bin/rc
+# restart-vts.rc — vts is in Broken state, kill it and respawn
+
+# Kill the broken vts main process
+echo 'killing broken vts processes...'
+for(p in `{ps | grep ' vts$' | awk '{print $2}'}){
+	echo kill > /proc/$p/ctl >[2]/dev/null
+}
+sleep 2
+
+# Remove the srv mount entry
+unmount /n/vts >[2]/dev/null
+rm -f /srv/vts >[2]/dev/null
+
+sleep 1
+
+# Restart vts. It registers /srv/vts and listens for sessions.
+echo 'starting fresh vts...'
+vts &
+sleep 2
+
+# Verify
+echo --- /srv/vts ---
+ls /srv/vts 2>[2=1]
+echo --- ps vts ---
+ps | grep ' vts$' | head -3
+echo --- mount and check ---
+mount /srv/vts /n/vts >[2]/dev/null
+cat /n/vts/ctl | head -3

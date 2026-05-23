@@ -1,0 +1,64 @@
+#!/bin/rc
+# vts integration smoke test — runs inside 9front VM.
+#
+# The vts daemon holds persistent state across our connections (each
+# aux/listen1 spawns a fresh rc, but vts itself is one long-lived process).
+# So this test inspects state via the /ctl readout rather than trying to
+# diff the keyin buffer.
+
+fn fail { echo 'FAIL: '^$* ; exit 1 }
+fn ok   { echo '  ok' }
+
+unmount /n/vts >[2]/dev/null
+mount -c /srv/vts /n/vts || fail mount
+
+echo '=== 1. tree shape ==='
+ls /n/vts | sort > /tmp/ls1
+echo '/n/vts/1
+/n/vts/ctl' | sort > /tmp/exp1
+cmp -s /tmp/ls1 /tmp/exp1 || fail 'root listing mismatch'
+ok
+
+ls /n/vts/1 | sort > /tmp/ls2
+echo '/n/vts/1/cells
+/n/vts/1/cons
+/n/vts/1/ctl' | sort > /tmp/exp2
+cmp -s /tmp/ls2 /tmp/exp2 || fail 'session listing mismatch'
+ok
+
+echo '=== 2. root ctl readable; mentions vts + version ==='
+status1=`{cat /n/vts/ctl}
+echo $"status1 | grep -s vts || fail 'no vts in ctl status'
+echo $"status1 | grep -s 'phase' || fail 'no build/phase string: '^$"status1
+ok
+
+echo '=== 3. session ctl readable + cursor format ==='
+ctl=`{cat /n/vts/1/ctl}
+echo $"ctl | grep -s 'session 1; size=24x80' || fail 'bad session ctl: '^$"ctl
+echo $"ctl | grep -s 'cursor=' || fail 'no cursor in ctl: '^$"ctl
+ok
+
+echo '=== 4. write ESC home + char; ctl shows cursor moved ==='
+# RIS reset, then cursor home, then write known char
+# Need raw ESC bytes — use awk
+awk 'BEGIN{printf "\033c"}' > /n/vts/1/cons
+awk 'BEGIN{printf "\033[1;1H"}' > /n/vts/1/cons
+ctl3=`{cat /n/vts/1/ctl}
+echo $"ctl3 | grep -s 'cursor=0,0' || fail 'expected cursor=0,0 after CUP 1;1: '^$"ctl3
+ok
+
+echo '=== 5. CUP positions, then printable advances ==='
+awk 'BEGIN{printf "\033[5;10HZ"}' > /n/vts/1/cons
+ctl4=`{cat /n/vts/1/ctl}
+echo $"ctl4 | grep -s 'cursor=4,10' || fail 'expected cursor=4,10 after CUP 5;10 + Z: '^$"ctl4
+ok
+
+echo '=== 6. multiple writes accumulate (cursor advances) ==='
+# After previous test, cursor should be at (4,10). Write "abc" → (4,13)
+awk 'BEGIN{printf "abc"}' > /n/vts/1/cons
+ctl5=`{cat /n/vts/1/ctl}
+echo $"ctl5 | grep -s 'cursor=4,13' || fail 'expected cursor=4,13: '^$"ctl5
+ok
+
+echo
+echo '=== ALL PASS ==='

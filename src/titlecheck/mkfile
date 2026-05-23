@@ -1,0 +1,9 @@
+</$objtype/mkfile
+BIN=/$objtype/bin
+
+TARG=titlecheck
+OFILES=main.$O
+
+</sys/src/cmd/mkone
+
+$O.out: /$objtype/lib/libdraw.a /$objtype/lib/libc.a

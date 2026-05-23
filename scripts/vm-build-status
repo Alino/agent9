@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# vm-build-status — concise progress of nsport build.
+set -u
+log_size=$(printf "ls -l /tmp/nsbuild.log\n" | nc -w 5 127.0.0.1 1717 | awk '/nsbuild.log/{print $6}')
+done=$(printf "cat /tmp/nsbuild.done >[2]/dev/null; echo END\n" | nc -w 5 127.0.0.1 1717 | sed 's/END$//' | head -c 200)
+stages=$(printf "grep 'Building: ' /tmp/nsbuild.log >[2]/dev/null\n" | nc -w 10 127.0.0.1 1717)
+ccc=$(printf "grep -c '^pcc -c ' /tmp/nsbuild.log >[2]/dev/null\n" | nc -w 10 127.0.0.1 1717)
+err=$(printf "grep -E ': (error|undefined|not found|cannot|no rule)' /tmp/nsbuild.log >[2]/dev/null | tail -3\n" | nc -w 10 127.0.0.1 1717)
+stage_count=$(printf '%s' "$stages" | wc -l | tr -d ' ')
+last_stage=$(printf '%s' "$stages" | tail -1)
+printf 'log:       %s bytes\n' "${log_size:-0}"
+printf 'stages:    %s\n' "${stage_count:-0}"
+printf 'last:      %s\n' "${last_stage:-(none)}"
+printf 'cc calls:  %s\n' "${ccc:-0}"
+if [ -n "$err" ]; then
+  printf 'maybe-err: %s\n' "$err"
+fi
+if [ -n "${done:-}" ]; then
+  printf 'EXIT:      %s\n' "$done"
+else
+  printf 'status:    still running\n'
+fi

@@ -1,0 +1,20 @@
+</$objtype/mkfile
+BIN=/$objtype/bin
+
+TARG=launcher
+OFILES=launcher.$O
+
+</sys/src/cmd/mkone
+
+$O.out:	/$objtype/lib/libdraw.a /$objtype/lib/libthread.a /$objtype/lib/libc.a
+
+# Install the new-pi9 helper script alongside the launcher binary.
+# /rc/bin is in $path by default on 9front; rio's `window` command
+# resolves binaries via the same $path.
+installrc:V:
+	cp new-pi9 /rc/bin/new-pi9
+	chmod +x /rc/bin/new-pi9
+
+# Roll-up: build + install binary + install rc wrapper.
+all:V: $O.out installrc
+	cp $O.out $BIN/launcher

@@ -1,0 +1,15 @@
+#!/bin/rc
+# Full build + verify script for mxio
+# Output goes to /tmp/buildout.log
+{
+    echo === BUILD_START $($date) ===
+    cd /sys/src/cmd/mxio
+    echo ---sources---
+    ls -l rio.c wind.c xfid.c data.c
+    echo ---building---
+    mk install
+    echo ---binary---
+    ls -l /amd64/bin/mxio
+    echo === BUILD_END ===
+} >/tmp/buildout.log >[2=1]
+echo BUILD_SCRIPT_DONE

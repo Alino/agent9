@@ -1,0 +1,33 @@
+#!/bin/rc
+# Silence each daemon's fd1 AND fd2: their output goes to the inherited
+# /dev/cons (raw kernel framebuffer console BEHIND mxio's wscreen) and
+# leaves white text fragments the WM cannot recompose over.
+aux/listen1 -t tcp!*!17010 /bin/rc -i >/dev/null >[2]/dev/null &
+window 0,0,161,117 stats -lmisce
+window 0,738,1024,768 xena-panel
+window 100,130,800,500 rc
+# vts uses Plan 9 print() → fd1. Without >/dev/null its "vts: hello" /
+# "vts: posted at /srv/vts" banners paint onto the framebuffer.
+/amd64/bin/vts >/dev/null >[2]/dev/null &
+{
+	i=0
+	while(! test -e /srv/vts){
+		sleep 1
+		i=`{echo $i 1+p | dc}
+		if(~ $i 15) exit notfound
+	}
+	window 100,300,820,720 /amd64/bin/vtwin
+} >/dev/null >[2]/dev/null &
+
+# Belt-and-suspenders: after a short delay, force every window's titlebar
+# to paint correctly by writing 'current' to each wctl. This is the only
+# wctl command that triggers a FULL wrepaint chain — works around the
+# squished-titlebar bug for windows that didn't self-trigger at boot
+# (vtwin self-triggers via its own kicker proc; stats/rc/xena-panel don't).
+# The loop ends with the rc terminal so focus lands there as expected.
+{
+	sleep 2
+	for(id in `{ls /dev/wsys | awk -F/ '{print $4}'}){
+		echo current > /dev/wsys/$id/wctl
+	}
+} >/dev/null >[2]/dev/null &

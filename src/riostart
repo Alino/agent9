@@ -1,0 +1,4 @@
+#!/bin/rc
+window 0,0,161,117 stats -lmisce
+window 0,738,1024,768 xena-panel
+window 100,130,800,500 rc

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# vm-fetch-status — concise progress of nsport's fetch clone.
+# Counts '==> name' lines and shows whether the done sentinel exists.
+set -u
+log=$(printf "grep '==> ' /tmp/nsfetch.log\n" | nc -w 10 127.0.0.1 1717)
+done=$(printf "cat /tmp/nsfetch.done >[2]/dev/null\n" | nc -w 5 127.0.0.1 1717)
+started=$(printf '%s' "$log" | grep -c '^==> ' || true)
+last=$(printf '%s' "$log" | tail -1)
+printf 'started: %s/20\n' "${started:-0}"
+printf 'last:    %s\n' "${last:-(none yet)}"
+if [ -n "$done" ]; then
+  printf 'EXIT:    %s\n' "$done"
+else
+  printf 'status:  still running\n'
+fi

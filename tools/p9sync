@@ -1,0 +1,48 @@
+#!/bin/bash
+# p9sync — push a source directory into the 9front VM and build it with mk.
+#
+# Usage: p9sync vts            # build, install, run (use for one-shot tools)
+#        p9sync vts --no-run   # build + install only (use for daemons)
+#
+# Mirrors src/<name>/ via HTTP (http.server on Mac, hget on VM) into
+# /sys/src/cmd/<name>/ and runs mk install.
+
+set -euo pipefail
+NAME=${1:?usage: p9sync <dirname> [--no-run]}
+RUN=1
+if [ "${2:-}" = "--no-run" ]; then
+    RUN=0
+fi
+SRCDIR="$(cd "$(dirname "$0")/.." && pwd)/src/$NAME"
+[ -d "$SRCDIR" ] || { echo "no such dir: $SRCDIR" >&2; exit 1; }
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+P9="$HERE/p9"
+
+FILES=$(cd "$SRCDIR" && find . -maxdepth 1 -type f ! -name '*.swp' | sed 's|^\./||')
+
+RC=$(mktemp)
+trap "rm -f $RC" EXIT
+
+{
+    echo "mkdir -p /sys/src/cmd/$NAME"
+    echo "cd /sys/src/cmd/$NAME"
+    for f in $FILES; do
+        echo "hget http://10.0.2.2:8765/$NAME/$f > $f"
+    done
+    echo "echo === files synced ==="
+    echo "ls -l"
+    echo "echo === build ==="
+    # rm output binaries first — `mk install` doesn't reliably overwrite
+    # /amd64/bin/<TARG> when the existing copy is corrupted by an earlier
+    # interrupted build (hjfs sometimes leaves zero-byte stubs after a
+    # crash). Explicit rm clears the path before mk re-creates them.
+    echo "rm -f *.6 6.out /amd64/bin/$NAME"
+    echo "mk install"
+    if [ "$RUN" = "1" ]; then
+        echo "echo === run ==="
+        echo "/\$objtype/bin/$NAME"
+    fi
+} > "$RC"
+
+cat "$RC" | "$P9"

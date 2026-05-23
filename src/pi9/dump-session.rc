@@ -1,0 +1,4 @@
+#!/bin/rc
+# Copy the current session JSON to a path we can hget
+cp /usr/glenda/lib/pi9/sessions/2026-05-17T04-28-27.json /tmp/sess.json
+ls -l /tmp/sess.json

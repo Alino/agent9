@@ -1,0 +1,11 @@
+#!/bin/rc
+/amd64/bin/vts-attach >/tmp/attach.out >[2] /tmp/attach.err &
+APID=$apid
+sleep 2
+echo kill > /proc/$APID/note >[2]/dev/null
+sleep 1
+ls -l /tmp/attach.out /tmp/attach.err
+echo === stderr ===
+cat /tmp/attach.err
+echo === stdout xd ===
+xd /tmp/attach.out | sed 5q

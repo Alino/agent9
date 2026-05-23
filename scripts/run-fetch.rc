@@ -1,0 +1,7 @@
+#!/bin/rc
+# run-fetch.rc — runs INSIDE the 9front VM. Pulls all NetSurf sublibs.
+# Writes log to /tmp/nsfetch.log and exit status to /tmp/nsfetch.done.
+cd /usr/glenda/nsport
+rm -f /tmp/nsfetch.log /tmp/nsfetch.done
+fetch clone http >/tmp/nsfetch.log >[2=1]
+echo $status > /tmp/nsfetch.done

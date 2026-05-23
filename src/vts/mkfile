@@ -1,0 +1,25 @@
+</$objtype/mkfile
+BIN=/$objtype/bin
+
+TARG=vts
+OFILES=\
+	main.$O\
+	srv.$O\
+	session.$O\
+	cells.$O\
+	celldiff.$O\
+	parser.$O\
+	lined.$O\
+
+HFILES=dat.h\
+	fns.h\
+	cells.h\
+	celldiff.h\
+	compat.h\
+	parser.h\
+	session.h\
+	lined.h\
+
+</sys/src/cmd/mkone
+
+$O.out:	/$objtype/lib/lib9p.a /$objtype/lib/libthread.a /$objtype/lib/libc.a

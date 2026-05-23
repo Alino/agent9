@@ -1,0 +1,33 @@
+.DS_Store
+
+# Release artifacts — too big for git, shipped via GitHub Releases
+release/*.qcow2
+release/*.tar.gz
+release/*.zip
+release/agent9-v*
+
+# Plan 9 build artifacts
+*.6
+*.5
+*.8
+6.out
+8.out
+[0-9].out
+
+# macOS / cross-compile artifacts (used during dev, never committed)
+*.dSYM/
+src/vts/test/bin/
+src/pi9/pi9
+src/pi9/pi9.linux.*
+src/pi9/pi9.plan9.*
+src/pi9/pi9.darwin.*
+
+# Stray dev scratch
+src/_restore-9front-vt/
+
+# Local-only secrets and dev scratch
+.env
+.env.*
+*.token
+*.key
+auth.json

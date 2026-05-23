@@ -1,0 +1,94 @@
+#!/bin/rc
+# pi9-install — one-shot installer for pi9 on plan9.
+#
+# Usage: hget http://your-host/pi9-install | rc
+#        (or download, chmod +x, run)
+#
+# Pulls pi9.plan9.amd64 + new-pi9 from $PI9_URL (or default
+# build host), installs to /amd64/bin/pi9 + /rc/bin/new-pi9.
+# After this the start menu Pi9 entry works.
+#
+# Set PI9_URL to override the default download base.
+
+url=$PI9_URL
+if(~ $url '') url=http://10.0.2.2:8765/src
+
+cd /tmp
+mkdir -p pi9-install
+cd pi9-install
+
+echo 'fetching pi9.plan9.amd64...'
+hget $url/pi9/pi9.plan9.amd64 > pi9.plan9.amd64
+if(! test -s pi9.plan9.amd64){
+	echo 'pi9-install: failed to fetch binary from' $url >[1=2]
+	exit fetch
+}
+chmod +x pi9.plan9.amd64
+
+echo 'fetching new-pi9...'
+hget $url/launcher/new-pi9 > new-pi9
+if(! test -s new-pi9){
+	echo 'pi9-install: failed to fetch new-pi9' >[1=2]
+	exit fetch
+}
+chmod +x new-pi9
+
+echo 'installing...'
+cp pi9.plan9.amd64 /$cputype/bin/pi9
+chmod +x /$cputype/bin/pi9
+cp new-pi9 /rc/bin/new-pi9
+chmod +x /rc/bin/new-pi9
+
+# Install Mozilla's CA bundle to where Go's plan9 TLS stack looks.
+# Without this, ALL outbound HTTPS fails with "file does not exist:
+# /sys/lib/tls/ca.pem". Plan9 itself uses thumbprint-based trust for
+# its own services — incompatible with the Mozilla CA model that Go
+# (and pi9, by extension) expects. Drop in the standard bundle.
+if(! test -s /sys/lib/tls/ca.pem){
+	echo 'fetching CA bundle (for openrouter.ai TLS)...'
+	mkdir -p /sys/lib/tls
+	hget $url/pi9/cacert.pem > /sys/lib/tls/ca.pem
+	if(test -s /sys/lib/tls/ca.pem){
+		echo '  installed /sys/lib/tls/ca.pem'
+	}
+	if(! test -s /sys/lib/tls/ca.pem){
+		echo '  WARNING: ca.pem fetch failed; pi9 HTTPS calls will fail until you install one manually' >[1=2]
+	}
+}
+if(test -s /sys/lib/tls/ca.pem){
+	echo '/sys/lib/tls/ca.pem present ('^`{ls -l /sys/lib/tls/ca.pem | awk '{print $6}'}^' bytes)'
+}
+
+echo 'installed:'
+ls -l /$cputype/bin/pi9 /rc/bin/new-pi9
+
+# Default font: Terminus 16 if no font config exists yet.
+# Terminus is the hand-drawn bitmap terminal font ships with plan9 in
+# /lib/font/bit/terminus/. Cell 8x16 matches vga (the taskbar default)
+# exactly while looking slightly bolder and more refined. We did try
+# converting JetBrains Mono via ttf2p9.py — works mechanically but
+# the auto-rasterization produces awkward 1-bit output because JBM is
+# a vector design that depends on hinting we can't replicate. Stick
+# with hand-drawn bitmaps for sanity.
+mkdir -p $home/lib/pi9
+if(! test -s $home/lib/pi9/font){
+	if(test -r /lib/font/bit/terminus/unicode.16.font){
+		echo /lib/font/bit/terminus/unicode.16.font > $home/lib/pi9/font
+		echo 'default font set: Terminus 16'
+	}
+}
+if(test -s $home/lib/pi9/font){
+	echo 'font:' `{cat $home/lib/pi9/font}
+}
+
+# Check config
+if(test -f $home/lib/pi9/config){
+	echo
+	echo 'config exists at' $home^/lib/pi9/config
+	echo 'ready to launch from start menu (or run: pi9)'
+}
+if(! test -f $home/lib/pi9/config){
+	echo
+	echo 'next: run `pi9` once to create the config template, then'
+	echo 'edit' $home^/lib/pi9/config 'and set api_key=...'
+}

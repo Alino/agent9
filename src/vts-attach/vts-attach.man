@@ -1,0 +1,62 @@
+.TH VTS-ATTACH 1
+.SH NAME
+vts-attach \- attach a dumb TTY to a vts session
+.SH SYNOPSIS
+.B vts-attach
+[
+.B -r
+]
+[
+.I session
+]
+.SH DESCRIPTION
+.I Vts-attach
+connects a dumb-pipe TTY (such as an SSH session, drawterm dumb console,
+or local rc) to a session served by
+.IR vts (1).
+It re-serializes the cell buffer into VT100 escape sequences on stdout
+and forwards stdin to the session's cons file.
+.PP
+With no argument, attaches to session
+.BR 1 .
+.SH OPTIONS
+.TP
+.B -r
+Read-only mode: do not forward stdin to cons. Useful for tail -f-style
+viewing.
+.SH IMPLEMENTATION
+.PP
+Mounts
+.B /srv/vts
+onto
+.B /n/vts
+if not already mounted.  Polls
+.B /n/vts/<session>/cells
+every 50ms; each read returns one diff frame which is decoded into
+VT100 cursor-positioning + SGR + UTF-8 rune emissions.
+.PP
+The writer half (unless
+.B -r
+is given) opens
+.B /dev/consctl
+and sets rawon so keystrokes deliver byte-by-byte. A separate proc
+loops reading stdin and writing to cons.
+.SH EXAMPLES
+.IP
+.EX
+% vts-attach              # attach to session 1
+% vts-attach work         # attach to session named "work"
+% vts-attach -r 1         # read-only view of session 1
+.EE
+.SH SEE ALSO
+.IR vts (1),
+.IR consctl (3)
+.SH BUGS
+.PP
+Polling-based; no notification on cells update means there's always
+50ms latency before remote screen catches up.
+.PP
+On disconnect, the session is left running (which is the desired
+tmux-like behavior), but if the user just closed SSH without
+exiting vts-attach cleanly, the writer proc may keep running until rc
+exits.

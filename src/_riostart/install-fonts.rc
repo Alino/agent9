@@ -1,0 +1,27 @@
+#!/bin/rc
+# install-fonts.rc — copy bundled TTFs to /lib/font/ttf/ so fontsrv finds them.
+#
+# Run inside the 9front VM AFTER pushing src/_riostart/fonts/ over hget.
+# Idempotent. See wiki/concepts/vtwin-typography.md.
+
+HOST=10.0.2.2:8765
+DEST=/lib/font/ttf
+
+if(! test -d $DEST)
+	mkdir -p $DEST
+
+for(f in Inconsolata-Regular.ttf){
+	echo fetching $f...
+	if(! hget http://$HOST/src/_riostart/fonts/$f > $DEST/$f){
+		echo ' failed: hget '$f
+		exit 'fetch failed'
+	}
+}
+
+echo done. mounting fontsrv to verify...
+9fs fontsrv >[2]/dev/null
+
+if(test -d /n/font/Inconsolata)
+	echo 'ok: /n/font/Inconsolata is visible'
+if not
+	echo 'warn: /n/font/Inconsolata not present — fontsrv may need a restart'
