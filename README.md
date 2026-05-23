@@ -5,7 +5,11 @@ A Windows XP-themed desktop environment for [9front](http://9front.org)
 working web browser. All running as a single QEMU image you can boot
 in 15 seconds.
 
-![desktop screenshot](docs/desktop.png)
+![Start menu open, with the Pi9 LLM agent already running in vtwin in the background](docs/start-menu-and-pi9.png)
+
+The Start menu shows the launcher's app list (Pi9, Rc Shell, Stats,
+Acme, Faces, Files, Clock, Reboot, Halt). The vtwin window behind it
+is running pi9 — the cyan title bar reads `pi9— moonshotai/kimi-k2.5`.
 
 ## What's in the box
 
@@ -18,6 +22,12 @@ in 15 seconds.
 | **vtwin**   | libdraw frontend for vts. Reads cell diffs, paints into a rio window. | C / libdraw |
 | **pi9**     | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, sessions/skills/memory, OAuth to Anthropic Pro and GitHub Copilot. | Go |
 | **NetSurf** | Web browser (from [netsurf-plan9](https://github.com/netsurf-plan9)). | C |
+
+![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
+
+pi9 in vtwin. Cyan header shows the current model and vts session id;
+the dashed input box is where you type. The status line tells you to
+set an API key with `/login`.
 
 ## Try it now
 
