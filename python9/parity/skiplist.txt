@@ -1,0 +1,40 @@
+# Parity skip-list: testcases/modules that pass on the reference but CANNOT
+# reach parity on Plan 9 because the OS lacks the primitive (not because of a
+# port bug). Every entry needs a one-line reason. Matching: exact test_id, or a
+# prefix at a "::"/"." boundary (a bare module name skips all its cases).
+#
+# This file is CURATED, not generated. It starts deliberately small. We only
+# add an entry once we have confirmed the failure is a genuine platform
+# impossibility, never to inflate the score. Many of these may turn out to be
+# partially supportable via Plan 9 idioms (rfork, dial, libsec) -- when so, the
+# entry gets removed and the test re-enters the applicable set.
+#
+# --- seeded candidates (to be confirmed against real port failures) ---
+
+# POSIX process model: fork()/exec() semantics differ from Plan 9 rfork().
+# Revisit: some of these may map onto rfork/RFPROC + procexec.
+test.test_fork1                 # POSIX fork() semantics; Plan 9 uses rfork
+test.test_wait3                 # BSD wait3(); no Plan 9 equivalent
+test.test_wait4                 # BSD wait4(); no Plan 9 equivalent
+
+# POSIX signals: Plan 9 uses notes(2), not signal(2)/sigaction.
+test.test_signal                # POSIX signal delivery model
+
+# Unix users/groups/login databases not present on Plan 9.
+test.test_pwd                   # /etc/passwd database; not a Plan 9 concept
+test.test_grp                   # /etc/group database; not a Plan 9 concept
+test.test_spwd                  # shadow passwords; n/a
+
+# Terminal / pty layer differs (Plan 9 has cons(3), not termios).
+test.test_pty                   # POSIX pty/termios
+test.test_termios               # termios n/a
+
+# rlimits / mmap-heavy / fcntl-locking primitives Plan 9 doesn't expose.
+test.test_resource              # getrlimit/setrlimit n/a
+test.test_fcntl                 # fcntl() locking model n/a
+
+# Platform-specific modules that simply won't exist.
+test.test_grp
+test.test_nis                   # NIS n/a
+test.test_ossaudiodev           # OSS audio n/a
+test.test_curses                # ncurses not assumed present

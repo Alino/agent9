@@ -25,6 +25,12 @@ src/pi9/pi9.darwin.*
 # Stray dev scratch
 src/_restore-9front-vt/
 
+# python9: vendored CPython source + host build are large/derived. The harness
+# scripts and the parity manifests (the scoreboard) ARE committed.
+python9/cpython/src/
+python9/cpython/host-build/
+python9/parity/manifests/*.tmp.json
+
 # Local-only secrets and dev scratch
 .env
 .env.*
