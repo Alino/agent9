@@ -114,6 +114,11 @@ See also [[testing-harness]] for listen1 pitfalls. Hard-won here:
   `python9-parity-harness`).
 - [x] APE env recon; source staged at `/usr/glenda/Python-3.11.14` in dev VM.
 - [x] Confirmed `configure` is a dead end → hand-authored build.
-- [ ] Author `pyconfig.h` + mkfile; get a stripped `python` to build with 6c/6l.
+- [x] First-cut `pyconfig.h` (`python9/port/plan9/`) — critical macros flipped.
+- [x] First compile (`pcc` on `boolobject.c`) → obstacle stack mapped:
+  1. [x] pyconfig flips; 2. [x] `-D_POSIX_SOURCE` (APE headers `#error` outside
+  POSIX); 3. **[blocker] no `<wchar.h>`/`<wctype.h>` in APE** — need a shim +
+  wide-char impls; 4. thread backend; 5. static `Modules/Setup`.
+- [ ] Write `ape-shim/wchar.h`+`wctype.h`+`wchar_shim.c`; get first `.o`.
 - [ ] Plan 9 thread backend (`thread_plan9.h`).
 - [ ] Boot REPL in VM → run `run_suite.py` → first parity number.
