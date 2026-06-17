@@ -15,6 +15,14 @@
 #ifndef Py_PYCONFIG_H
 #define Py_PYCONFIG_H
 
+/* plan9: Plan 9's 6c/pcc has no GCC __attribute__. CPython mostly guards it
+ * behind Py_GCC_ATTRIBUTE, but a few headers (e.g. cpython/pthread_stubs.h)
+ * use it raw. Plan 9 cpp also rejects function-like -D, so neutralize it here
+ * -- this is the earliest header in the <Python.h> cascade. */
+#ifndef __GNUC__
+#define __attribute__(x)
+#endif
+
 
 /* Define if building universal (internal helper macro) */
 /* #undef AC_APPLE_UNIVERSAL_BUILD */
@@ -133,7 +141,7 @@
 /* #undef HAVE_BROKEN_UNSETENV */
 
 /* Has builtin __atomic_load_n() and __atomic_store_n() functions */
-#define HAVE_BUILTIN_ATOMIC 1
+/* #undef HAVE_BUILTIN_ATOMIC */  /* plan9: 6c has no __atomic builtins */
 
 /* Define to 1 if you have the <bzlib.h> header file. */
 /* #undef HAVE_BZLIB_H */
@@ -790,7 +798,7 @@
 #define HAVE_MAKEDEV 1
 
 /* Define to 1 if you have the `mbrtowc' function. */
-#define HAVE_MBRTOWC 1
+/* #undef HAVE_MBRTOWC */  /* plan9: APE lacks it; use CPython's UTF-8 fallback */
 
 /* Define if you have the 'memfd_create' function. */
 /* #undef HAVE_MEMFD_CREATE */
@@ -941,7 +949,8 @@
 #define HAVE_PTHREAD_SIGMASK 1
 
 /* Define if platform requires stubbed pthreads support */
-/* #undef HAVE_PTHREAD_STUBS */
+#define HAVE_PTHREAD_STUBS 1  /* plan9: single-threaded interpreter first; real
+                               * Plan 9 thread backend (rfork/proc) comes later */
 
 /* Define to 1 if you have the <pty.h> header file. */
 /* #undef HAVE_PTY_H */
@@ -1194,7 +1203,7 @@
 #define HAVE_STDLIB_H 1
 
 /* Has stdatomic.h with atomic_int and atomic_uintptr_t */
-#define HAVE_STD_ATOMIC 1
+/* #undef HAVE_STD_ATOMIC */  /* plan9: no C11 <stdatomic.h> in APE; use fallback */
 
 /* Define to 1 if you have the `strftime' function. */
 #define HAVE_STRFTIME 1
@@ -1500,13 +1509,13 @@
 #define HAVE_WCHAR_H 1
 
 /* Define to 1 if you have the `wcscoll' function. */
-#define HAVE_WCSCOLL 1
+/* #undef HAVE_WCSCOLL */  /* plan9: falls back to wcscmp */
 
 /* Define to 1 if you have the `wcsftime' function. */
-#define HAVE_WCSFTIME 1
+/* #undef HAVE_WCSFTIME */  /* plan9: time module uses narrow strftime */
 
 /* Define to 1 if you have the `wcsxfrm' function. */
-#define HAVE_WCSXFRM 1
+/* #undef HAVE_WCSXFRM */  /* plan9: no locale collation transform */
 
 /* Define to 1 if you have the `wmemcmp' function. */
 #define HAVE_WMEMCMP 1
@@ -1670,7 +1679,7 @@
 #define SIZEOF_VOID_P 8
 
 /* The size of `wchar_t', as computed by sizeof. */
-#define SIZEOF_WCHAR_T 4
+#define SIZEOF_WCHAR_T 2  /* plan9/APE: wchar_t is unsigned short (UTF-16 path) */
 
 /* The size of `_Bool', as computed by sizeof. */
 #define SIZEOF__BOOL 1

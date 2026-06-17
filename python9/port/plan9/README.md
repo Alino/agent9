@@ -43,8 +43,37 @@ pcc -c -D_POSIX_SOURCE -DPy_BUILD_CORE \
 5. **[later] static `Modules/Setup`** — enumerate built-in modules; drop the
    ones that need dlopen / OS primitives Plan 9 lacks.
 
+## Build flags (settled)
+
+`pybuild.rc` compiles one file with the proven flag set:
+
+```
+pcc -c -D_POSIX_SOURCE -D_BSD_EXTENSION '-Dclockid_t=int' -DPy_BUILD_CORE \
+    -I<shim> -I<root> -I<root>/Include -I<root>/Include/internal <src> -o <obj>
+```
+
+(Invoke it via a short `rc /usr/glenda/pybuild.rc <relpath>` — listen1 drops
+long command lines on the slow VM.)
+
+## Obstacle stack (resolved to get the first `.o`)
+
+1. [done] pyconfig flips — dlopen/dynamic-loading/pthread/kqueue/forkpty undef.
+2. [done] `-D_POSIX_SOURCE` — APE headers `#error` outside POSIX mode.
+3. [done] wchar shim — `ape-shim/wchar.h` + `wchar_shim.c`; `SIZEOF_WCHAR_T 2`
+   (APE wchar_t is `unsigned short`); multibyte `HAVE_*` undef'd → CPython's
+   internal UTF-8 fallbacks.
+4. [done] `-D_BSD_EXTENSION` — needed for `sys/select.h`.
+5. [done] `HAVE_PTHREAD_STUBS` — CPython's single-threaded pthread stub; gets a
+   booting interpreter now, real Plan 9 thread backend later.
+6. [done] `-Dclockid_t=int` — APE lacks `clockid_t` (used in a stub decl).
+7. [done] neutralize `__attribute__` — `#ifndef __GNUC__ #define __attribute__(x)`
+   in pyconfig.h (6c has no GCC attrs; Plan 9 cpp rejects function-like `-D`).
+8. [done] undef `HAVE_STD_ATOMIC` + `HAVE_BUILTIN_ATOMIC` — no C11 `<stdatomic.h>`
+   / `__atomic` builtins; use CPython's volatile fallback (ok single-threaded).
+
 ## Status
 
-Compiling `boolobject.c` (a tiny core file) currently fails at obstacle 3.
-Clearing the wchar shim should get the first `.o` produced, after which the
-mkfile work and the long per-file grind begin.
+**First core object compiled:** `Objects/boolobject.c` → 138 KB `.o`, rc=0.
+The config + shim foundation is proven. Next: compile the broader core file set
+(each surfaces its own APE gaps), then enumerate objects in the mkfile, link a
+`python`, and boot the REPL. Real thread backend + module trimming follow.
