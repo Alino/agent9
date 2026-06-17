@@ -52,6 +52,28 @@
 typedef unsigned int wchar_t;
 #endif
 
+/* plan9: APE has no C11 static_assert (from <assert.h>). Make it a no-op;
+ * the checks are compile-time sanity assertions, safe to drop for the port. */
+#ifndef static_assert
+#define static_assert(cond, msg)
+#endif
+
+/* plan9: errno constants APE's <errno.h> lacks (its values top out at 62).
+ * Plan 9 never returns these, so the exact values only need to be unique for
+ * CPython's errno->exception table to compile. */
+#ifndef EALREADY
+#define EALREADY    63
+#endif
+#ifndef ECONNRESET
+#define ECONNRESET  64
+#endif
+#ifndef ELOOP
+#define ELOOP       65
+#endif
+#ifndef ENOTCAPABLE
+#define ENOTCAPABLE 66
+#endif
+
 
 /* Define if building universal (internal helper macro) */
 /* #undef AC_APPLE_UNIVERSAL_BUILD */
@@ -683,7 +705,7 @@ typedef unsigned int wchar_t;
 /* #undef HAVE_KQUEUE */  /* plan9: unsupported */
 
 /* Define to 1 if you have the <langinfo.h> header file. */
-/* #undef HAVE_LANGINFO_H */  /* plan9: no <langinfo.h>; CPython falls back */
+#define HAVE_LANGINFO_H 1  /* plan9: satisfied by ape-shim/langinfo.h (CODESET stub) */
 
 /* Defined to enable large file support when an off_t is bigger than a long
    and long long is at least as big as an off_t. You may need to add some
@@ -857,7 +879,7 @@ typedef unsigned int wchar_t;
 #define HAVE_MKTIME 1
 
 /* Define to 1 if you have the `mmap' function. */
-#define HAVE_MMAP 1
+/* #undef HAVE_MMAP */  /* plan9: no <sys/mman.h>; obmalloc uses malloc arenas */
 
 /* Define to 1 if you have the `mremap' function. */
 /* #undef HAVE_MREMAP */
@@ -1003,7 +1025,7 @@ typedef unsigned int wchar_t;
 #define HAVE_READV 1
 
 /* Define to 1 if you have the `realpath' function. */
-#define HAVE_REALPATH 1
+/* #undef HAVE_REALPATH */  /* plan9: APE lacks realpath(); CPython falls back */
 
 /* Define if you have the 'recvfrom' function. */
 #define HAVE_RECVFROM 1
@@ -1350,7 +1372,7 @@ typedef unsigned int wchar_t;
 /* #undef HAVE_SYS_MKDEV_H */
 
 /* Define to 1 if you have the <sys/mman.h> header file. */
-#define HAVE_SYS_MMAN_H 1
+/* #undef HAVE_SYS_MMAN_H */  /* plan9: no <sys/mman.h> in APE */
 
 /* Define to 1 if you have the <sys/modem.h> header file. */
 /* #undef HAVE_SYS_MODEM_H */

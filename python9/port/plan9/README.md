@@ -99,16 +99,26 @@ object set the host build produced) via `pybatch.rc`:
 |---|---|---|---|
 | 1 | 73 | 39 | first run (config + wchar shim only) |
 | 2 | 84 | 28 | + PyStatus helpers, pegen macros, small undefs |
-| 3 | **97** | **15** | + 4-byte wchar_t, computed-gotos off, more compound literals |
+| 3 | 97 | 15 | + 4-byte wchar_t, computed-gotos off, more compound literals |
+| 4 | 104 | 8 | + no-return macros (`while(1)`), undef mmap, static_assert |
+| 5 | 107 | 5 | + missing errnos, langinfo shim, last compound literal |
+| 6 | **108** | **4** | + undef realpath |
 
-Remaining 15 failures, by cause (queued):
-- no-return via `do{...}while(0)`-wrapped macros (`Py_RETURN_RICHCOMPARE`,
-  `PYLONG_FROM_UINT`, …) — kencc doesn't propagate non-fall-through through the
-  `while(0)` wrapper. Needs a per-macro Plan 9 form.
-- `_PyRuntimeState_INIT` uses `name ## (` token-paste kencc cpp rejects.
-- missing APE headers/symbols: `<sys/mman.h>` (obmalloc), `EALREADY` (errno),
-  `CODESET` (langinfo), `static_assert`.
-- Argument Clinic output (`floatobject.c.h`) + `Parser/parser.c` initializer.
+**Remaining 4 — the hard kencc incompatibilities (all in generated / deep-macro
+code).** These need a different approach than per-macro patching:
+
+1. **`_PyRuntimeState_INIT` / `_Py_ID`** (`pystate.c`, `pylifecycle.c`) — the
+   global-strings interning machinery builds struct member designators with
+   `._ ## NAME` (`pycore_runtime_init.h`, `pycore_global_strings.h`). kencc's
+   cpp rejects the paste (`Bad token produced by _ ## (`). Options: pre-expand
+   these two TUs with a more capable cpp on the host, or modify
+   `Tools/build/generate_global_objects.py` to emit kencc-friendly designators.
+2. **`Parser/parser.c`** — generated keyword tables use array compound literals
+   `(KeywordToken[]){{...}}` (kencc: "constructor must be a structure").
+   Option: post-process the generated `parser.c` to hoist the arrays to named
+   statics, or regenerate via `Tools/peg_generator`.
+3. **`floatobject.c.h`** — Argument Clinic output (`__getformat__`/`__setformat__`
+   typestr); narrow, likely a single construct to patch or regenerate.
 
 Then: enumerate objects in the mkfile, build `Modules/` + static `Setup`, link a
 `python`, boot the REPL, and run `parity/run_suite.py` for the first score.

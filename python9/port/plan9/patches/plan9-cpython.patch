@@ -56,6 +56,31 @@
  
  #ifndef NDEBUG
  PyAPI_FUNC(int) _PyWideStringList_CheckConsistency(const PyWideStringList *list);
+@@ -105,11 +121,19 @@
+     int warn_default_encoding;     /* -X warn_default_encoding and PYTHONWARNDEFAULTENCODING */
+ } _PyPreCmdline;
+ 
+-#define _PyPreCmdline_INIT \
+-    (_PyPreCmdline){ \
+-        .use_environment = -1, \
+-        .isolated = -1, \
+-        .dev_mode = -1}
++/* plan9: no compound literals (kencc). All call sites are local-var
++ * initializers, so a static-inline helper is valid. */
++static inline _PyPreCmdline
++_PyPreCmdline_make(void)
++{
++    _PyPreCmdline c;
++    memset(&c, 0, sizeof(c));
++    c.use_environment = -1;
++    c.isolated = -1;
++    c.dev_mode = -1;
++    return c;
++}
++#define _PyPreCmdline_INIT _PyPreCmdline_make()
+ /* Note: _PyPreCmdline_INIT sets other fields to 0/NULL */
+ 
+ extern void _PyPreCmdline_Clear(_PyPreCmdline *cmdline);
 --- a/Include/pymacro.h
 +++ b/Include/pymacro.h
 @@ -147,8 +147,12 @@
@@ -93,6 +118,18 @@
  
  /* Future feature support */
  
+--- a/Include/object.h
++++ b/Include/object.h
+@@ -697,7 +697,8 @@
+         default:                                                            \
+             Py_UNREACHABLE();                                               \
+         }                                                                   \
+-    } while (0)
++    } while (1)  /* plan9: while(1) so kencc sees this always-returning macro \
++                  * as non-falling-through (the body never reaches the test) */
+ 
+ 
+ /*
 --- a/Parser/pegen.h
 +++ b/Parser/pegen.h
 @@ -175,14 +175,17 @@
@@ -134,3 +171,25 @@
  }
  
  PyStatus PyStatus_NoMemory(void)
+--- a/Objects/longobject.c
++++ b/Objects/longobject.c
+@@ -345,7 +345,7 @@
+             (ival) >>= PyLong_SHIFT; \
+         } \
+         return (PyObject *)v; \
+-    } while(0)
++    } while(1)  /* plan9: while(1) -- body always returns; satisfies kencc no-return */
+ 
+ /* Create a new int object from a C unsigned long int */
+ 
+--- a/Python/ast_unparse.c
++++ b/Python/ast_unparse.c
+@@ -35,7 +35,7 @@
+ 
+ #define APPEND_STR_FINISH(str)  do { \
+         return append_charp(writer, (str)); \
+-    } while (0)
++    } while (1)  /* plan9: while(1) -- body always returns; satisfies kencc no-return */
+ 
+ #define APPEND_STR(str)  do { \
+         if (-1 == append_charp(writer, (str))) { \
