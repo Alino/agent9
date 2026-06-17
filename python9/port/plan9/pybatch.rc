@@ -1,0 +1,20 @@
+#!/bin/rc
+# pybatch.rc -- compile every source listed in /usr/glenda/core_srcs.txt under
+# APE/pcc, recording PASS/FAIL + the first error line per file to /tmp/batch.log.
+# Surfaces the next wave of port obstacles in one pass.
+# Invoke: rc /usr/glenda/pybatch.rc   (long-running; watch /tmp/batch.log)
+R=/usr/glenda/Python-3.11.14
+SHIM=/usr/glenda/apeshim
+echo batch start >/tmp/batch.log
+for(src in `{cat /usr/glenda/core_srcs.txt}){
+	rm -f /tmp/o.o
+	pcc -c -D_POSIX_SOURCE -D_BSD_EXTENSION '-Dclockid_t=int' -DPy_BUILD_CORE -I$SHIM -I$R -I$R/Include -I$R/Include/internal $R/$src -o /tmp/o.o >/tmp/one.log >[2=1]
+	if(test -f /tmp/o.o)
+		echo PASS $src >>/tmp/batch.log
+	if not {
+		echo FAIL $src >>/tmp/batch.log
+		sed 1q /tmp/one.log >>/tmp/batch.log
+	}
+}
+rm -f /tmp/o.o
+echo BATCHDONE >>/tmp/batch.log

@@ -71,9 +71,44 @@ long command lines on the slow VM.)
 8. [done] undef `HAVE_STD_ATOMIC` + `HAVE_BUILTIN_ATOMIC` — no C11 `<stdatomic.h>`
    / `__atomic` builtins; use CPython's volatile fallback (ok single-threaded).
 
-## Status
+## Source patches
 
-**First core object compiled:** `Objects/boolobject.c` → 138 KB `.o`, rc=0.
-The config + shim foundation is proven. Next: compile the broader core file set
-(each surfaces its own APE gaps), then enumerate objects in the mkfile, link a
-`python`, and boot the REPL. Real thread backend + module trimming follow.
+kencc (6c) lacks several constructs CPython uses. Patches live in `patches/`
+(`plan9-cpython.patch`, applied with `patches/apply.sh`). They cover:
+
+- **compound literals** `(T){...}` (kencc unsupported) → static-inline helpers:
+  `_PyStatus_*`, `_PyWideStringList_INIT`, `_PyCompilerFlags_INIT`, plus a raw
+  one in `initconfig.c`.
+- **GNU `, ## __VA_ARGS__`** comma-elision (kencc cpp unsupported) → fold the
+  fixed arg into `__VA_ARGS__` (pure C99) in `Parser/pegen.h`.
+- **`Py_UNREACHABLE`** → `do { Py_FatalError(...); } while (1)` so kencc's
+  "no return at end of function" analysis sees it as non-returning (the GCC
+  `__builtin_unreachable` path is unavailable and we neutralize `__attribute__`,
+  so `Py_FatalError`'s `noreturn` is invisible to kencc).
+
+pyconfig.h additionally: 4-byte `wchar_t` predefine (resolve APE 2-byte vs
+kencc 4-byte `L""` conflict), undef `HAVE_COMPUTED_GOTOS` (no `&&label`), undef
+`HAVE_STD_ATOMIC`/`HAVE_BUILTIN_ATOMIC`, `NAN`/`UINT*_C` shims, etc.
+
+## Status — core compile progress
+
+Batch-compiling the 112-file core set (`Objects/`+`Python/`+`Parser/`, the
+object set the host build produced) via `pybatch.rc`:
+
+| pass | PASS | FAIL | what changed |
+|---|---|---|---|
+| 1 | 73 | 39 | first run (config + wchar shim only) |
+| 2 | 84 | 28 | + PyStatus helpers, pegen macros, small undefs |
+| 3 | **97** | **15** | + 4-byte wchar_t, computed-gotos off, more compound literals |
+
+Remaining 15 failures, by cause (queued):
+- no-return via `do{...}while(0)`-wrapped macros (`Py_RETURN_RICHCOMPARE`,
+  `PYLONG_FROM_UINT`, …) — kencc doesn't propagate non-fall-through through the
+  `while(0)` wrapper. Needs a per-macro Plan 9 form.
+- `_PyRuntimeState_INIT` uses `name ## (` token-paste kencc cpp rejects.
+- missing APE headers/symbols: `<sys/mman.h>` (obmalloc), `EALREADY` (errno),
+  `CODESET` (langinfo), `static_assert`.
+- Argument Clinic output (`floatobject.c.h`) + `Parser/parser.c` initializer.
+
+Then: enumerate objects in the mkfile, build `Modules/` + static `Setup`, link a
+`python`, boot the REPL, and run `parity/run_suite.py` for the first score.

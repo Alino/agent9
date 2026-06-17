@@ -1,0 +1,136 @@
+--- a/Include/internal/pycore_initconfig.h
++++ b/Include/internal/pycore_initconfig.h
+@@ -21,20 +21,26 @@
+ #  define _PyStatus_GET_FUNC() __func__
+ #endif
+ 
++/* plan9: Plan 9's kencc (6c) has no C99 compound literals, so the original
++ * (PyStatus){...} macros don't compile. Build the struct in a static-inline
++ * helper instead; __func__ is captured at the call site by passing it in. */
++static inline PyStatus
++_PyStatus_make(int type, const char *func, const char *err_msg, int exitcode)
++{
++    PyStatus s;
++    s._type = type;
++    s.func = func;
++    s.err_msg = err_msg;
++    s.exitcode = exitcode;
++    return s;
++}
+ #define _PyStatus_OK() \
+-    (PyStatus){._type = _PyStatus_TYPE_OK,}
+-    /* other fields are set to 0 */
++    _PyStatus_make(_PyStatus_TYPE_OK, (const char*)0, (const char*)0, 0)
+ #define _PyStatus_ERR(ERR_MSG) \
+-    (PyStatus){ \
+-        ._type = _PyStatus_TYPE_ERROR, \
+-        .func = _PyStatus_GET_FUNC(), \
+-        .err_msg = (ERR_MSG)}
+-        /* other fields are set to 0 */
++    _PyStatus_make(_PyStatus_TYPE_ERROR, _PyStatus_GET_FUNC(), (ERR_MSG), 0)
+ #define _PyStatus_NO_MEMORY() _PyStatus_ERR("memory allocation failed")
+ #define _PyStatus_EXIT(EXITCODE) \
+-    (PyStatus){ \
+-        ._type = _PyStatus_TYPE_EXIT, \
+-        .exitcode = (EXITCODE)}
++    _PyStatus_make(_PyStatus_TYPE_EXIT, (const char*)0, (const char*)0, (EXITCODE))
+ #define _PyStatus_IS_ERROR(err) \
+     (err._type == _PyStatus_TYPE_ERROR)
+ #define _PyStatus_IS_EXIT(err) \
+@@ -48,7 +54,17 @@
+ 
+ /* --- PyWideStringList ------------------------------------------------ */
+ 
+-#define _PyWideStringList_INIT (PyWideStringList){.length = 0, .items = NULL}
++/* plan9: no compound literals (kencc). All call sites are local-var
++ * initializers, so a static-inline helper is valid. */
++static inline PyWideStringList
++_PyWideStringList_make(void)
++{
++    PyWideStringList l;
++    l.length = 0;
++    l.items = (wchar_t **)0;
++    return l;
++}
++#define _PyWideStringList_INIT _PyWideStringList_make()
+ 
+ #ifndef NDEBUG
+ PyAPI_FUNC(int) _PyWideStringList_CheckConsistency(const PyWideStringList *list);
+--- a/Include/pymacro.h
++++ b/Include/pymacro.h
+@@ -147,8 +147,12 @@
+ #elif defined(_MSC_VER)
+ #  define Py_UNREACHABLE() __assume(0)
+ #else
++   /* plan9: kencc has no __builtin_unreachable and (since we neutralize
++    * __attribute__) cannot see Py_FatalError as noreturn, so functions ending
++    * in Py_UNREACHABLE() trip its hard "no return at end of function" error.
++    * kencc *does* treat an infinite loop as non-returning, so add one. */
+ #  define Py_UNREACHABLE() \
+-    Py_FatalError("Unreachable C code path reached")
++    do { Py_FatalError("Unreachable C code path reached"); } while (1)
+ #endif
+ 
+ // Prevent using an expression as a l-value.
+--- a/Include/cpython/compile.h
++++ b/Include/cpython/compile.h
+@@ -28,8 +28,16 @@
+     int cf_feature_version;  /* minor Python version (PyCF_ONLY_AST) */
+ } PyCompilerFlags;
+ 
+-#define _PyCompilerFlags_INIT \
+-    (PyCompilerFlags){.cf_flags = 0, .cf_feature_version = PY_MINOR_VERSION}
++/* plan9: no compound literals (kencc). Build via static-inline helper. */
++static inline PyCompilerFlags
++_PyCompilerFlags_make(void)
++{
++    PyCompilerFlags f;
++    f.cf_flags = 0;
++    f.cf_feature_version = PY_MINOR_VERSION;
++    return f;
++}
++#define _PyCompilerFlags_INIT _PyCompilerFlags_make()
+ 
+ /* Future feature support */
+ 
+--- a/Parser/pegen.h
++++ b/Parser/pegen.h
+@@ -175,14 +175,17 @@
+     va_end(va);
+     return NULL;
+ }
+-#define RAISE_SYNTAX_ERROR(msg, ...) _PyPegen_raise_error(p, PyExc_SyntaxError, msg, ##__VA_ARGS__)
+-#define RAISE_INDENTATION_ERROR(msg, ...) _PyPegen_raise_error(p, PyExc_IndentationError, msg, ##__VA_ARGS__)
+-#define RAISE_SYNTAX_ERROR_KNOWN_RANGE(a, b, msg, ...) \
+-    RAISE_ERROR_KNOWN_LOCATION(p, PyExc_SyntaxError, (a)->lineno, (a)->col_offset, (b)->end_lineno, (b)->end_col_offset, msg, ##__VA_ARGS__)
+-#define RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, msg, ...) \
+-    RAISE_ERROR_KNOWN_LOCATION(p, PyExc_SyntaxError, (a)->lineno, (a)->col_offset, (a)->end_lineno, (a)->end_col_offset, msg, ##__VA_ARGS__)
+-#define RAISE_SYNTAX_ERROR_STARTING_FROM(a, msg, ...) \
+-    RAISE_ERROR_KNOWN_LOCATION(p, PyExc_SyntaxError, (a)->lineno, (a)->col_offset, CURRENT_POS, CURRENT_POS, msg, ##__VA_ARGS__)
++/* plan9: kencc's cpp has no GNU ", ## __VA_ARGS__" comma-elision. Fold msg into
++ * __VA_ARGS__ so there is always >=1 variadic arg and no dangling comma -- pure
++ * C99, works in Plan 9 cpp. (msg stays first, semantics unchanged.) */
++#define RAISE_SYNTAX_ERROR(...) _PyPegen_raise_error(p, PyExc_SyntaxError, __VA_ARGS__)
++#define RAISE_INDENTATION_ERROR(...) _PyPegen_raise_error(p, PyExc_IndentationError, __VA_ARGS__)
++#define RAISE_SYNTAX_ERROR_KNOWN_RANGE(a, b, ...) \
++    RAISE_ERROR_KNOWN_LOCATION(p, PyExc_SyntaxError, (a)->lineno, (a)->col_offset, (b)->end_lineno, (b)->end_col_offset, __VA_ARGS__)
++#define RAISE_SYNTAX_ERROR_KNOWN_LOCATION(a, ...) \
++    RAISE_ERROR_KNOWN_LOCATION(p, PyExc_SyntaxError, (a)->lineno, (a)->col_offset, (a)->end_lineno, (a)->end_col_offset, __VA_ARGS__)
++#define RAISE_SYNTAX_ERROR_STARTING_FROM(a, ...) \
++    RAISE_ERROR_KNOWN_LOCATION(p, PyExc_SyntaxError, (a)->lineno, (a)->col_offset, CURRENT_POS, CURRENT_POS, __VA_ARGS__)
+ #define RAISE_SYNTAX_ERROR_INVALID_TARGET(type, e) _RAISE_SYNTAX_ERROR_INVALID_TARGET(p, type, e)
+ 
+ Py_LOCAL_INLINE(void *)
+--- a/Python/initconfig.c
++++ b/Python/initconfig.c
+@@ -277,8 +277,8 @@
+ PyStatus PyStatus_Error(const char *err_msg)
+ {
+     assert(err_msg != NULL);
+-    return (PyStatus){._type = _PyStatus_TYPE_ERROR,
+-                      .err_msg = err_msg};
++    /* plan9: no compound literals (kencc) -- use the helper. */
++    return _PyStatus_make(_PyStatus_TYPE_ERROR, (const char*)0, err_msg, 0);
+ }
+ 
+ PyStatus PyStatus_NoMemory(void)

@@ -23,6 +23,35 @@
 #define __attribute__(x)
 #endif
 
+/* plan9: APE's <stdint.h> lacks the C99 integer-constant macros, and APE's
+ * <math.h> lacks NAN. Provide minimal fallbacks (expanded at use sites, after
+ * the real headers are included). NAN uses the runtime HUGE_VAL*0 trick to
+ * avoid a compile-time divide-by-zero that kencc would reject. */
+#ifndef UINT8_C
+#define UINT8_C(c)   (c)
+#define UINT16_C(c)  (c)
+#define UINT32_C(c)  (c ## U)
+#define UINT64_C(c)  (c ## ULL)
+#define INT8_C(c)    (c)
+#define INT16_C(c)   (c)
+#define INT32_C(c)   (c)
+#define INT64_C(c)   (c ## LL)
+#endif
+#ifndef NAN
+#define NAN (HUGE_VAL * 0.0)
+#endif
+
+/* plan9: resolve the wchar_t size conflict. APE's <stddef.h> typedefs wchar_t
+ * as 2-byte `unsigned short`, but kencc's L"..." wide string/char literals are
+ * 4-byte Rune (unsigned int). CPython assumes L"..." has type wchar_t*, so the
+ * two must agree. APE guards its typedef behind _WCHAR_T, so pre-define wchar_t
+ * as 4-byte here (this header is included before <stddef.h> in <Python.h>).
+ * SIZEOF_WCHAR_T is set to 4 accordingly below. */
+#ifndef _WCHAR_T
+#define _WCHAR_T
+typedef unsigned int wchar_t;
+#endif
+
 
 /* Define if building universal (internal helper macro) */
 /* #undef AC_APPLE_UNIVERSAL_BUILD */
@@ -177,7 +206,7 @@
 /* #undef HAVE_CLOSE_RANGE */
 
 /* Define if the C compiler supports computed gotos. */
-#define HAVE_COMPUTED_GOTOS 1
+/* #undef HAVE_COMPUTED_GOTOS */  /* plan9: kencc has no GCC computed-goto (&&label); use switch dispatch */
 
 /* Define to 1 if you have the `confstr' function. */
 #define HAVE_CONFSTR 1
@@ -654,7 +683,7 @@
 /* #undef HAVE_KQUEUE */  /* plan9: unsupported */
 
 /* Define to 1 if you have the <langinfo.h> header file. */
-#define HAVE_LANGINFO_H 1
+/* #undef HAVE_LANGINFO_H */  /* plan9: no <langinfo.h>; CPython falls back */
 
 /* Defined to enable large file support when an off_t is bigger than a long
    and long long is at least as big as an off_t. You may need to add some
@@ -1337,7 +1366,7 @@
 #define HAVE_SYS_POLL_H 1
 
 /* Define to 1 if you have the <sys/random.h> header file. */
-#define HAVE_SYS_RANDOM_H 1
+/* #undef HAVE_SYS_RANDOM_H */  /* plan9: no <sys/random.h>; use /dev/random later */
 
 /* Define to 1 if you have the <sys/resource.h> header file. */
 #define HAVE_SYS_RESOURCE_H 1
@@ -1679,7 +1708,7 @@
 #define SIZEOF_VOID_P 8
 
 /* The size of `wchar_t', as computed by sizeof. */
-#define SIZEOF_WCHAR_T 2  /* plan9/APE: wchar_t is unsigned short (UTF-16 path) */
+#define SIZEOF_WCHAR_T 4  /* plan9: wchar_t pre-typedef'd to 4-byte (matches kencc L"") */
 
 /* The size of `_Bool', as computed by sizeof. */
 #define SIZEOF__BOOL 1
