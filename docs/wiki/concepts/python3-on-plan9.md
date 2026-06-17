@@ -115,10 +115,21 @@ See also [[testing-harness]] for listen1 pitfalls. Hard-won here:
 - [x] APE env recon; source staged at `/usr/glenda/Python-3.11.14` in dev VM.
 - [x] Confirmed `configure` is a dead end → hand-authored build.
 - [x] First-cut `pyconfig.h` (`python9/port/plan9/`) — critical macros flipped.
-- [x] First compile (`pcc` on `boolobject.c`) → obstacle stack mapped:
-  1. [x] pyconfig flips; 2. [x] `-D_POSIX_SOURCE` (APE headers `#error` outside
-  POSIX); 3. **[blocker] no `<wchar.h>`/`<wctype.h>` in APE** — need a shim +
-  wide-char impls; 4. thread backend; 5. static `Modules/Setup`.
-- [ ] Write `ape-shim/wchar.h`+`wctype.h`+`wchar_shim.c`; get first `.o`.
-- [ ] Plan 9 thread backend (`thread_plan9.h`).
-- [ ] Boot REPL in VM → run `run_suite.py` → first parity number.
+- [x] First compile, then full obstacle stack cleared: wchar shim
+  (`ape-shim/wchar.h`+`wchar_shim.c`), `_POSIX_SOURCE`/`_BSD_EXTENSION`,
+  `HAVE_PTHREAD_STUBS` (single-threaded), atomics fallback, `__attribute__`
+  neutralized, `clockid_t`.
+- [x] **Batch-compiling the 112-file core set: 108/112 (96%) compile.** kencc
+  patch set in `python9/port/plan9/patches/`. Worked around: compound literals
+  → static-inline helpers; GNU `, ## __VA_ARGS__` → C99 fold; `Py_UNREACHABLE`
+  /no-return → `while(1)`; 4-byte `wchar_t` predefine (vs kencc 4-byte `L""`);
+  undef computed-gotos/std-atomic/mmap/realpath; errno + langinfo + NAN/UINT_C
+  shims. See [[../../../python9/port/plan9/README.md|port README]] for the
+  pass-by-pass table.
+- [ ] **4 hard remainders** (generated/deep-macro): `_PyRuntimeState_INIT`/
+  `_Py_ID` `._ ## NAME` paste (pystate, pylifecycle); `parser.c` array compound
+  literals; `floatobject` clinic. Need host-side pre-expansion or generator
+  changes.
+- [ ] Plan 9 thread backend (`thread_plan9.h`) — deferred behind pthread stubs.
+- [ ] Build `Modules/` + static `Setup`, mkfile, link `python`, boot REPL →
+  run `parity/run_suite.py` for the first parity score.
