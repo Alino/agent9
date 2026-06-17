@@ -74,6 +74,15 @@ typedef unsigned int wchar_t;
 #define ENOTCAPABLE 66
 #endif
 
+/* plan9: APE lacks setenv/unsetenv; implemented in ape-shim/plan9_compat.c. */
+extern int setenv(const char *name, const char *value, int overwrite);
+extern int unsetenv(const char *name);
+
+/* plan9: APE's sigaction has no SA_ONSTACK flag. 0 = default behaviour. */
+#ifndef SA_ONSTACK
+#define SA_ONSTACK 0
+#endif
+
 
 /* Define if building universal (internal helper macro) */
 /* #undef AC_APPLE_UNIVERSAL_BUILD */

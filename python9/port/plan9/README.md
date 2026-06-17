@@ -102,7 +102,8 @@ object set the host build produced) via `pybatch.rc`:
 | 3 | 97 | 15 | + 4-byte wchar_t, computed-gotos off, more compound literals |
 | 4 | 104 | 8 | + no-return macros (`while(1)`), undef mmap, static_assert |
 | 5 | 107 | 5 | + missing errnos, langinfo shim, last compound literal |
-| 6 | **108** | **4** | + undef realpath |
+| 6 | 108 | 4 | + undef realpath |
+| 7 | **110** | **2** | + stdin/stdout/stderr kencc-cpp `##` workaround (pystate, pylifecycle) |
 
 **Remaining 4 — the hard kencc incompatibilities (all in generated / deep-macro
 code).** These need a different approach than per-macro patching:
