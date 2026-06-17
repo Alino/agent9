@@ -1,7 +1,7 @@
 # Wiki Index
 
 > plan9-winxp knowledge base. Every wiki page listed with one-line summary.
-> Last updated: 2026-05-17 | Total pages: 39
+> Last updated: 2026-06-18 | Total pages: 40
 
 ## Concepts
 - [[draw-api]] — Plan 9 /dev/draw interface: how programs get a canvas
@@ -10,6 +10,7 @@
 - [[winxp-visual-spec]] — WinXP Luna color values, dimensions, button shapes
 - [[xena-panel-design]] — Taskbar daemon — verified v0.1 with Start, window list, clock + launcher
 - [[build-toolchain]] — Cross-build Mac→9front: hget over HTTP, mk, rc shell gotchas
+- [[python3-on-plan9]] — CPython 3.11 port strategy + parity harness: state of the art (jas 2.7, no Py3 today), APE env recon (no dlfcn → static modules, no pthread → Plan 9 thread backend, only 12 APE utils → bypass configure), reference baseline 38,259 testcases, Hermes Rust-dep blocker
 - [[testing-harness]] — QMP mouse/keyboard, screendump+vision loop, listen1 pitfalls
 - [[browser-webview-plan9]] — Browser engine + zero-native WebView runtime on Plan 9: phased build plan, engine comparison, WPT test strategy
 - [[netsurf-install]] — How to build & install NetSurf on 9front: verified procedure, ~52 MB binary, what works (HTML5+CSS2+images+HTTPS) vs what doesn't (modern JS), pitfalls, screenshots

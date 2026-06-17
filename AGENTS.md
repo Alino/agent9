@@ -58,7 +58,9 @@ evaporating.
 ## What NOT to do
 
 - Don't propose Rust ports. No Plan 9 target for rustc.
-- Don't propose Python anywhere in the runtime. Python 3 isn't ported.
+- Don't propose Python anywhere in the runtime. Python 3 isn't runtime-ready
+  (a CPython 3.11 port is in progress under `python9/` — see
+  `docs/wiki/concepts/python3-on-plan9.md` — but it doesn't run yet).
 - Don't propose neovim. 9vim exists, or learn acme.
 - Don't bring Linuxisms into the C code (epoll, pthreads, signalfd, etc.). Plan 9
   has threads(2), channels, alt(), 9P, and rfork. Use them.
