@@ -77,6 +77,7 @@ typedef unsigned int wchar_t;
 /* plan9: APE lacks setenv/unsetenv; implemented in ape-shim/plan9_compat.c. */
 extern int setenv(const char *name, const char *value, int overwrite);
 extern int unsetenv(const char *name);
+extern int getentropy(void *buf, unsigned long len);
 
 /* plan9: C99 math APE's <math.h> lacks. copysign/round are in plan9_compat.c.
  * APE provides isnan + isinf; only isfinite is missing -- derive it (expands
@@ -542,13 +543,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_GETADDRINFO 1
 
 /* Define this if you have flockfile(), getc_unlocked(), and funlockfile() */
-#define HAVE_GETC_UNLOCKED 1
+/* #undef HAVE_GETC_UNLOCKED */  /* plan9: APE lacks it */
 
 /* Define to 1 if you have the `getegid' function. */
 #define HAVE_GETEGID 1
 
 /* Define to 1 if you have the `getentropy' function. */
-#define HAVE_GETENTROPY 1
+#define HAVE_GETENTROPY 1  /* plan9: provided in plan9_compat.c via /dev/random */
 
 /* Define to 1 if you have the `geteuid' function. */
 #define HAVE_GETEUID 1
@@ -593,7 +594,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_GETHOSTNAME */  /* plan9 */
 
 /* Define to 1 if you have the `getitimer' function. */
-#define HAVE_GETITIMER 1
+/* #undef HAVE_GETITIMER */  /* plan9 */
 
 /* Define to 1 if you have the `getloadavg' function. */
 /* #undef HAVE_GETLOADAVG */  /* plan9 */
@@ -1145,7 +1146,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_SETHOSTNAME */  /* plan9 */
 
 /* Define to 1 if you have the `setitimer' function. */
-#define HAVE_SETITIMER 1
+/* #undef HAVE_SETITIMER */  /* plan9 */
 
 /* Define to 1 if you have the <setjmp.h> header file. */
 #define HAVE_SETJMP_H 1
@@ -1211,7 +1212,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SIGINFO_T_SI_BAND 1
 
 /* Define to 1 if you have the `siginterrupt' function. */
-#define HAVE_SIGINTERRUPT 1
+/* #undef HAVE_SIGINTERRUPT */  /* plan9 */
 
 /* Define to 1 if you have the <signal.h> header file. */
 #define HAVE_SIGNAL_H 1
@@ -1296,7 +1297,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_STROPTS_H */
 
 /* Define to 1 if you have the `strsignal' function. */
-#define HAVE_STRSIGNAL 1
+/* #undef HAVE_STRSIGNAL */  /* plan9 */
 
 /* Define to 1 if `pw_gecos' is a member of `struct passwd'. */
 #define HAVE_STRUCT_PASSWD_PW_GECOS 1
@@ -1647,7 +1648,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef PTHREAD_KEY_T_IS_COMPATIBLE_WITH_INT */
 
 /* Defined if PTHREAD_SCOPE_SYSTEM supported. */
-#define PTHREAD_SYSTEM_SCHED_SUPPORTED 1
+/* #undef PTHREAD_SYSTEM_SCHED_SUPPORTED */  /* plan9: no setscope */
 
 /* Define as the preferred size in bits of long digits */
 /* #undef PYLONG_BITS_IN_DIGIT */
@@ -1767,7 +1768,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define SYS_SELECT_WITH_SYS_TIME 1
 
 /* Custom thread stack size depending on chosen sanitizer runtimes. */
-#define THREAD_STACK_SIZE 0x1000000
+/* #undef THREAD_STACK_SIZE */  /* plan9: pthread stubs, no real stacksize */
 
 /* Library needed by timemodule.c: librt may be needed for clock_gettime() */
 /* #undef TIMEMODULE_LIB */

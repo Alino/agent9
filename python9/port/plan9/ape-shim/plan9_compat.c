@@ -88,6 +88,30 @@ setenv(const char *name, const char *value, int overwrite)
 	return 0;
 }
 
+/* getentropy via Plan 9's /dev/random (APE has no getentropy). */
+int
+getentropy(void *buf, unsigned long len)
+{
+	char *p = (char *)buf;
+	int fd;
+	long n;
+
+	fd = open("/dev/random", O_RDONLY);
+	if (fd < 0)
+		return -1;
+	while (len > 0) {
+		n = read(fd, p, len);
+		if (n <= 0) {
+			close(fd);
+			return -1;
+		}
+		p += n;
+		len -= n;
+	}
+	close(fd);
+	return 0;
+}
+
 int
 unsetenv(const char *name)
 {

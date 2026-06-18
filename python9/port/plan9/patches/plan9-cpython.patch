@@ -341,6 +341,39 @@
  
  exit:
      return return_value;
+--- a/Objects/dictobject.c
++++ b/Objects/dictobject.c
+@@ -453,7 +453,20 @@
+  * See https://github.com/python/cpython/pull/127568#discussion_r1868070614
+  * for the rationale of using dk_log2_index_bytes=3 instead of 0.
+  */
+-static PyDictKeysObject empty_keys_struct = {
++/* plan9: kencc/6l cannot statically initialize a flexible array member
++ * (char dk_indices[]). Use a layout-compatible struct with a fixed-size
++ * dk_indices and cast -- the named fields match PyDictKeysObject exactly so the
++ * trailing array sits at the same offset. */
++static struct {
++        Py_ssize_t dk_refcnt;
++        uint8_t dk_log2_size;
++        uint8_t dk_log2_index_bytes;
++        uint8_t dk_kind;
++        uint32_t dk_version;
++        Py_ssize_t dk_usable;
++        Py_ssize_t dk_nentries;
++        char dk_indices[8];
++} empty_keys_struct = {
+         1, /* dk_refcnt */
+         0, /* dk_log2_size */
+         3, /* dk_log2_index_bytes */
+@@ -465,7 +478,7 @@
+          DKIX_EMPTY, DKIX_EMPTY, DKIX_EMPTY, DKIX_EMPTY}, /* dk_indices */
+ };
+ 
+-#define Py_EMPTY_KEYS &empty_keys_struct
++#define Py_EMPTY_KEYS ((PyDictKeysObject *)&empty_keys_struct)
+ 
+ /* Uncomment to check the dict content in _PyDict_CheckConsistency() */
+ // #define DEBUG_PYDICT
 --- a/Python/ast_unparse.c
 +++ b/Python/ast_unparse.c
 @@ -35,7 +35,7 @@
@@ -404,6 +437,20 @@
  _Py_COMP_DIAG_POP
  
  static int runtime_initialized = 0;
+--- a/Python/pytime.c
++++ b/Python/pytime.c
+@@ -44,7 +44,10 @@
+ #  error "time_t is not a two's complement integer type"
+ #endif
+ 
+-#if _PyTime_MIN + _PyTime_MAX != -1
++/* plan9: kencc's cpp can't evaluate INT64_MIN + INT64_MAX in a #if (the limit
++ * macros use a cast/LL form it rejects), and the syntax error derails the rest
++ * of the file. int64_t is two's complement on amd64, so drop the assertion. */
++#if 0
+ #  error "_PyTime_t is not a two's complement integer type"
+ #endif
+ 
 --- a/Modules/posixmodule.c
 +++ b/Modules/posixmodule.c
 @@ -14439,7 +14439,9 @@
