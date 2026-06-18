@@ -1202,7 +1202,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SIGACTION 1
 
 /* Define to 1 if you have the `sigaltstack' function. */
-#define HAVE_SIGALTSTACK 1
+/* #undef HAVE_SIGALTSTACK */  /* plan9: no sigaltstack */
 
 /* Define to 1 if you have the `sigfillset' function. */
 #define HAVE_SIGFILLSET 1
@@ -1308,7 +1308,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_STRUCT_STAT_ST_BIRTHTIME 1
 
 /* Define to 1 if `st_blksize' is a member of `struct stat'. */
-#define HAVE_STRUCT_STAT_ST_BLKSIZE 1
+/* #undef HAVE_STRUCT_STAT_ST_BLKSIZE */  /* plan9: APE struct stat lacks it */
 
 /* Define to 1 if `st_blocks' is a member of `struct stat'. */
 #define HAVE_STRUCT_STAT_ST_BLOCKS 1
