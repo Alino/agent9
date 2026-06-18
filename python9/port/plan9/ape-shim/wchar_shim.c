@@ -4,6 +4,14 @@
  * short here; these operate on it as opaque code units (no locale/multibyte
  * semantics -- CPython handles UTF-8/UTF-16 itself).
  */
+/* plan9: predefine 4-byte wchar_t BEFORE any system header pulls in <stddef.h>
+ * (which would set APE's 2-byte wchar_t and make wcslen() read a 4-byte char as
+ * two 2-byte ones -- truncating strings to their first character). Must match
+ * pyconfig.h / ape-shim/wchar.h. */
+#ifndef _WCHAR_T
+#define _WCHAR_T
+typedef unsigned int wchar_t;
+#endif
 #ifndef _POSIX_SOURCE
 #define _POSIX_SOURCE
 #endif
