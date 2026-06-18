@@ -404,3 +404,16 @@
  _Py_COMP_DIAG_POP
  
  static int runtime_initialized = 0;
+--- a/Modules/posixmodule.c
++++ b/Modules/posixmodule.c
+@@ -14439,7 +14439,9 @@
+             PyObject *module = PyType_GetModule(Py_TYPE(iterator));
+             entry = DirEntry_from_posix_info(module,
+                                              &iterator->path, direntp->d_name,
+-                                             name_len, direntp->d_ino
++                                             /* plan9: APE dirent has no d_ino;
++                                              * the inode lives in d_stat. */
++                                             name_len, direntp->d_stat.st_ino
+ #ifdef HAVE_DIRENT_D_TYPE
+                                              , direntp->d_type
+ #endif

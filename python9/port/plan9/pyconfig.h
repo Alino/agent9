@@ -222,7 +222,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_BZLIB_H */
 
 /* Define to 1 if you have the 'chflags' function. */
-#define HAVE_CHFLAGS 1
+/* #undef HAVE_CHFLAGS */  /* plan9 */
 
 /* Define to 1 if you have the `chmod' function. */
 #define HAVE_CHMOD 1
@@ -255,7 +255,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_COMPUTED_GOTOS */  /* plan9: kencc has no GCC computed-goto (&&label); use switch dispatch */
 
 /* Define to 1 if you have the `confstr' function. */
-#define HAVE_CONFSTR 1
+/* #undef HAVE_CONFSTR */  /* plan9 */
 
 /* Define to 1 if you have the <conio.h> header file. */
 /* #undef HAVE_CONIO_H */
@@ -276,7 +276,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_CTERMID 1
 
 /* Define if you have the 'ctermid_r' function. */
-#define HAVE_CTERMID_R 1
+/* #undef HAVE_CTERMID_R */  /* plan9 */
 
 /* Define if you have the 'filter' function. */
 #define HAVE_CURSES_FILTER 1
@@ -312,7 +312,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_CURSES_USE_ENV 1
 
 /* Define if you have the 'wchgat' function. */
-#define HAVE_CURSES_WCHGAT 1
+/* #undef HAVE_CURSES_WCHGAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the <db.h> header file. */
 #define HAVE_DB_H 1
@@ -339,11 +339,11 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 
 /* Define to 1 if you have the declaration of `RTLD_NODELETE', and to 0 if you
    don't. */
-#define HAVE_DECL_RTLD_NODELETE 1
+/* #undef HAVE_DECL_RTLD_NODELETE */  /* plan9: no dlopen */
 
 /* Define to 1 if you have the declaration of `RTLD_NOLOAD', and to 0 if you
    don't. */
-#define HAVE_DECL_RTLD_NOLOAD 1
+/* #undef HAVE_DECL_RTLD_NOLOAD */  /* plan9: no dlopen */
 
 /* Define to 1 if you have the declaration of `RTLD_NOW', and to 0 if you
    don't. */
@@ -354,26 +354,26 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_DECL_TZNAME */
 
 /* Define to 1 if you have the device macros. */
-#define HAVE_DEVICE_MACROS 1
+/* #undef HAVE_DEVICE_MACROS */  /* plan9 */
 
 /* Define to 1 if you have the /dev/ptc device file. */
 /* #undef HAVE_DEV_PTC */
 
 /* Define to 1 if you have the /dev/ptmx device file. */
-#define HAVE_DEV_PTMX 1
+/* #undef HAVE_DEV_PTMX */  /* plan9 */
 
 /* Define to 1 if you have the <direct.h> header file. */
 /* #undef HAVE_DIRECT_H */
 
 /* Define to 1 if the dirent structure has a d_type field */
-#define HAVE_DIRENT_D_TYPE 1
+/* #undef HAVE_DIRENT_D_TYPE */  /* plan9 */
 
 /* Define to 1 if you have the <dirent.h> header file, and it defines `DIR'.
    */
 #define HAVE_DIRENT_H 1
 
 /* Define if you have the 'dirfd' function or macro. */
-#define HAVE_DIRFD 1
+/* #undef HAVE_DIRFD */  /* plan9 */
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
 /* #undef HAVE_DLFCN_H */  /* plan9: unsupported */
@@ -430,22 +430,22 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_EXPM1 1
 
 /* Define to 1 if you have the `faccessat' function. */
-#define HAVE_FACCESSAT 1
+/* #undef HAVE_FACCESSAT */  /* plan9: no *at/dir_fd */
 
 /* Define if you have the 'fchdir' function. */
-#define HAVE_FCHDIR 1
+/* #undef HAVE_FCHDIR */  /* plan9: no fd-based variant */
 
 /* Define to 1 if you have the `fchmod' function. */
-#define HAVE_FCHMOD 1
+/* #undef HAVE_FCHMOD */  /* plan9: no fd-based variant */
 
 /* Define to 1 if you have the `fchmodat' function. */
-#define HAVE_FCHMODAT 1
+/* #undef HAVE_FCHMODAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `fchown' function. */
-#define HAVE_FCHOWN 1
+/* #undef HAVE_FCHOWN */  /* plan9: no fd-based variant */
 
 /* Define to 1 if you have the `fchownat' function. */
-#define HAVE_FCHOWNAT 1
+/* #undef HAVE_FCHOWNAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the <fcntl.h> header file. */
 #define HAVE_FCNTL_H 1
@@ -454,7 +454,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_FDATASYNC */
 
 /* Define to 1 if you have the `fdopendir' function. */
-#define HAVE_FDOPENDIR 1
+/* #undef HAVE_FDOPENDIR */  /* plan9 */
 
 /* Define to 1 if you have the `fdwalk' function. */
 /* #undef HAVE_FDWALK */
@@ -484,13 +484,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_FSEEKO 1
 
 /* Define to 1 if you have the `fstatat' function. */
-#define HAVE_FSTATAT 1
+/* #undef HAVE_FSTATAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `fstatvfs' function. */
-#define HAVE_FSTATVFS 1
+/* #undef HAVE_FSTATVFS */  /* plan9 */
 
 /* Define if you have the 'fsync' function. */
-#define HAVE_FSYNC 1
+/* #undef HAVE_FSYNC */  /* plan9: no fd-based variant */
 
 /* Define to 1 if you have the `ftell64' function. */
 /* #undef HAVE_FTELL64 */
@@ -502,13 +502,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_FTIME 1
 
 /* Define to 1 if you have the `ftruncate' function. */
-#define HAVE_FTRUNCATE 1
+/* #undef HAVE_FTRUNCATE */  /* plan9 */
 
 /* Define to 1 if you have the `futimens' function. */
-#define HAVE_FUTIMENS 1
+/* #undef HAVE_FUTIMENS */  /* plan9 */
 
 /* Define to 1 if you have the `futimes' function. */
-#define HAVE_FUTIMES 1
+/* #undef HAVE_FUTIMES */  /* plan9 */
 
 /* Define to 1 if you have the `futimesat' function. */
 /* #undef HAVE_FUTIMESAT */
@@ -566,7 +566,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_GETGRNAM_R 1
 
 /* Define to 1 if you have the `getgrouplist' function. */
-#define HAVE_GETGROUPLIST 1
+/* #undef HAVE_GETGROUPLIST */  /* plan9 */
 
 /* Define to 1 if you have the `getgroups' function. */
 #define HAVE_GETGROUPS 1
@@ -590,13 +590,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_GETHOSTBYNAME_R_6_ARG */
 
 /* Define to 1 if you have the `gethostname' function. */
-#define HAVE_GETHOSTNAME 1
+/* #undef HAVE_GETHOSTNAME */  /* plan9 */
 
 /* Define to 1 if you have the `getitimer' function. */
 #define HAVE_GETITIMER 1
 
 /* Define to 1 if you have the `getloadavg' function. */
-#define HAVE_GETLOADAVG 1
+/* #undef HAVE_GETLOADAVG */  /* plan9 */
 
 /* Define to 1 if you have the `getlogin' function. */
 #define HAVE_GETLOGIN 1
@@ -611,7 +611,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_GETPEERNAME 1
 
 /* Define to 1 if you have the `getpgid' function. */
-#define HAVE_GETPGID 1
+/* #undef HAVE_GETPGID */  /* plan9 */
 
 /* Define to 1 if you have the `getpgrp' function. */
 #define HAVE_GETPGRP 1
@@ -623,7 +623,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_GETPPID 1
 
 /* Define to 1 if you have the `getpriority' function. */
-#define HAVE_GETPRIORITY 1
+/* #undef HAVE_GETPRIORITY */  /* plan9 */
 
 /* Define if you have the 'getprotobyname' function. */
 #define HAVE_GETPROTOBYNAME 1
@@ -662,7 +662,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_GETSERVBYPORT 1
 
 /* Define to 1 if you have the `getsid' function. */
-#define HAVE_GETSID 1
+/* #undef HAVE_GETSID */  /* plan9 */
 
 /* Define if you have the 'getsockname' function. */
 #define HAVE_GETSOCKNAME 1
@@ -708,7 +708,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_INET_PTON 1
 
 /* Define to 1 if you have the `initgroups' function. */
-#define HAVE_INITGROUPS 1
+/* #undef HAVE_INITGROUPS */  /* plan9 */
 
 /* Define to 1 if you have the <inttypes.h> header file. */
 #define HAVE_INTTYPES_H 1
@@ -723,7 +723,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_KILL 1
 
 /* Define to 1 if you have the `killpg' function. */
-#define HAVE_KILLPG 1
+/* #undef HAVE_KILLPG */  /* plan9 */
 
 /* Define if you have the 'kqueue' function. */
 /* #undef HAVE_KQUEUE */  /* plan9: unsupported */
@@ -738,13 +738,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_LARGEFILE_SUPPORT */
 
 /* Define to 1 if you have the 'lchflags' function. */
-#define HAVE_LCHFLAGS 1
+/* #undef HAVE_LCHFLAGS */  /* plan9 */
 
 /* Define to 1 if you have the `lchmod' function. */
-#define HAVE_LCHMOD 1
+/* #undef HAVE_LCHMOD */  /* plan9 */
 
 /* Define to 1 if you have the `lchown' function. */
-#define HAVE_LCHOWN 1
+/* #undef HAVE_LCHOWN */  /* plan9 */
 
 /* Define to 1 if you want to build _blake2 module with libb2 */
 #define HAVE_LIBB2 1
@@ -789,7 +789,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_LINK 1
 
 /* Define to 1 if you have the `linkat' function. */
-#define HAVE_LINKAT 1
+/* #undef HAVE_LINKAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the <linux/auxvec.h> header file. */
 /* #undef HAVE_LINUX_AUXVEC_H */
@@ -843,7 +843,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_LISTEN 1
 
 /* Define to 1 if you have the `lockf' function. */
-#define HAVE_LOCKF 1
+/* #undef HAVE_LOCKF */  /* plan9 */
 
 /* Define to 1 if you have the `log1p' function. */
 #define HAVE_LOG1P 1
@@ -852,16 +852,16 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_LOG2 1
 
 /* Define to 1 if you have the `login_tty' function. */
-#define HAVE_LOGIN_TTY 1
+/* #undef HAVE_LOGIN_TTY */  /* plan9 */
 
 /* Define to 1 if the system has the type `long double'. */
 #define HAVE_LONG_DOUBLE 1
 
 /* Define to 1 if you have the `lstat' function. */
-#define HAVE_LSTAT 1
+/* #undef HAVE_LSTAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `lutimes' function. */
-#define HAVE_LUTIMES 1
+/* #undef HAVE_LUTIMES */  /* plan9 */
 
 /* Define to 1 if you have the <lzma.h> header file. */
 /* #undef HAVE_LZMA_H */
@@ -870,7 +870,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_MADVISE 1
 
 /* Define this if you have the makedev macro. */
-#define HAVE_MAKEDEV 1
+/* #undef HAVE_MAKEDEV */  /* plan9 */
 
 /* Define to 1 if you have the `mbrtowc' function. */
 /* #undef HAVE_MBRTOWC */  /* plan9: APE lacks it; use CPython's UTF-8 fallback */
@@ -885,19 +885,19 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_MEMRCHR */
 
 /* Define to 1 if you have the `mkdirat' function. */
-#define HAVE_MKDIRAT 1
+/* #undef HAVE_MKDIRAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `mkfifo' function. */
-#define HAVE_MKFIFO 1
+/* #undef HAVE_MKFIFO */  /* plan9 */
 
 /* Define to 1 if you have the `mkfifoat' function. */
-#define HAVE_MKFIFOAT 1
+/* #undef HAVE_MKFIFOAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `mknod' function. */
-#define HAVE_MKNOD 1
+/* #undef HAVE_MKNOD */  /* plan9 */
 
 /* Define to 1 if you have the `mknodat' function. */
-#define HAVE_MKNODAT 1
+/* #undef HAVE_MKNODAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `mktime' function. */
 #define HAVE_MKTIME 1
@@ -936,14 +936,14 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_NET_IF_H 1
 
 /* Define to 1 if you have the `nice' function. */
-#define HAVE_NICE 1
+/* #undef HAVE_NICE */  /* plan9 */
 
 /* Define if the internal form of wchar_t in non-Unicode locales is not
    Unicode. */
 /* #undef HAVE_NON_UNICODE_WCHAR_T_REPRESENTATION */
 
 /* Define to 1 if you have the `openat' function. */
-#define HAVE_OPENAT 1
+/* #undef HAVE_OPENAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `opendir' function. */
 #define HAVE_OPENDIR 1
@@ -979,16 +979,16 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_POSIX_FALLOCATE */
 
 /* Define to 1 if you have the `posix_spawn' function. */
-#define HAVE_POSIX_SPAWN 1
+/* #undef HAVE_POSIX_SPAWN */  /* plan9 */
 
 /* Define to 1 if you have the `posix_spawnp' function. */
-#define HAVE_POSIX_SPAWNP 1
+/* #undef HAVE_POSIX_SPAWNP */  /* plan9 */
 
 /* Define to 1 if you have the `pread' function. */
-#define HAVE_PREAD 1
+/* #undef HAVE_PREAD */  /* plan9 */
 
 /* Define to 1 if you have the `preadv' function. */
-#define HAVE_PREADV 1
+/* #undef HAVE_PREADV */  /* plan9 */
 
 /* Define to 1 if you have the `preadv2' function. */
 /* #undef HAVE_PREADV2 */
@@ -1031,10 +1031,10 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_PTY_H */
 
 /* Define to 1 if you have the `pwrite' function. */
-#define HAVE_PWRITE 1
+/* #undef HAVE_PWRITE */  /* plan9 */
 
 /* Define to 1 if you have the `pwritev' function. */
-#define HAVE_PWRITEV 1
+/* #undef HAVE_PWRITEV */  /* plan9 */
 
 /* Define to 1 if you have the `pwritev2' function. */
 /* #undef HAVE_PWRITEV2 */
@@ -1043,7 +1043,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_READLINK 1
 
 /* Define to 1 if you have the `readlinkat' function. */
-#define HAVE_READLINKAT 1
+/* #undef HAVE_READLINKAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `readv' function. */
 #define HAVE_READV 1
@@ -1055,7 +1055,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_RECVFROM 1
 
 /* Define to 1 if you have the `renameat' function. */
-#define HAVE_RENAMEAT 1
+/* #undef HAVE_RENAMEAT */  /* plan9: no *at/dir_fd */
 
 /* Define if readline supports append_history */
 /* #undef HAVE_RL_APPEND_HISTORY */
@@ -1094,7 +1094,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SCHED_GET_PRIORITY_MAX 1
 
 /* Define to 1 if you have the <sched.h> header file. */
-#define HAVE_SCHED_H 1
+/* #undef HAVE_SCHED_H */  /* plan9 */
 
 /* Define to 1 if you have the `sched_rr_get_interval' function. */
 /* #undef HAVE_SCHED_RR_GET_INTERVAL */
@@ -1124,25 +1124,25 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SEM_UNLINK 1
 
 /* Define to 1 if you have the `sendfile' function. */
-#define HAVE_SENDFILE 1
+/* #undef HAVE_SENDFILE */  /* plan9 */
 
 /* Define if you have the 'sendto' function. */
 #define HAVE_SENDTO 1
 
 /* Define to 1 if you have the `setegid' function. */
-#define HAVE_SETEGID 1
+/* #undef HAVE_SETEGID */  /* plan9 */
 
 /* Define to 1 if you have the `seteuid' function. */
-#define HAVE_SETEUID 1
+/* #undef HAVE_SETEUID */  /* plan9 */
 
 /* Define to 1 if you have the `setgid' function. */
-#define HAVE_SETGID 1
+/* #undef HAVE_SETGID */  /* plan9 */
 
 /* Define if you have the 'setgroups' function. */
-#define HAVE_SETGROUPS 1
+/* #undef HAVE_SETGROUPS */  /* plan9 */
 
 /* Define to 1 if you have the `sethostname' function. */
-#define HAVE_SETHOSTNAME 1
+/* #undef HAVE_SETHOSTNAME */  /* plan9 */
 
 /* Define to 1 if you have the `setitimer' function. */
 #define HAVE_SETITIMER 1
@@ -1154,16 +1154,16 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SETLOCALE 1
 
 /* Define to 1 if you have the `setpgid' function. */
-#define HAVE_SETPGID 1
+/* #undef HAVE_SETPGID */  /* plan9 */
 
 /* Define to 1 if you have the `setpgrp' function. */
-#define HAVE_SETPGRP 1
+/* #undef HAVE_SETPGRP */  /* plan9 */
 
 /* Define to 1 if you have the `setpriority' function. */
-#define HAVE_SETPRIORITY 1
+/* #undef HAVE_SETPRIORITY */  /* plan9 */
 
 /* Define to 1 if you have the `setregid' function. */
-#define HAVE_SETREGID 1
+/* #undef HAVE_SETREGID */  /* plan9 */
 
 /* Define to 1 if you have the `setresgid' function. */
 /* #undef HAVE_SETRESGID */
@@ -1172,16 +1172,16 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_SETRESUID */
 
 /* Define to 1 if you have the `setreuid' function. */
-#define HAVE_SETREUID 1
+/* #undef HAVE_SETREUID */  /* plan9 */
 
 /* Define to 1 if you have the `setsid' function. */
-#define HAVE_SETSID 1
+/* #undef HAVE_SETSID */  /* plan9 */
 
 /* Define if you have the 'setsockopt' function. */
 #define HAVE_SETSOCKOPT 1
 
 /* Define to 1 if you have the `setuid' function. */
-#define HAVE_SETUID 1
+/* #undef HAVE_SETUID */  /* plan9 */
 
 /* Define to 1 if you have the `setvbuf' function. */
 #define HAVE_SETVBUF 1
@@ -1217,16 +1217,16 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SIGNAL_H 1
 
 /* Define to 1 if you have the `sigpending' function. */
-#define HAVE_SIGPENDING 1
+/* #undef HAVE_SIGPENDING */  /* plan9 */
 
 /* Define to 1 if you have the `sigrelse' function. */
-#define HAVE_SIGRELSE 1
+/* #undef HAVE_SIGRELSE */  /* plan9 */
 
 /* Define to 1 if you have the `sigtimedwait' function. */
 /* #undef HAVE_SIGTIMEDWAIT */
 
 /* Define to 1 if you have the `sigwait' function. */
-#define HAVE_SIGWAIT 1
+/* #undef HAVE_SIGWAIT */  /* plan9 */
 
 /* Define to 1 if you have the `sigwaitinfo' function. */
 /* #undef HAVE_SIGWAITINFO */
@@ -1250,7 +1250,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SOCKETPAIR 1
 
 /* Define to 1 if you have the <spawn.h> header file. */
-#define HAVE_SPAWN_H 1
+/* #undef HAVE_SPAWN_H */  /* plan9 */
 
 /* Define to 1 if you have the `splice' function. */
 /* #undef HAVE_SPLICE */
@@ -1259,13 +1259,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SSIZE_T 1
 
 /* Define to 1 if you have the `statvfs' function. */
-#define HAVE_STATVFS 1
+/* #undef HAVE_STATVFS */  /* plan9 */
 
 /* Define if you have struct stat.st_mtim.tv_nsec */
 /* #undef HAVE_STAT_TV_NSEC */
 
 /* Define if you have struct stat.st_mtimensec */
-#define HAVE_STAT_TV_NSEC2 1
+/* #undef HAVE_STAT_TV_NSEC2 */  /* plan9 */
 
 /* Define if your compiler supports variable length function prototypes (e.g.
    void fprintf(FILE *, char *, ...);) *and* <stdarg.h> */
@@ -1305,19 +1305,19 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_STRUCT_PASSWD_PW_PASSWD 1
 
 /* Define to 1 if `st_birthtime' is a member of `struct stat'. */
-#define HAVE_STRUCT_STAT_ST_BIRTHTIME 1
+/* #undef HAVE_STRUCT_STAT_ST_BIRTHTIME */  /* plan9: not in APE struct stat */
 
 /* Define to 1 if `st_blksize' is a member of `struct stat'. */
 /* #undef HAVE_STRUCT_STAT_ST_BLKSIZE */  /* plan9: APE struct stat lacks it */
 
 /* Define to 1 if `st_blocks' is a member of `struct stat'. */
-#define HAVE_STRUCT_STAT_ST_BLOCKS 1
+/* #undef HAVE_STRUCT_STAT_ST_BLOCKS */  /* plan9: not in APE struct stat */
 
 /* Define to 1 if `st_flags' is a member of `struct stat'. */
-#define HAVE_STRUCT_STAT_ST_FLAGS 1
+/* #undef HAVE_STRUCT_STAT_ST_FLAGS */  /* plan9: not in APE struct stat */
 
 /* Define to 1 if `st_gen' is a member of `struct stat'. */
-#define HAVE_STRUCT_STAT_ST_GEN 1
+/* #undef HAVE_STRUCT_STAT_ST_GEN */  /* plan9: not in APE struct stat */
 
 /* Define to 1 if `st_rdev' is a member of `struct stat'. */
 #define HAVE_STRUCT_STAT_ST_RDEV 1
@@ -1329,16 +1329,16 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SYMLINK 1
 
 /* Define to 1 if you have the `symlinkat' function. */
-#define HAVE_SYMLINKAT 1
+/* #undef HAVE_SYMLINKAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `sync' function. */
-#define HAVE_SYNC 1
+/* #undef HAVE_SYNC */  /* plan9 */
 
 /* Define to 1 if you have the `sysconf' function. */
 #define HAVE_SYSCONF 1
 
 /* Define to 1 if you have the <sysexits.h> header file. */
-#define HAVE_SYSEXITS_H 1
+/* #undef HAVE_SYSEXITS_H */  /* plan9: APE lacks <sysexits.h> */
 
 /* Define to 1 if you have the <syslog.h> header file. */
 #define HAVE_SYSLOG_H 1
@@ -1430,13 +1430,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_SYS_SOUNDCARD_H */
 
 /* Define to 1 if you have the <sys/statvfs.h> header file. */
-#define HAVE_SYS_STATVFS_H 1
+/* #undef HAVE_SYS_STATVFS_H */  /* plan9 */
 
 /* Define to 1 if you have the <sys/stat.h> header file. */
 #define HAVE_SYS_STAT_H 1
 
 /* Define to 1 if you have the <sys/syscall.h> header file. */
-#define HAVE_SYS_SYSCALL_H 1
+/* #undef HAVE_SYS_SYSCALL_H */  /* plan9 */
 
 /* Define to 1 if you have the <sys/sysmacros.h> header file. */
 /* #undef HAVE_SYS_SYSMACROS_H */
@@ -1469,16 +1469,16 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_SYS_WAIT_H 1
 
 /* Define to 1 if you have the <sys/xattr.h> header file. */
-#define HAVE_SYS_XATTR_H 1
+/* #undef HAVE_SYS_XATTR_H */  /* plan9 */
 
 /* Define to 1 if you have the `tcgetpgrp' function. */
-#define HAVE_TCGETPGRP 1
+/* #undef HAVE_TCGETPGRP */  /* plan9 */
 
 /* Define to 1 if you have the `tcsetpgrp' function. */
-#define HAVE_TCSETPGRP 1
+/* #undef HAVE_TCSETPGRP */  /* plan9 */
 
 /* Define to 1 if you have the `tempnam' function. */
-#define HAVE_TEMPNAM 1
+/* #undef HAVE_TEMPNAM */  /* plan9 */
 
 /* Define to 1 if you have the <termios.h> header file. */
 #define HAVE_TERMIOS_H 1
@@ -1496,7 +1496,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_TMPFILE 1
 
 /* Define to 1 if you have the `tmpnam' function. */
-#define HAVE_TMPNAM 1
+/* #undef HAVE_TMPNAM */  /* plan9 */
 
 /* Define to 1 if you have the `tmpnam_r' function. */
 /* #undef HAVE_TMPNAM_R */
@@ -1506,10 +1506,10 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_TM_ZONE 1
 
 /* Define to 1 if you have the `truncate' function. */
-#define HAVE_TRUNCATE 1
+/* #undef HAVE_TRUNCATE */  /* plan9 */
 
 /* Define to 1 if you have the `ttyname' function. */
-#define HAVE_TTYNAME 1
+/* #undef HAVE_TTYNAME */  /* plan9: APE lacks ttyname_r/_SC_TTY_NAME_MAX */
 
 /* Define to 1 if you don't have `tm_zone' but do have the external array
    `tzname'. */
@@ -1525,7 +1525,7 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_UNISTD_H 1
 
 /* Define to 1 if you have the `unlinkat' function. */
-#define HAVE_UNLINKAT 1
+/* #undef HAVE_UNLINKAT */  /* plan9: no *at/dir_fd */
 
 /* Define if you have a useable wchar_t type defined in wchar.h; useable means
    wchar_t must be an unsigned type with at least 16 bits. (see
@@ -1533,13 +1533,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 /* #undef HAVE_USABLE_WCHAR_T */
 
 /* Define to 1 if you have the <util.h> header file. */
-#define HAVE_UTIL_H 1
+/* #undef HAVE_UTIL_H */  /* plan9 */
 
 /* Define to 1 if you have the `utimensat' function. */
-#define HAVE_UTIMENSAT 1
+/* #undef HAVE_UTIMENSAT */  /* plan9: no *at/dir_fd */
 
 /* Define to 1 if you have the `utimes' function. */
-#define HAVE_UTIMES 1
+/* #undef HAVE_UTIMES */  /* plan9 */
 
 /* Define to 1 if you have the <utime.h> header file. */
 #define HAVE_UTIME_H 1
@@ -1569,13 +1569,13 @@ extern int clock_gettime(int clk_id, struct timespec *tp);
 #define HAVE_WAIT 1
 
 /* Define to 1 if you have the `wait3' function. */
-#define HAVE_WAIT3 1
+/* #undef HAVE_WAIT3 */  /* plan9 */
 
 /* Define to 1 if you have the `wait4' function. */
-#define HAVE_WAIT4 1
+/* #undef HAVE_WAIT4 */  /* plan9 */
 
 /* Define to 1 if you have the `waitid' function. */
-#define HAVE_WAITID 1
+/* #undef HAVE_WAITID */  /* plan9 */
 
 /* Define to 1 if you have the `waitpid' function. */
 #define HAVE_WAITPID 1
