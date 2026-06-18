@@ -110,26 +110,25 @@ See also [[testing-harness]] for listen1 pitfalls. Hard-won here:
 
 ## Status / next
 
-- [x] Parity harness + reference baseline (committed, branch
-  `python9-parity-harness`).
-- [x] APE env recon; source staged at `/usr/glenda/Python-3.11.14` in dev VM.
-- [x] Confirmed `configure` is a dead end → hand-authored build.
-- [x] First-cut `pyconfig.h` (`python9/port/plan9/`) — critical macros flipped.
-- [x] First compile, then full obstacle stack cleared: wchar shim
-  (`ape-shim/wchar.h`+`wchar_shim.c`), `_POSIX_SOURCE`/`_BSD_EXTENSION`,
-  `HAVE_PTHREAD_STUBS` (single-threaded), atomics fallback, `__attribute__`
-  neutralized, `clockid_t`.
-- [x] **Batch-compiling the 112-file core set: 108/112 (96%) compile.** kencc
-  patch set in `python9/port/plan9/patches/`. Worked around: compound literals
-  → static-inline helpers; GNU `, ## __VA_ARGS__` → C99 fold; `Py_UNREACHABLE`
-  /no-return → `while(1)`; 4-byte `wchar_t` predefine (vs kencc 4-byte `L""`);
-  undef computed-gotos/std-atomic/mmap/realpath; errno + langinfo + NAN/UINT_C
-  shims. See [[../../../python9/port/plan9/README.md|port README]] for the
-  pass-by-pass table.
-- [ ] **4 hard remainders** (generated/deep-macro): `_PyRuntimeState_INIT`/
-  `_Py_ID` `._ ## NAME` paste (pystate, pylifecycle); `parser.c` array compound
-  literals; `floatobject` clinic. Need host-side pre-expansion or generator
-  changes.
-- [ ] Plan 9 thread backend (`thread_plan9.h`) — deferred behind pthread stubs.
-- [ ] Build `Modules/` + static `Setup`, mkfile, link `python`, boot REPL →
-  run `parity/run_suite.py` for the first parity score.
+**WORKING: CPython 3.11.14 runs on 9front.** `/tmp/python` runs real Python
+programs and imports the pure-Python stdlib (json, os, ...). 147 sources
+compile + link into a 15 MB binary; stdlib at `/sys/lib/python/lib/python3.11`.
+
+The bug cascade, all fixed (see `python9/port/plan9/README.md`):
+1. kencc has no compound literals / GNU `,##__VA_ARGS__` / computed-gotos;
+   pads tiny structs to 8; rejects the token `typestr` in params.
+2. Plan 9 amd64 is **not LP64**: long/size_t/time_t=4, ptr/longlong/uintptr=8.
+   Wrong SIZEOF_* corrupted every word-at-a-time op.
+3. Inline-cache skip used `sizeof(cache)/2` (padded) instead of the
+   `_PyOpcode_Caches` counts -> eval loop hit CACHE opcodes.
+4. wchar_t: APE's 2-byte vs CPython's 4-byte; the wchar_shim must predefine
+   4-byte wchar_t before any system header, else wcslen truncates strings.
+5. Locale decode used APE's 2-byte mbstowcs; `_Py_FORCE_UTF8_LOCALE` routes to
+   CPython's own UTF-8 decoder (Plan 9 is UTF-8).
+
+[ ] Build the C extension modules the regression suite needs (math, _datetime,
+    _struct, array, ...) -- math needs C99 math fallbacks (log1p/erf/lgamma).
+[ ] Add them to the static `Modules/Setup`/config.c, relink.
+[ ] Run `parity/run_suite.py` in the VM -> first parity score vs the 38,259
+    baseline.
+[ ] Real Plan 9 thread backend (currently single-threaded pthread stubs).

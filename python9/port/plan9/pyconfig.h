@@ -191,7 +191,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_ACCEPT4 */
 
 /* Define to 1 if you have the `acosh' function. */
-#define HAVE_ACOSH 1
+/* #undef HAVE_ACOSH */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* struct addrinfo (netdb.h) */
 #define HAVE_ADDRINFO 1
@@ -209,13 +209,13 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_ALTZONE */
 
 /* Define to 1 if you have the `asinh' function. */
-#define HAVE_ASINH 1
+/* #undef HAVE_ASINH */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the <asm/types.h> header file. */
 /* #undef HAVE_ASM_TYPES_H */
 
 /* Define to 1 if you have the `atanh' function. */
-#define HAVE_ATANH 1
+/* #undef HAVE_ATANH */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define if you have the 'bind' function. */
 #define HAVE_BIND 1
@@ -445,10 +445,10 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_EPOLL_CREATE1 */
 
 /* Define to 1 if you have the `erf' function. */
-#define HAVE_ERF 1
+/* #undef HAVE_ERF */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the `erfc' function. */
-#define HAVE_ERFC 1
+/* #undef HAVE_ERFC */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the <errno.h> header file. */
 #define HAVE_ERRNO_H 1
@@ -466,7 +466,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_EXPLICIT_MEMSET */
 
 /* Define to 1 if you have the `expm1' function. */
-#define HAVE_EXPM1 1
+/* #undef HAVE_EXPM1 */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the `faccessat' function. */
 /* #undef HAVE_FACCESSAT */  /* plan9: no *at/dir_fd */
@@ -885,10 +885,10 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_LOCKF */  /* plan9 */
 
 /* Define to 1 if you have the `log1p' function. */
-#define HAVE_LOG1P 1
+/* #undef HAVE_LOG1P */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the `log2' function. */
-#define HAVE_LOG2 1
+/* #undef HAVE_LOG2 */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the `login_tty' function. */
 /* #undef HAVE_LOGIN_TTY */  /* plan9 */
