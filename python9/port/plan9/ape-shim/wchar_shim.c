@@ -4,7 +4,9 @@
  * short here; these operate on it as opaque code units (no locale/multibyte
  * semantics -- CPython handles UTF-8/UTF-16 itself).
  */
+#ifndef _POSIX_SOURCE
 #define _POSIX_SOURCE
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include "wchar.h"

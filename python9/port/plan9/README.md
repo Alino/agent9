@@ -117,3 +117,35 @@ set the host build produced.) Last two cracked in pass 8:
 
 Then: enumerate objects in the mkfile, build `Modules/` + static `Setup`, link a
 `python`, boot the REPL, and run `parity/run_suite.py` for the first score.
+
+
+## Link + boot status
+
+**The interpreter links and boots.** `pylink.rc` compiles all 147 sources to
+`/tmp/obj` and links a 15.4 MB `python` binary via `pcc` (auto-links libap).
+Running it reaches `_PySys_InitCore` (sys module init) during `Py_Initialize`:
+
+```
+Fatal Python error: _PySys_InitCore: can't initialize sys module
+KeyError: 'exce\x00\x00\x00\x00ok'   # "excepthook" with bytes 4-7 zeroed
+```
+
+Link fixes beyond compilation:
+- thread.c: pthread-stubs path (undef THREAD_STACK_SIZE +
+  PTHREAD_SYSTEM_SCHED_SUPPORTED).
+- pytime.c: disable INT64 two's-complement #if (kencc cpp can't evaluate it);
+  define CLOCK_* constants; clock_getres in plan9_compat.c.
+- plan9_compat.c shims: setenv/unsetenv, getentropy (/dev/random),
+  clock_gettime/getres (gettimeofday), copysign/round. APE provides
+  localtime_r/gmtime_r (undeclared) -- declared in pyconfig, not redefined.
+- dictobject.c empty_keys_struct: flexible-array static init -> fixed struct.
+- getpath.c: define PREFIX/EXEC_PREFIX/VERSION/VPATH/PLATLIBDIR in pyconfig.
+- config.c (Plan 9 builtin table), faulthandler_stub.c.
+
+### Next: the _PySys_InitCore crash
+A global interned string ("excepthook") reads back with a zeroed 4-byte word at
+offset 4 (`exce\0\0\0\0ok`). kencc initializes char arrays from string
+literals correctly (verified standalone and with a 48-byte struct prefix), so
+the corruption is at runtime, not static-init. Needs in-VM debugging (acid) to
+find the bad 4-byte store. Candidates: unicode hash caching, interning, or a
+kencc codegen issue in a 64-bit path (pyhash/siphash).

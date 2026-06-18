@@ -51,6 +51,18 @@ clock_gettime(int clk_id, struct timespec *tp)
 	return 0;
 }
 
+int
+clock_getres(int clk_id, struct timespec *res)
+{
+	(void)clk_id;
+	res->tv_sec = 0;
+	res->tv_nsec = 1000;	/* gettimeofday gives microsecond resolution */
+	return 0;
+}
+
+/* Note: APE's libap provides localtime_r/gmtime_r (just undeclared in its
+ * <time.h>); we only declare them in pyconfig.h, not redefine them here. */
+
 /*
  * setenv via Plan 9's /env. Plan 9 environment variables are files under
  * /env, so writing the value there is the native equivalent. APE has no

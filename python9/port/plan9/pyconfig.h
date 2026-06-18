@@ -15,6 +15,24 @@
 #ifndef Py_PYCONFIG_H
 #define Py_PYCONFIG_H
 
+/* plan9: install-path macros normally passed by the Makefile as -D. getpath.c
+ * #errors without them. The stdlib will live under /sys/lib/python. */
+#ifndef PREFIX
+#define PREFIX "/sys/lib/python"
+#endif
+#ifndef EXEC_PREFIX
+#define EXEC_PREFIX "/sys/lib/python"
+#endif
+#ifndef VERSION
+#define VERSION "3.11"
+#endif
+#ifndef VPATH
+#define VPATH ""
+#endif
+#ifndef PLATLIBDIR
+#define PLATLIBDIR "lib"
+#endif
+
 /* plan9: Plan 9's 6c/pcc has no GCC __attribute__. CPython mostly guards it
  * behind Py_GCC_ATTRIBUTE, but a few headers (e.g. cpython/pthread_stubs.h)
  * use it raw. Plan 9 cpp also rejects function-like -D, so neutralize it here
@@ -93,6 +111,20 @@ extern double round(double x);
  * works before <time.h> is included. */
 struct timespec;
 extern int clock_gettime(int clk_id, struct timespec *tp);
+extern int clock_getres(int clk_id, struct timespec *res);
+struct tm;
+extern struct tm *localtime_r(const long *t, struct tm *result);
+extern struct tm *gmtime_r(const long *t, struct tm *result);
+/* clk_id values -- our clock_gettime ignores them (all wall-clock), so any
+ * distinct ints suffice for the code that references these constants. */
+#ifndef CLOCK_REALTIME
+#define CLOCK_REALTIME            0
+#define CLOCK_MONOTONIC           1
+#define CLOCK_PROCESS_CPUTIME_ID  2
+#define CLOCK_THREAD_CPUTIME_ID   3
+#define CLOCK_MONOTONIC_RAW       4
+#define CLOCK_HIGHRES             5
+#endif
 
 /* plan9: APE's sigaction has no SA_ONSTACK flag. 0 = default behaviour. */
 #ifndef SA_ONSTACK
