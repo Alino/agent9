@@ -147,7 +147,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 #define ALIGNOF_LONG 8
 
 /* The normal alignment of `size_t', in bytes. */
-#define ALIGNOF_SIZE_T 8
+#define ALIGNOF_SIZE_T 4   /* plan9: size_t is 4-byte (long) */
 
 /* Alternative SOABI used in debug build to load C extensions built in release
    mode */
@@ -1751,7 +1751,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 #define SIZEOF_INT 4
 
 /* The size of `long', as computed by sizeof. */
-#define SIZEOF_LONG 8
+#define SIZEOF_LONG 4   /* plan9 amd64: long is 4 bytes */
 
 /* The size of `long double', as computed by sizeof. */
 #define SIZEOF_LONG_DOUBLE 8
@@ -1769,16 +1769,16 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 #define SIZEOF_PTHREAD_KEY_T 8
 
 /* The size of `pthread_t', as computed by sizeof. */
-#define SIZEOF_PTHREAD_T 8
+#define SIZEOF_PTHREAD_T 4   /* plan9: pthread-stub typedef is unsigned (4) */
 
 /* The size of `short', as computed by sizeof. */
 #define SIZEOF_SHORT 2
 
 /* The size of `size_t', as computed by sizeof. */
-#define SIZEOF_SIZE_T 8
+#define SIZEOF_SIZE_T 4   /* plan9 amd64: size_t (=ulong) is 4 bytes */
 
 /* The size of `time_t', as computed by sizeof. */
-#define SIZEOF_TIME_T 8
+#define SIZEOF_TIME_T 4   /* plan9: time_t is long (4) */
 
 /* The size of `uintptr_t', as computed by sizeof. */
 #define SIZEOF_UINTPTR_T 8
