@@ -34,6 +34,117 @@ round(double x)
 	return ceil(x - 0.5);
 }
 
+/* C99 math functions APE lacks (it has erf/erfc/log2/hypot but not these).
+ * CPython 3.11's math module assumes they exist. */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+double
+log1p(double x)
+{
+	/* log(1+x), accurate for small x */
+	double u = 1.0 + x;
+	if (u == 1.0)
+		return x;
+	return log(u) * (x / (u - 1.0));
+}
+
+double
+expm1(double x)
+{
+	/* exp(x)-1, accurate for small x */
+	double u = exp(x);
+	if (u == 1.0)
+		return x;
+	if (u - 1.0 == -1.0)
+		return -1.0;
+	return (u - 1.0) * (x / log(u));
+}
+
+double
+acosh(double x)
+{
+	return log(x + sqrt(x * x - 1.0));
+}
+
+double
+asinh(double x)
+{
+	double s = sqrt(x * x + 1.0);
+	if (x >= 0.0)
+		return log(x + s);
+	return -log(-x + s);
+}
+
+double
+atanh(double x)
+{
+	return 0.5 * log((1.0 + x) / (1.0 - x));
+}
+
+double
+cbrt(double x)
+{
+	if (x < 0.0)
+		return -pow(-x, 1.0 / 3.0);
+	return pow(x, 1.0 / 3.0);
+}
+
+double
+exp2(double x)
+{
+	return pow(2.0, x);
+}
+
+double
+trunc(double x)
+{
+	if (x < 0.0)
+		return ceil(x);
+	return floor(x);
+}
+
+/* Lanczos approximation (g=7, n=9) for the gamma family. */
+static const double _lz_g = 7.0;
+static const double _lz_c[9] = {
+	0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+	771.32342877765313, -176.61502916214059, 12.507343278686905,
+	-0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7
+};
+
+double
+tgamma(double x)
+{
+	double a, t;
+	int i;
+
+	if (x < 0.5)
+		return M_PI / (sin(M_PI * x) * tgamma(1.0 - x));
+	x -= 1.0;
+	a = _lz_c[0];
+	t = x + _lz_g + 0.5;
+	for (i = 1; i < 9; i++)
+		a += _lz_c[i] / (x + (double)i);
+	return sqrt(2.0 * M_PI) * pow(t, x + 0.5) * exp(-t) * a;
+}
+
+double
+lgamma(double x)
+{
+	double a, t;
+	int i;
+
+	if (x < 0.5)
+		return log(M_PI / fabs(sin(M_PI * x))) - lgamma(1.0 - x);
+	x -= 1.0;
+	a = _lz_c[0];
+	t = x + _lz_g + 0.5;
+	for (i = 1; i < 9; i++)
+		a += _lz_c[i] / (x + (double)i);
+	return 0.5 * log(2.0 * M_PI) + (x + 0.5) * log(t) - t + log(a);
+}
+
 /* clock_gettime via APE gettimeofday (microsecond resolution). All clk_id
  * values map to wall-clock; good enough for a first boot. */
 #include <sys/time.h>
@@ -137,4 +248,24 @@ unsetenv(const char *name)
 	strcat(path, name);
 	remove(path);
 	return 0;
+}
+
+double
+nextafter(double x, double y)
+{
+	union { double d; unsigned long long u; } v;
+	if (x == y)
+		return y;
+	if (isnan(x) || isnan(y))
+		return x + y;
+	if (x == 0.0) {
+		v.u = 1;
+		return y > 0.0 ? v.d : -v.d;
+	}
+	v.d = x;
+	if ((y > x) == (x > 0.0))
+		v.u++;
+	else
+		v.u--;
+	return v.d;
 }

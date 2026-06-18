@@ -29,6 +29,29 @@ extern PyObject* PyInit__operator(void);
 extern PyObject* PyInit__stat(void);
 extern PyObject* PyInit__symtable(void);
 extern PyObject* PyInit_xxsubtype(void);
+extern PyObject* PyInit_math(void);
+extern PyObject* PyInit_cmath(void);
+extern PyObject* PyInit__random(void);
+extern PyObject* PyInit__md5(void);
+extern PyObject* PyInit__sha1(void);
+extern PyObject* PyInit__sha256(void);
+extern PyObject* PyInit__sha512(void);
+extern PyObject* PyInit__bisect(void);
+extern PyObject* PyInit__heapq(void);
+extern PyObject* PyInit__json(void);
+extern PyObject* PyInit__csv(void);
+extern PyObject* PyInit__struct(void);
+extern PyObject* PyInit_array(void);
+extern PyObject* PyInit__datetime(void);
+extern PyObject* PyInit__statistics(void);
+extern PyObject* PyInit__contextvars(void);
+extern PyObject* PyInit__opcode(void);
+extern PyObject* PyInit__pickle(void);
+extern PyObject* PyInit_binascii(void);
+extern PyObject* PyInit__queue(void);
+extern PyObject* PyInit_unicodedata(void);
+extern PyObject* PyInit_select(void);
+extern PyObject* PyInit__posixsubprocess(void);
 
 extern PyObject* PyMarshal_Init(void);
 extern PyObject* PyInit__imp(void);
@@ -60,6 +83,29 @@ struct _inittab _PyImport_Inittab[] = {
     {"_stat", PyInit__stat},
     {"_symtable", PyInit__symtable},
     {"xxsubtype", PyInit_xxsubtype},
+    {"math", PyInit_math},
+    {"cmath", PyInit_cmath},
+    {"_random", PyInit__random},
+    {"_md5", PyInit__md5},
+    {"_sha1", PyInit__sha1},
+    {"_sha256", PyInit__sha256},
+    {"_sha512", PyInit__sha512},
+    {"_bisect", PyInit__bisect},
+    {"_heapq", PyInit__heapq},
+    {"_json", PyInit__json},
+    {"_csv", PyInit__csv},
+    {"_struct", PyInit__struct},
+    {"array", PyInit_array},
+    {"_datetime", PyInit__datetime},
+    {"_statistics", PyInit__statistics},
+    {"_contextvars", PyInit__contextvars},
+    {"_opcode", PyInit__opcode},
+    {"_pickle", PyInit__pickle},
+    {"binascii", PyInit_binascii},
+    {"_queue", PyInit__queue},
+    {"unicodedata", PyInit_unicodedata},
+    {"select", PyInit_select},
+    {"_posixsubprocess", PyInit__posixsubprocess},
 
     /* This module lives in marshal.c */
     {"marshal", PyMarshal_Init},

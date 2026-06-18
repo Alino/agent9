@@ -82,6 +82,12 @@ typedef unsigned int wchar_t;
 #define static_assert(cond, msg)
 #endif
 
+/* plan9: kencc has no C99 _Bool keyword. A 1-byte unsigned type is layout- and
+ * semantics-compatible for CPython's uses (struct '?' format, etc.). */
+#ifndef __cplusplus
+#define _Bool unsigned char
+#endif
+
 /* plan9: errno constants APE's <errno.h> lacks (its values top out at 62).
  * Plan 9 never returns these, so the exact values only need to be unique for
  * CPython's errno->exception table to compile. */
@@ -108,6 +114,17 @@ extern int getentropy(void *buf, unsigned long len);
  * after <math.h>, so APE's isnan/isinf are in scope at the use site). */
 extern double copysign(double x, double y);
 extern double round(double x);
+extern double log1p(double x);
+extern double expm1(double x);
+extern double acosh(double x);
+extern double asinh(double x);
+extern double atanh(double x);
+extern double cbrt(double x);
+extern double exp2(double x);
+extern double trunc(double x);
+extern double tgamma(double x);
+extern double lgamma(double x);
+extern double nextafter(double x, double y);
 #ifndef isfinite
 #define isfinite(x) (!isnan(x) && !isinf(x))
 #endif
@@ -445,10 +462,10 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_EPOLL_CREATE1 */
 
 /* Define to 1 if you have the `erf' function. */
-/* #undef HAVE_ERF */  /* plan9: APE pre-C99 math; CPython fallback */
+/* #undef HAVE_ERF */  /* plan9: not declared in our include ctx; use CPython m_erf */
 
 /* Define to 1 if you have the `erfc' function. */
-/* #undef HAVE_ERFC */  /* plan9: APE pre-C99 math; CPython fallback */
+/* #undef HAVE_ERFC */  /* plan9: not declared in our include ctx; use CPython m_erf */
 
 /* Define to 1 if you have the <errno.h> header file. */
 #define HAVE_ERRNO_H 1
@@ -888,7 +905,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_LOG1P */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the `log2' function. */
-/* #undef HAVE_LOG2 */  /* plan9: APE pre-C99 math; CPython fallback */
+#define HAVE_LOG2 1  /* plan9: APE provides it */
 
 /* Define to 1 if you have the `login_tty' function. */
 /* #undef HAVE_LOGIN_TTY */  /* plan9 */
@@ -1006,10 +1023,10 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_PLOCK */
 
 /* Define to 1 if you have the `poll' function. */
-#define HAVE_POLL 1
+/* #undef HAVE_POLL */  /* plan9: no poll */
 
 /* Define to 1 if you have the <poll.h> header file. */
-#define HAVE_POLL_H 1
+/* #undef HAVE_POLL_H */  /* plan9: no poll */
 
 /* Define to 1 if you have the `posix_fadvise' function. */
 /* #undef HAVE_POSIX_FADVISE */
@@ -1448,7 +1465,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 #define HAVE_SYS_PARAM_H 1
 
 /* Define to 1 if you have the <sys/poll.h> header file. */
-#define HAVE_SYS_POLL_H 1
+/* #undef HAVE_SYS_POLL_H */  /* plan9: no poll */
 
 /* Define to 1 if you have the <sys/random.h> header file. */
 /* #undef HAVE_SYS_RANDOM_H */  /* plan9: no <sys/random.h>; use /dev/random later */
