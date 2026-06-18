@@ -83,7 +83,7 @@
  extern void _PyPreCmdline_Clear(_PyPreCmdline *cmdline);
 --- a/Include/pymacro.h
 +++ b/Include/pymacro.h
-@@ -147,8 +147,12 @@
+@@ -147,8 +147,14 @@
  #elif defined(_MSC_VER)
  #  define Py_UNREACHABLE() __assume(0)
  #else
@@ -91,9 +91,11 @@
 +    * __attribute__) cannot see Py_FatalError as noreturn, so functions ending
 +    * in Py_UNREACHABLE() trip its hard "no return at end of function" error.
 +    * kencc *does* treat an infinite loop as non-returning, so add one. */
++#  define _Py_PLAN9_STR(x) #x
++#  define _Py_PLAN9_XSTR(x) _Py_PLAN9_STR(x)
  #  define Py_UNREACHABLE() \
 -    Py_FatalError("Unreachable C code path reached")
-+    do { Py_FatalError("Unreachable C code path reached"); } while (1)
++    do { Py_FatalError("Unreachable at " __FILE__ ":" _Py_PLAN9_XSTR(__LINE__)); } while (1)
  #endif
  
  // Prevent using an expression as a l-value.
@@ -130,6 +132,44 @@
  
  
  /*
+--- a/Include/internal/pycore_code.h
++++ b/Include/internal/pycore_code.h
+@@ -92,6 +92,35 @@
+ 
+ #define INLINE_CACHE_ENTRIES_STORE_SUBSCR CACHE_ENTRIES(_PyStoreSubscrCache)
+ 
++/* plan9: kencc rounds these all-uint16_t cache structs up to 8-byte multiples,
++ * so CACHE_ENTRIES(sizeof(cache)/2) overcounts (e.g. _PyPrecallCache sizeof is
++ * 8 not 2). The bytecode is laid out by the host with the authoritative counts
++ * from _PyOpcode_Caches, so the runtime cache-skip must match those exactly.
++ * Override with literals (the struct field offsets are unaffected -- kencc only
++ * pads at the end). */
++#undef INLINE_CACHE_ENTRIES_LOAD_GLOBAL
++#define INLINE_CACHE_ENTRIES_LOAD_GLOBAL 5
++#undef INLINE_CACHE_ENTRIES_BINARY_OP
++#define INLINE_CACHE_ENTRIES_BINARY_OP 1
++#undef INLINE_CACHE_ENTRIES_UNPACK_SEQUENCE
++#define INLINE_CACHE_ENTRIES_UNPACK_SEQUENCE 1
++#undef INLINE_CACHE_ENTRIES_COMPARE_OP
++#define INLINE_CACHE_ENTRIES_COMPARE_OP 2
++#undef INLINE_CACHE_ENTRIES_BINARY_SUBSCR
++#define INLINE_CACHE_ENTRIES_BINARY_SUBSCR 4
++#undef INLINE_CACHE_ENTRIES_LOAD_ATTR
++#define INLINE_CACHE_ENTRIES_LOAD_ATTR 4
++#undef INLINE_CACHE_ENTRIES_STORE_ATTR
++#define INLINE_CACHE_ENTRIES_STORE_ATTR 4
++#undef INLINE_CACHE_ENTRIES_LOAD_METHOD
++#define INLINE_CACHE_ENTRIES_LOAD_METHOD 10
++#undef INLINE_CACHE_ENTRIES_CALL
++#define INLINE_CACHE_ENTRIES_CALL 4
++#undef INLINE_CACHE_ENTRIES_PRECALL
++#define INLINE_CACHE_ENTRIES_PRECALL 1
++#undef INLINE_CACHE_ENTRIES_STORE_SUBSCR
++#define INLINE_CACHE_ENTRIES_STORE_SUBSCR 1
++
+ #define QUICKENING_WARMUP_DELAY 8
+ 
+ /* We want to compare to zero for efficiency, so we offset values accordingly */
 --- a/Parser/pegen.h
 +++ b/Parser/pegen.h
 @@ -175,14 +175,17 @@
@@ -268,6 +308,83 @@
  }
  
  PyStatus PyStatus_NoMemory(void)
+--- a/Python/pylifecycle.c
++++ b/Python/pylifecycle.c
+@@ -99,11 +99,19 @@
+ 
+ #endif
+ 
++/* plan9: see pystate.c -- undef stdin/stdout/stderr (APE macros) across the
++ * _PyRuntimeState_INIT expansion to dodge a kencc cpp ## bug, then restore. */
++#undef stdin
++#undef stdout
++#undef stderr
+ _PyRuntimeState _PyRuntime
+ #if defined(__linux__) && (defined(__GNUC__) || defined(__clang__))
+ __attribute__ ((section (".PyRuntime")))
+ #endif
+ = _PyRuntimeState_INIT;
++#define stdin  (&_IO_stream[0])
++#define stdout (&_IO_stream[1])
++#define stderr (&_IO_stream[2])
+ _Py_COMP_DIAG_POP
+ 
+ static int runtime_initialized = 0;
+--- a/Python/pystate.c
++++ b/Python/pystate.c
+@@ -52,7 +52,17 @@
+ _Py_COMP_DIAG_IGNORE_DEPR_DECLS
+ /* We use "initial" if the runtime gets re-used
+    (e.g. Py_Finalize() followed by Py_Initialize(). */
++/* plan9: kencc's cpp wrongly macro-expands stdin/stdout/stderr (APE macros)
++ * when they appear as INIT_ID(...) ## operands deep inside _PyRuntimeState_INIT,
++ * yielding "_ ## (". Undef across the init, then restore APE's definitions so
++ * later fprintf(stderr, ...) still works. */
++#undef stdin
++#undef stdout
++#undef stderr
+ static const _PyRuntimeState initial = _PyRuntimeState_INIT;
++#define stdin  (&_IO_stream[0])
++#define stdout (&_IO_stream[1])
++#define stderr (&_IO_stream[2])
+ _Py_COMP_DIAG_POP
+ 
+ static int
+@@ -1848,7 +1858,8 @@
+     PyInterpreterState *interp = tstate->interp;
+ 
+     // Reset data before re-populating.
+-    *data = (_PyCrossInterpreterData){0};
++    /* plan9: no compound literals (kencc); zero via memset. */
++    memset(data, 0, sizeof(*data));
+     data->free = PyMem_RawFree;  // Set a default that may be overridden.
+ 
+     // Call the "getdata" func for the object.
+--- a/Python/pytime.c
++++ b/Python/pytime.c
+@@ -44,7 +44,10 @@
+ #  error "time_t is not a two's complement integer type"
+ #endif
+ 
+-#if _PyTime_MIN + _PyTime_MAX != -1
++/* plan9: kencc's cpp can't evaluate INT64_MIN + INT64_MAX in a #if (the limit
++ * macros use a cast/LL form it rejects), and the syntax error derails the rest
++ * of the file. int64_t is two's complement on amd64, so drop the assertion. */
++#if 0
+ #  error "_PyTime_t is not a two's complement integer type"
+ #endif
+ 
+--- a/Python/ast_unparse.c
++++ b/Python/ast_unparse.c
+@@ -35,7 +35,7 @@
+ 
+ #define APPEND_STR_FINISH(str)  do { \
+         return append_charp(writer, (str)); \
+-    } while (0)
++    } while (1)  /* plan9: while(1) -- body always returns; satisfies kencc no-return */
+ 
+ #define APPEND_STR(str)  do { \
+         if (-1 == append_charp(writer, (str))) { \
 --- a/Objects/longobject.c
 +++ b/Objects/longobject.c
 @@ -345,7 +345,7 @@
@@ -374,83 +491,6 @@
  
  /* Uncomment to check the dict content in _PyDict_CheckConsistency() */
  // #define DEBUG_PYDICT
---- a/Python/ast_unparse.c
-+++ b/Python/ast_unparse.c
-@@ -35,7 +35,7 @@
- 
- #define APPEND_STR_FINISH(str)  do { \
-         return append_charp(writer, (str)); \
--    } while (0)
-+    } while (1)  /* plan9: while(1) -- body always returns; satisfies kencc no-return */
- 
- #define APPEND_STR(str)  do { \
-         if (-1 == append_charp(writer, (str))) { \
---- a/Python/pystate.c
-+++ b/Python/pystate.c
-@@ -52,7 +52,17 @@
- _Py_COMP_DIAG_IGNORE_DEPR_DECLS
- /* We use "initial" if the runtime gets re-used
-    (e.g. Py_Finalize() followed by Py_Initialize(). */
-+/* plan9: kencc's cpp wrongly macro-expands stdin/stdout/stderr (APE macros)
-+ * when they appear as INIT_ID(...) ## operands deep inside _PyRuntimeState_INIT,
-+ * yielding "_ ## (". Undef across the init, then restore APE's definitions so
-+ * later fprintf(stderr, ...) still works. */
-+#undef stdin
-+#undef stdout
-+#undef stderr
- static const _PyRuntimeState initial = _PyRuntimeState_INIT;
-+#define stdin  (&_IO_stream[0])
-+#define stdout (&_IO_stream[1])
-+#define stderr (&_IO_stream[2])
- _Py_COMP_DIAG_POP
- 
- static int
-@@ -1848,7 +1858,8 @@
-     PyInterpreterState *interp = tstate->interp;
- 
-     // Reset data before re-populating.
--    *data = (_PyCrossInterpreterData){0};
-+    /* plan9: no compound literals (kencc); zero via memset. */
-+    memset(data, 0, sizeof(*data));
-     data->free = PyMem_RawFree;  // Set a default that may be overridden.
- 
-     // Call the "getdata" func for the object.
---- a/Python/pylifecycle.c
-+++ b/Python/pylifecycle.c
-@@ -99,11 +99,19 @@
- 
- #endif
- 
-+/* plan9: see pystate.c -- undef stdin/stdout/stderr (APE macros) across the
-+ * _PyRuntimeState_INIT expansion to dodge a kencc cpp ## bug, then restore. */
-+#undef stdin
-+#undef stdout
-+#undef stderr
- _PyRuntimeState _PyRuntime
- #if defined(__linux__) && (defined(__GNUC__) || defined(__clang__))
- __attribute__ ((section (".PyRuntime")))
- #endif
- = _PyRuntimeState_INIT;
-+#define stdin  (&_IO_stream[0])
-+#define stdout (&_IO_stream[1])
-+#define stderr (&_IO_stream[2])
- _Py_COMP_DIAG_POP
- 
- static int runtime_initialized = 0;
---- a/Python/pytime.c
-+++ b/Python/pytime.c
-@@ -44,7 +44,10 @@
- #  error "time_t is not a two's complement integer type"
- #endif
- 
--#if _PyTime_MIN + _PyTime_MAX != -1
-+/* plan9: kencc's cpp can't evaluate INT64_MIN + INT64_MAX in a #if (the limit
-+ * macros use a cast/LL form it rejects), and the syntax error derails the rest
-+ * of the file. int64_t is two's complement on amd64, so drop the assertion. */
-+#if 0
- #  error "_PyTime_t is not a two's complement integer type"
- #endif
- 
 --- a/Modules/posixmodule.c
 +++ b/Modules/posixmodule.c
 @@ -14439,7 +14439,9 @@

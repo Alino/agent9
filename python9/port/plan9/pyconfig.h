@@ -33,6 +33,12 @@
 #define PLATLIBDIR "lib"
 #endif
 
+/* plan9: Plan 9 is UTF-8 everywhere. Force CPython's own UTF-8 decoder for
+ * locale/fs decoding instead of APE's mbstowcs (which uses APE's 2-byte
+ * wchar_t and corrupts our 4-byte strings -- truncating "posix" to "p").
+ * pyport.h derives _Py_FORCE_UTF8_FS_ENCODING from this. */
+#define _Py_FORCE_UTF8_LOCALE 1
+
 /* plan9: Plan 9's 6c/pcc has no GCC __attribute__. CPython mostly guards it
  * behind Py_GCC_ATTRIBUTE, but a few headers (e.g. cpython/pthread_stubs.h)
  * use it raw. Plan 9 cpp also rejects function-like -D, so neutralize it here

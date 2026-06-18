@@ -16,7 +16,14 @@
  * Implementations live in wchar_shim.c.
  */
 
-#include <stddef.h>   /* wchar_t (unsigned short), size_t, NULL */
+/* plan9: must match pyconfig.h -- force 4-byte wchar_t (kencc L"" / Py_UCS4)
+ * BEFORE <stddef.h> so the shim's wcs* functions agree with CPython. Otherwise
+ * APE's 2-byte wchar_t makes wcslen() read a 4-byte char as two 2-byte ones. */
+#ifndef _WCHAR_T
+#define _WCHAR_T
+typedef unsigned int wchar_t;
+#endif
+#include <stddef.h>   /* size_t, NULL */
 
 typedef int wint_t;
 #ifndef WEOF

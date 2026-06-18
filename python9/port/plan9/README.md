@@ -142,10 +142,26 @@ Link fixes beyond compilation:
 - getpath.c: define PREFIX/EXEC_PREFIX/VERSION/VPATH/PLATLIBDIR in pyconfig.
 - config.c (Plan 9 builtin table), faulthandler_stub.c.
 
-### Next: the _PySys_InitCore crash
-A global interned string ("excepthook") reads back with a zeroed 4-byte word at
-offset 4 (`exce\0\0\0\0ok`). kencc initializes char arrays from string
-literals correctly (verified standalone and with a 48-byte struct prefix), so
-the corruption is at runtime, not static-init. Needs in-VM debugging (acid) to
-find the bad 4-byte store. Candidates: unicode hash caching, interning, or a
-kencc codegen issue in a 64-bit path (pyhash/siphash).
+### Boot progress (it runs Python!)
+
+After the data-model fix, the interpreter initializes, runs the **entire frozen
+importlib bootstrap**, and executes Python. Crash cascade fixed in order:
+
+1. **size_t mismatch** -- Plan 9 amd64 is not LP64 (long/size_t/time_t = 4,
+   ptr/long long/uintptr/off_t = 8). Fixed SIZEOF_* to match; cleared the
+   ascii_decode "exce\0\0\0\0ok" corruption.
+2. **inline-cache skip** -- kencc rounds the all-uint16_t cache structs up to
+   8-byte multiples, so INLINE_CACHE_ENTRIES_* (sizeof/2) overcounted and the
+   eval loop landed on a CACHE opcode. Override with literal _PyOpcode_Caches
+   counts in pycore_code.h.
+3. **wchar_t shim mismatch** -- wchar_shim.c used APE's 2-byte wchar_t (it
+   includes <wchar.h> not pyconfig.h) while CPython uses 4-byte; ape-shim/wchar.h
+   now predefines 4-byte wchar_t.
+4. **locale decode** -- decode_current_locale used APE's mbstowcs (2-byte
+   wchar_t) -> truncated "posix" to "p". Plan 9 is UTF-8, so define
+   _Py_FORCE_UTF8_LOCALE to use CPython's own UTF-8 decoder.
+
+Now reaches **<frozen getpath>:463** -- a Python-level `ValueError: embedded
+null character` building a `._pth` path from `library`/`executable` (one carries
+a trailing NUL). The C interpreter + bytecode VM + frozen bootstrap all work;
+only path config + stdlib install remain before a REPL.
