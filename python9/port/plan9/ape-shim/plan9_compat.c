@@ -3,8 +3,12 @@
  * 9front port. Prototypes are declared in pyconfig.h so CPython sources see
  * them. Compiled into the interpreter (added to the object list).
  */
+#ifndef _POSIX_SOURCE
 #define _POSIX_SOURCE
+#endif
+#ifndef _BSD_EXTENSION
 #define _BSD_EXTENSION
+#endif
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
@@ -28,6 +32,23 @@ round(double x)
 	if (x >= 0.0)
 		return floor(x + 0.5);
 	return ceil(x - 0.5);
+}
+
+/* clock_gettime via APE gettimeofday (microsecond resolution). All clk_id
+ * values map to wall-clock; good enough for a first boot. */
+#include <sys/time.h>
+#include <time.h>
+int
+clock_gettime(int clk_id, struct timespec *tp)
+{
+	struct timeval tv;
+
+	(void)clk_id;
+	if (gettimeofday(&tv, (struct timezone *)0) != 0)
+		return -1;
+	tp->tv_sec = tv.tv_sec;
+	tp->tv_nsec = (long)tv.tv_usec * 1000;
+	return 0;
 }
 
 /*

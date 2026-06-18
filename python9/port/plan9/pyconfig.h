@@ -87,6 +87,12 @@ extern double round(double x);
 #define isfinite(x) (!isnan(x) && !isinf(x))
 #endif
 
+/* plan9: APE has struct timespec + gettimeofday but no clock_gettime;
+ * implemented in plan9_compat.c. Forward-declare the struct so this prototype
+ * works before <time.h> is included. */
+struct timespec;
+extern int clock_gettime(int clk_id, struct timespec *tp);
+
 /* plan9: APE's sigaction has no SA_ONSTACK flag. 0 = default behaviour. */
 #ifndef SA_ONSTACK
 #define SA_ONSTACK 0
@@ -231,7 +237,7 @@ extern double round(double x);
 #define HAVE_CLOCK 1
 
 /* Define to 1 if you have the `clock_getres' function. */
-#define HAVE_CLOCK_GETRES 1
+/* #undef HAVE_CLOCK_GETRES */  /* plan9: APE lacks it */
 
 /* Define to 1 if you have the `clock_gettime' function. */
 #define HAVE_CLOCK_GETTIME 1
@@ -240,7 +246,7 @@ extern double round(double x);
 /* #undef HAVE_CLOCK_NANOSLEEP */
 
 /* Define to 1 if you have the `clock_settime' function. */
-#define HAVE_CLOCK_SETTIME 1
+/* #undef HAVE_CLOCK_SETTIME */  /* plan9: APE lacks it */
 
 /* Define to 1 if you have the `close_range' function. */
 /* #undef HAVE_CLOSE_RANGE */
@@ -647,7 +653,7 @@ extern double round(double x);
 /* #undef HAVE_GETRESUID */
 
 /* Define to 1 if you have the `getrusage' function. */
-#define HAVE_GETRUSAGE 1
+/* #undef HAVE_GETRUSAGE */  /* plan9: APE lacks it; CPython fallback */
 
 /* Define if you have the 'getservbyname' function. */
 #define HAVE_GETSERVBYNAME 1
@@ -1317,7 +1323,7 @@ extern double round(double x);
 #define HAVE_STRUCT_STAT_ST_RDEV 1
 
 /* Define to 1 if `tm_zone' is a member of `struct tm'. */
-#define HAVE_STRUCT_TM_TM_ZONE 1
+/* #undef HAVE_STRUCT_TM_TM_ZONE */  /* plan9: APE lacks it */
 
 /* Define if you have the 'symlink' function. */
 #define HAVE_SYMLINK 1
@@ -1481,7 +1487,7 @@ extern double round(double x);
 #define HAVE_TERM_H 1
 
 /* Define to 1 if you have the `timegm' function. */
-#define HAVE_TIMEGM 1
+/* #undef HAVE_TIMEGM */  /* plan9: APE lacks it; CPython fallback */
 
 /* Define to 1 if you have the `times' function. */
 #define HAVE_TIMES 1
