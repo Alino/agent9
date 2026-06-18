@@ -9,6 +9,26 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
+
+/* C99 math functions APE's libm lacks (CPython 3.11 assumes they exist). */
+double
+copysign(double x, double y)
+{
+	double ax = fabs(x);
+	/* negative, or negative zero (1/y == -inf) */
+	if (y < 0.0 || (y == 0.0 && 1.0 / y < 0.0))
+		return -ax;
+	return ax;
+}
+
+double
+round(double x)
+{
+	if (x >= 0.0)
+		return floor(x + 0.5);
+	return ceil(x - 0.5);
+}
 
 /*
  * setenv via Plan 9's /env. Plan 9 environment variables are files under

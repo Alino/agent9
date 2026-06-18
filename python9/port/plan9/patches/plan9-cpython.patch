@@ -158,6 +158,103 @@
  #define RAISE_SYNTAX_ERROR_INVALID_TARGET(type, e) _RAISE_SYNTAX_ERROR_INVALID_TARGET(p, type, e)
  
  Py_LOCAL_INLINE(void *)
+--- a/Parser/parser.c
++++ b/Parser/parser.c
+@@ -13,63 +13,38 @@
+ #  define MAXSTACK 6000
+ #endif
+ static const int n_keyword_lists = 9;
++/* plan9: kencc has no compound literals; hoist the per-length keyword tables to
++ * named statics instead of (KeywordToken[]){...} inside reserved_keywords[]. */
++static KeywordToken _kw0[] = {{NULL, -1}};
++static KeywordToken _kw1[] = {{NULL, -1}};
++static KeywordToken _kw2[] = {
++    {"if", 639}, {"as", 637}, {"in", 648}, {"or", 574}, {"is", 582},
++    {NULL, -1},
++};
++static KeywordToken _kw3[] = {
++    {"del", 603}, {"def", 649}, {"for", 647}, {"try", 621}, {"and", 575},
++    {"not", 581}, {NULL, -1},
++};
++static KeywordToken _kw4[] = {
++    {"from", 572}, {"pass", 504}, {"with", 612}, {"elif", 641}, {"else", 642},
++    {"None", 601}, {"True", 600}, {NULL, -1},
++};
++static KeywordToken _kw5[] = {
++    {"raise", 522}, {"yield", 573}, {"break", 508}, {"class", 651},
++    {"while", 644}, {"False", 602}, {NULL, -1},
++};
++static KeywordToken _kw6[] = {
++    {"return", 519}, {"import", 531}, {"assert", 526}, {"global", 523},
++    {"except", 634}, {"lambda", 586}, {NULL, -1},
++};
++static KeywordToken _kw7[] = {
++    {"finally", 630}, {NULL, -1},
++};
++static KeywordToken _kw8[] = {
++    {"continue", 509}, {"nonlocal", 524}, {NULL, -1},
++};
+ static KeywordToken *reserved_keywords[] = {
+-    (KeywordToken[]) {{NULL, -1}},
+-    (KeywordToken[]) {{NULL, -1}},
+-    (KeywordToken[]) {
+-        {"if", 639},
+-        {"as", 637},
+-        {"in", 648},
+-        {"or", 574},
+-        {"is", 582},
+-        {NULL, -1},
+-    },
+-    (KeywordToken[]) {
+-        {"del", 603},
+-        {"def", 649},
+-        {"for", 647},
+-        {"try", 621},
+-        {"and", 575},
+-        {"not", 581},
+-        {NULL, -1},
+-    },
+-    (KeywordToken[]) {
+-        {"from", 572},
+-        {"pass", 504},
+-        {"with", 612},
+-        {"elif", 641},
+-        {"else", 642},
+-        {"None", 601},
+-        {"True", 600},
+-        {NULL, -1},
+-    },
+-    (KeywordToken[]) {
+-        {"raise", 522},
+-        {"yield", 573},
+-        {"break", 508},
+-        {"class", 651},
+-        {"while", 644},
+-        {"False", 602},
+-        {NULL, -1},
+-    },
+-    (KeywordToken[]) {
+-        {"return", 519},
+-        {"import", 531},
+-        {"assert", 526},
+-        {"global", 523},
+-        {"except", 634},
+-        {"lambda", 586},
+-        {NULL, -1},
+-    },
+-    (KeywordToken[]) {
+-        {"finally", 630},
+-        {NULL, -1},
+-    },
+-    (KeywordToken[]) {
+-        {"continue", 509},
+-        {"nonlocal", 524},
+-        {NULL, -1},
+-    },
++    _kw0, _kw1, _kw2, _kw3, _kw4, _kw5, _kw6, _kw7, _kw8,
+ };
+ static char *soft_keywords[] = {
+     "_",
 --- a/Python/initconfig.c
 +++ b/Python/initconfig.c
 @@ -277,8 +277,8 @@
@@ -182,6 +279,68 @@
  
  /* Create a new int object from a C unsigned long int */
  
+--- a/Objects/floatobject.c
++++ b/Objects/floatobject.c
+@@ -1754,15 +1754,17 @@
+ [clinic start generated code]*/
+ 
+ static PyObject *
+-float___getformat___impl(PyTypeObject *type, const char *typestr)
++float___getformat___impl(PyTypeObject *type, const char *typestr_)
+ /*[clinic end generated code: output=2bfb987228cc9628 input=d5a52600f835ad67]*/
+ {
+     float_format_type r;
++    /* plan9: kencc rejects the bare token `typestr` in a declarator, so the
++     * param is typestr_ and we use it directly (no `typestr` alias). */
+ 
+-    if (strcmp(typestr, "double") == 0) {
++    if (strcmp(typestr_, "double") == 0) {
+         r = double_format;
+     }
+-    else if (strcmp(typestr, "float") == 0) {
++    else if (strcmp(typestr_, "float") == 0) {
+         r = float_format;
+     }
+     else {
+--- a/Objects/clinic/floatobject.c.h
++++ b/Objects/clinic/floatobject.c.h
+@@ -263,28 +263,30 @@
+     {"__getformat__", (PyCFunction)float___getformat__, METH_O|METH_CLASS, float___getformat____doc__},
+ 
+ static PyObject *
+-float___getformat___impl(PyTypeObject *type, const char *typestr);
++/* plan9: kencc rejects the identifier `typestr` in parameter position; rename
++ * the param (also in the definition in floatobject.c). */
++float___getformat___impl(PyTypeObject *type, const char *typestr_);
+ 
+ static PyObject *
+ float___getformat__(PyTypeObject *type, PyObject *arg)
+ {
+     PyObject *return_value = NULL;
+-    const char *typestr;
++    const char *typestr_;  /* plan9: kencc rejects the bare token `typestr` */
+ 
+     if (!PyUnicode_Check(arg)) {
+         _PyArg_BadArgument("__getformat__", "argument", "str", arg);
+         goto exit;
+     }
+     Py_ssize_t typestr_length;
+-    typestr = PyUnicode_AsUTF8AndSize(arg, &typestr_length);
+-    if (typestr == NULL) {
++    typestr_ = PyUnicode_AsUTF8AndSize(arg, &typestr_length);
++    if (typestr_ == NULL) {
+         goto exit;
+     }
+-    if (strlen(typestr) != (size_t)typestr_length) {
++    if (strlen(typestr_) != (size_t)typestr_length) {
+         PyErr_SetString(PyExc_ValueError, "embedded null character");
+         goto exit;
+     }
+-    return_value = float___getformat___impl(type, typestr);
++    return_value = float___getformat___impl(type, typestr_);
+ 
+ exit:
+     return return_value;
 --- a/Python/ast_unparse.c
 +++ b/Python/ast_unparse.c
 @@ -35,7 +35,7 @@

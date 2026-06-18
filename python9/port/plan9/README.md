@@ -103,23 +103,17 @@ object set the host build produced) via `pybatch.rc`:
 | 4 | 104 | 8 | + no-return macros (`while(1)`), undef mmap, static_assert |
 | 5 | 107 | 5 | + missing errnos, langinfo shim, last compound literal |
 | 6 | 108 | 4 | + undef realpath |
-| 7 | **110** | **2** | + stdin/stdout/stderr kencc-cpp `##` workaround (pystate, pylifecycle) |
+| 7 | 110 | 2 | + stdin/stdout/stderr kencc-cpp `##` workaround (pystate, pylifecycle) |
+| 8 | **112** | **0** | + parser.c array compound literals hoisted, floatobject `typestr` rename + C99 math shims (copysign/round/isfinite) |
 
-**Remaining 4 — the hard kencc incompatibilities (all in generated / deep-macro
-code).** These need a different approach than per-macro patching:
-
-1. **`_PyRuntimeState_INIT` / `_Py_ID`** (`pystate.c`, `pylifecycle.c`) — the
-   global-strings interning machinery builds struct member designators with
-   `._ ## NAME` (`pycore_runtime_init.h`, `pycore_global_strings.h`). kencc's
-   cpp rejects the paste (`Bad token produced by _ ## (`). Options: pre-expand
-   these two TUs with a more capable cpp on the host, or modify
-   `Tools/build/generate_global_objects.py` to emit kencc-friendly designators.
-2. **`Parser/parser.c`** — generated keyword tables use array compound literals
-   `(KeywordToken[]){{...}}` (kencc: "constructor must be a structure").
-   Option: post-process the generated `parser.c` to hoist the arrays to named
-   statics, or regenerate via `Tools/peg_generator`.
-3. **`floatobject.c.h`** — Argument Clinic output (`__getformat__`/`__setformat__`
-   typestr); narrow, likely a single construct to patch or regenerate.
+**All 112 core files compile.** (`Objects/`+`Python/`+`Parser/`, the object
+set the host build produced.) Last two cracked in pass 8:
+- `Parser/parser.c`: hoisted the generated `(KeywordToken[]){...}` array
+  compound literals to named statics (`_kw0`.. `_kw8`).
+- `floatobject.c`: kencc has a parser quirk rejecting the bare identifier
+  `typestr` in a declarator (param or local) -- renamed to `typestr_`; plus C99
+  math shims (`copysign`/`round` in plan9_compat.c, `isfinite` macro; APE has
+  `isnan`/`isinf`).
 
 Then: enumerate objects in the mkfile, build `Modules/` + static `Setup`, link a
 `python`, boot the REPL, and run `parity/run_suite.py` for the first score.

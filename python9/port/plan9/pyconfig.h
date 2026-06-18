@@ -78,6 +78,15 @@ typedef unsigned int wchar_t;
 extern int setenv(const char *name, const char *value, int overwrite);
 extern int unsetenv(const char *name);
 
+/* plan9: C99 math APE's <math.h> lacks. copysign/round are in plan9_compat.c.
+ * APE provides isnan + isinf; only isfinite is missing -- derive it (expands
+ * after <math.h>, so APE's isnan/isinf are in scope at the use site). */
+extern double copysign(double x, double y);
+extern double round(double x);
+#ifndef isfinite
+#define isfinite(x) (!isnan(x) && !isinf(x))
+#endif
+
 /* plan9: APE's sigaction has no SA_ONSTACK flag. 0 = default behaviour. */
 #ifndef SA_ONSTACK
 #define SA_ONSTACK 0
