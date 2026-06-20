@@ -748,21 +748,6 @@
      return PyComplex_FromCComplex(neg);
  }
  
---- a/Modules/cmathmodule.c
-+++ b/Modules/cmathmodule.c
-@@ -1200,7 +1200,11 @@
-         return -1;
-     }
- 
--    if ( (a.real == b.real) && (a.imag == b.imag) ) {
-+    /* plan9: kencc compiles `x == y` as true for NaN operands; exclude NaN so
-+       isclose(complex(nan), complex(nan)) is correctly not-close. */
-+    if ( (a.real == b.real) && (a.imag == b.imag)
-+         && !Py_IS_NAN(a.real) && !Py_IS_NAN(a.imag)
-+         && !Py_IS_NAN(b.real) && !Py_IS_NAN(b.imag) ) {
-         /* short circuit exact equality -- needed to catch two infinities of
-            the same sign. And perhaps speeds things up a bit sometimes.
-         */
 --- a/Modules/mathmodule.c
 +++ b/Modules/mathmodule.c
 @@ -790,6 +790,11 @@
@@ -882,6 +867,38 @@
 +       short-circuit would wrongly report isclose(nan, nan) as close. Exclude
 +       NaN explicitly (NaN is close to nothing, including itself). */
 +    if ( a == b && !Py_IS_NAN(a) && !Py_IS_NAN(b) ) {
+         /* short circuit exact equality -- needed to catch two infinities of
+            the same sign. And perhaps speeds things up a bit sometimes.
+         */
+--- a/Modules/cmathmodule.c
++++ b/Modules/cmathmodule.c
+@@ -433,11 +433,11 @@
+         */
+         h = hypot(z.real/2., z.imag/2.);  /* safe from overflow */
+         r.real = z.real/4./h/h;
+-        /* the two negations in the next line cancel each other out
+-           except when working with unsigned zeros: they're there to
+-           ensure that the branch cut has the correct continuity on
+-           systems that don't support signed zeros */
+-        r.imag = -copysign(Py_MATH_PI/2., -z.imag);
++        /* the two negations cancel except for signed zeros, ensuring correct
++           branch-cut continuity. plan9: -copysign(C, -z.imag) is exactly
++           copysign(C, z.imag), and avoids kencc's unary `-z.imag` which loses
++           the sign of zero (-(+0.0) == +0.0). */
++        r.imag = copysign(Py_MATH_PI/2., z.imag);
+         errno = 0;
+     } else if (z.real == 1. && ay < CM_SQRT_DBL_MIN) {
+         /* C99 standard says:  atanh(1+/-0.) should be inf +/- 0i */
+@@ -1200,7 +1200,11 @@
+         return -1;
+     }
+ 
+-    if ( (a.real == b.real) && (a.imag == b.imag) ) {
++    /* plan9: kencc compiles `x == y` as true for NaN operands; exclude NaN so
++       isclose(complex(nan), complex(nan)) is correctly not-close. */
++    if ( (a.real == b.real) && (a.imag == b.imag)
++         && !Py_IS_NAN(a.real) && !Py_IS_NAN(a.imag)
++         && !Py_IS_NAN(b.real) && !Py_IS_NAN(b.imag) ) {
          /* short circuit exact equality -- needed to catch two infinities of
             the same sign. And perhaps speeds things up a bit sometimes.
          */

@@ -4,11 +4,11 @@
   "machine": "amd64",
   "note": "per-module watchdog batch; module=missing means killed/crashed",
   "platform": "plan9",
-  "started_utc": "2026-06-21T02:30:16.254488Z",
+  "started_utc": "2026-06-21T02:44:10.773953Z",
   "testcase_counts": {
    "error": 20,
-   "fail": 31,
-   "pass": 6159,
+   "fail": 30,
+   "pass": 6160,
    "skip": 190
   },
   "version": "3.11.14"
@@ -2496,7 +2496,7 @@
   "?::test.test_cmath.CMathTests.testTanhSign": "pass",
   "?::test.test_cmath.CMathTests.test_abs": "pass",
   "?::test.test_cmath.CMathTests.test_abs_overflows": "pass",
-  "?::test.test_cmath.CMathTests.test_cmath_matches_math": "fail",
+  "?::test.test_cmath.CMathTests.test_cmath_matches_math": "pass",
   "?::test.test_cmath.CMathTests.test_constants": "pass",
   "?::test.test_cmath.CMathTests.test_infinity_and_nan_constants": "pass",
   "?::test.test_cmath.CMathTests.test_input_type": "pass",
