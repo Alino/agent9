@@ -133,8 +133,13 @@ def main():
     # deterministically on BOTH sides, which is exactly what we want.
     cmd = [py, "-m", "test",
            "--junit-xml", xml_path,
-           "-j", str(args.jobs),
            "--timeout", str(args.timeout)]
+    # Worker model: regrtest's -j spawns manager *threads* (run_workers). The
+    # 9front port runs on single-threaded pthread stubs, so any -j value raises
+    # "can't start new thread". Pass --jobs -1 there to omit -j and run
+    # sequentially in-process. jobs >= 0 keeps the normal -j (host: 0 = auto).
+    if args.jobs >= 0:
+        cmd += ["-j", str(args.jobs)]
     cmd += args.extra
     if args.tests:
         cmd += args.tests

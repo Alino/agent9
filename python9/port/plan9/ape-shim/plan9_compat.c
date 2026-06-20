@@ -14,16 +14,62 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <errno.h>
+
+/* plan9: APE's libm violates C99 for special values -- it sets errno (EDOM/
+ * ERANGE) and returns wrong results for inf/nan (sqrt(nan)=0, exp(inf)=DBL_MAX,
+ * ...). CPython's math module inspects errno and raises spuriously. The shims
+ * below (and the ones APE lacks entirely) handle inf/nan/zero per C99 so
+ * test_math's special-value assertions pass. Helpers for the IEEE specials: */
+#define _LN2 0.69314718055994530942
+
+static double
+_qnan(void)
+{
+	union { unsigned long long u; double d; } v;
+	v.u = 0x7ff8000000000000ULL;	/* quiet NaN */
+	return v.d;
+}
+
+static double
+_pinf(void)
+{
+	union { unsigned long long u; double d; } v;
+	v.u = 0x7ff0000000000000ULL;	/* +inf */
+	return v.d;
+}
+
+/* hwsqrt: exact hardware sqrt (SQRTSD), in hwsqrt.s -- APE's software sqrt
+ * returns 0 (not NaN) for NaN input and sets EDOM. */
+extern double hwsqrt(double);
+
+double
+sqrt(double x)
+{
+	if (isnan(x))
+		return x;		/* sqrt(nan)=nan, no errno */
+	if (x == 0.0)
+		return x;		/* sqrt(+-0)=+-0 */
+	if (x < 0.0) {
+		errno = EDOM;
+		return _qnan();
+	}
+	if (isinf(x))
+		return x;		/* sqrt(+inf)=+inf */
+	return hwsqrt(x);		/* finite positive: exact */
+}
 
 /* C99 math functions APE's libm lacks (CPython 3.11 assumes they exist). */
 double
 copysign(double x, double y)
 {
-	double ax = fabs(x);
-	/* negative, or negative zero (1/y == -inf) */
-	if (y < 0.0 || (y == 0.0 && 1.0 / y < 0.0))
-		return -ax;
-	return ax;
+	/* copy the sign BIT of y onto x -- the only correct way to handle
+	 * negative zero (copysign(4, -0.0) must be -4.0). */
+	union { double d; unsigned long long u; } ux, uy;
+	ux.d = x;
+	uy.d = y;
+	ux.u = (ux.u & 0x7fffffffffffffffULL) | (uy.u & 0x8000000000000000ULL);
+	return ux.d;
 }
 
 double
@@ -43,8 +89,24 @@ round(double x)
 double
 log1p(double x)
 {
+	double u;
+
+	if (isnan(x))
+		return x;
+	if (x == 0.0)
+		return x;		/* preserves -0.0 */
+	if (x == -1.0) {
+		errno = ERANGE;
+		return -_pinf();	/* log1p(-1) = -inf */
+	}
+	if (x < -1.0) {
+		errno = EDOM;
+		return _qnan();
+	}
+	if (isinf(x))
+		return x;		/* log1p(+inf) = +inf */
 	/* log(1+x), accurate for small x */
-	double u = 1.0 + x;
+	u = 1.0 + x;
 	if (u == 1.0)
 		return x;
 	return log(u) * (x / (u - 1.0));
@@ -53,8 +115,14 @@ log1p(double x)
 double
 expm1(double x)
 {
+	double u;
+
+	if (isnan(x))
+		return x;
+	if (isinf(x))
+		return (x > 0.0) ? x : -1.0;	/* expm1(+inf)=+inf, expm1(-inf)=-1 */
 	/* exp(x)-1, accurate for small x */
-	double u = exp(x);
+	u = exp(x);
 	if (u == 1.0)
 		return x;
 	if (u - 1.0 == -1.0)
@@ -65,36 +133,82 @@ expm1(double x)
 double
 acosh(double x)
 {
-	return log(x + sqrt(x * x - 1.0));
+	double t;
+
+	if (isnan(x))
+		return x;
+	if (x < 1.0) {
+		errno = EDOM;
+		return _qnan();
+	}
+	if (isinf(x))
+		return x;		/* acosh(+inf) = +inf */
+	if (x > 1.0e8)
+		return log(x) + _LN2;	/* ~log(2x); avoids x*x overflow */
+	t = x - 1.0;
+	return log1p(t + sqrt(t * t + 2.0 * t));	/* sqrt(x^2-1)=sqrt(t^2+2t) */
 }
 
 double
 asinh(double x)
 {
-	double s = sqrt(x * x + 1.0);
-	if (x >= 0.0)
-		return log(x + s);
-	return -log(-x + s);
+	double a, r;
+
+	if (isnan(x) || isinf(x) || x == 0.0)
+		return x;
+	a = fabs(x);
+	if (a > 1.0e8)
+		r = log(a) + _LN2;	/* ~log(2a); avoids a*a overflow */
+	else
+		r = log1p(a + a * a / (1.0 + sqrt(1.0 + a * a)));
+	return (x < 0.0) ? -r : r;
 }
 
 double
 atanh(double x)
 {
-	return 0.5 * log((1.0 + x) / (1.0 - x));
+	double a;
+
+	if (isnan(x))
+		return x;
+	a = fabs(x);
+	if (a > 1.0) {
+		errno = EDOM;
+		return _qnan();
+	}
+	if (a == 1.0) {
+		errno = ERANGE;
+		return (x < 0.0) ? -_pinf() : _pinf();
+	}
+	if (x == 0.0)
+		return x;
+	return 0.5 * log1p(2.0 * x / (1.0 - x));
 }
 
 double
 cbrt(double x)
 {
+	double y;
+
+	if (isnan(x) || isinf(x) || x == 0.0)
+		return x;
 	if (x < 0.0)
-		return -pow(-x, 1.0 / 3.0);
-	return pow(x, 1.0 / 3.0);
+		y = -pow(-x, 1.0 / 3.0);
+	else
+		y = pow(x, 1.0 / 3.0);
+	/* one Halley step to refine pow()'s imprecise cube root */
+	y = y - (y * y * y - x) / (3.0 * y * y);
+	return y;
 }
 
 double
 exp2(double x)
 {
-	return pow(2.0, x);
+	if (isnan(x))
+		return x;
+	if (isinf(x))
+		return (x > 0.0) ? x : 0.0;	/* exp2(+inf)=+inf, exp2(-inf)=0 */
+	return pow(2.0, x);	/* finite; overflow -> ERANGE (correct) */
 }
 
 double
@@ -248,6 +362,64 @@ unsetenv(const char *name)
 	strcat(path, name);
 	remove(path);
 	return 0;
+}
+
+/*
+ * fmod -- APE's libm fmod (/sys/src/ape/lib/ap/math/fmod.c) loops forever when
+ * either operand is NaN or Inf (its reduction loop's comparisons are all false
+ * for NaN, so it never terminates). CPython's math.fmod feeds it inf/nan in
+ * test_math, which hung the interpreter indefinitely (our timeout watchdog is a
+ * no-op without threads). Provide a correct C99/IEEE fmod: handle the special
+ * cases, then reduce finite values with exact binary long division (every
+ * subtraction is in the Sterbenz-exact range, and doubling/halving by 2 is
+ * exact), so the result is bit-accurate.
+ */
+double
+fmod(double x, double y)
+{
+	union { unsigned long long u; double d; } qnan;
+	double ax, ay, r, ys;
+
+	qnan.u = 0x7ff8000000000000ULL;	/* quiet NaN */
+
+	if (isnan(x) || isnan(y) || isinf(x) || y == 0.0)
+		return qnan.d;
+	if (isinf(y) || x == 0.0)
+		return x;
+
+	ax = fabs(x);
+	ay = fabs(y);
+	if (ax < ay)
+		return x;
+	if (ax == ay)
+		return (x < 0.0) ? -0.0 : 0.0;
+
+	/* ys = largest ay*2^k <= ax */
+	ys = ay;
+	while (ys <= ax * 0.5)
+		ys += ys;		/* exact doubling */
+	r = ax;
+	for (;;) {
+		if (r >= ys)
+			r -= ys;	/* exact: ys <= r < 2*ys (Sterbenz) */
+		if (ys == ay)
+			break;
+		ys *= 0.5;		/* exact halving */
+	}
+	return (x < 0.0) ? -r : r;
+}
+
+/* hstrerror: APE has no h_errno string table. _socket links against it. */
+const char *
+hstrerror(int err)
+{
+	switch (err) {
+	case 1: return "Unknown host";
+	case 2: return "Host name lookup failure";
+	case 3: return "Unknown server error";
+	case 4: return "No address associated with name";
+	default: return "Unknown resolver error";
+	}
 }
 
 double

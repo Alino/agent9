@@ -52,6 +52,8 @@ extern PyObject* PyInit__queue(void);
 extern PyObject* PyInit_unicodedata(void);
 extern PyObject* PyInit_select(void);
 extern PyObject* PyInit__posixsubprocess(void);
+extern PyObject* PyInit_pyexpat(void);
+extern PyObject* PyInit__socket(void);
 
 extern PyObject* PyMarshal_Init(void);
 extern PyObject* PyInit__imp(void);
@@ -106,6 +108,8 @@ struct _inittab _PyImport_Inittab[] = {
     {"unicodedata", PyInit_unicodedata},
     {"select", PyInit_select},
     {"_posixsubprocess", PyInit__posixsubprocess},
+    {"pyexpat", PyInit_pyexpat},
+    {"_socket", PyInit__socket},
 
     /* This module lives in marshal.c */
     {"marshal", PyMarshal_Init},

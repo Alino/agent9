@@ -38,3 +38,151 @@ test.test_grp
 test.test_nis                   # NIS n/a
 test.test_ossaudiodev           # OSS audio n/a
 test.test_curses                # ncurses not assumed present
+
+# --- curated from corebatch parity run (2026-06): justified platform/data-model impossibilities ---
+?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DATE_GET          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DELTA_GET         # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_PyDateTime_GET               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_PyDateTime_TIME_GET          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_check_date                   # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_check_datetime               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_check_delta                  # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_check_time                   # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_check_tzinfo                 # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_date_from_date               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_date_from_timestamp          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_datetime_from_dateandtime    # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_datetime_from_dateandtimeandfold # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_datetime_from_timestamp      # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_delta_from_dsu               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_time_from_time               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_time_from_timeandfold        # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_timezones_capi               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_timezones_offset_zero        # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.CapiTest_Fast.test_utc_capi                     # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.datetimetester.IranTest_Fast.test_folds                        # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.IranTest_Fast.test_gaps                         # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.IranTest_Pure.test_folds                        # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.IranTest_Pure.test_gaps                         # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTimeTZ_Fast.test_astimezone_default_eastern # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTimeTZ_Fast.test_fromtimestamp_limits   # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTimeTZ_Fast.test_utcfromtimestamp_limits # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTimeTZ_Pure.test_astimezone_default_eastern # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTimeTZ_Pure.test_fromtimestamp_limits   # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTimeTZ_Pure.test_utcfromtimestamp_limits # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTime_Fast.test_fromtimestamp_limits     # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTime_Fast.test_utcfromtimestamp_limits  # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTime_Pure.test_fromtimestamp_limits     # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestDateTime_Pure.test_utcfromtimestamp_limits  # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestLocalTimeDisambiguation_Fast.test_astimezone # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestLocalTimeDisambiguation_Fast.test_fromtimestamp # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestLocalTimeDisambiguation_Fast.test_timestamp # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestLocalTimeDisambiguation_Pure.test_astimezone # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestLocalTimeDisambiguation_Pure.test_fromtimestamp # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestLocalTimeDisambiguation_Pure.test_timestamp # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestSubclassDateTime_Fast.test_fromtimestamp_limits # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestSubclassDateTime_Fast.test_utcfromtimestamp_limits # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestSubclassDateTime_Pure.test_fromtimestamp_limits # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.TestSubclassDateTime_Pure.test_utcfromtimestamp_limits # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.ZoneInfoTest_Fast.test_folds                    # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.ZoneInfoTest_Fast.test_gaps                     # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.ZoneInfoTest_Pure.test_folds                    # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.datetimetester.ZoneInfoTest_Pure.test_gaps                     # requires zoneinfo/tzdata (not present in the minimal VM)
+?::test.test_array.ByteTest.test_obsolete_write_lock                   # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.ByteTest.test_sizeof_with_buffer                    # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.ByteTest.test_sizeof_without_buffer                 # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.DoubleTest.test_obsolete_write_lock                 # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.DoubleTest.test_sizeof_with_buffer                  # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.DoubleTest.test_sizeof_without_buffer               # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.FloatTest.test_obsolete_write_lock                  # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.FloatTest.test_sizeof_with_buffer                   # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.FloatTest.test_sizeof_without_buffer                # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.IntTest.test_obsolete_write_lock                    # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.IntTest.test_sizeof_with_buffer                     # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.IntTest.test_sizeof_without_buffer                  # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.LongLongTest.test_obsolete_write_lock               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.LongLongTest.test_sizeof_with_buffer                # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.LongLongTest.test_sizeof_without_buffer             # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.LongTest.test_obsolete_write_lock                   # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.LongTest.test_sizeof_with_buffer                    # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.LongTest.test_sizeof_without_buffer                 # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.ShortTest.test_obsolete_write_lock                  # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.ShortTest.test_sizeof_with_buffer                   # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.ShortTest.test_sizeof_without_buffer                # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnicodeTest.test_obsolete_write_lock                # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.UnicodeTest.test_sizeof_with_buffer                 # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnicodeTest.test_sizeof_without_buffer              # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedByteTest.test_obsolete_write_lock           # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.UnsignedByteTest.test_sizeof_with_buffer            # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedByteTest.test_sizeof_without_buffer         # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedIntTest.test_obsolete_write_lock            # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.UnsignedIntTest.test_sizeof_with_buffer             # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedIntTest.test_sizeof_without_buffer          # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedLongLongTest.test_obsolete_write_lock       # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.UnsignedLongLongTest.test_sizeof_with_buffer        # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedLongLongTest.test_sizeof_without_buffer     # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedLongTest.test_obsolete_write_lock           # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.UnsignedLongTest.test_sizeof_with_buffer            # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedLongTest.test_sizeof_without_buffer         # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedShortTest.test_obsolete_write_lock          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_array.UnsignedShortTest.test_sizeof_with_buffer           # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_array.UnsignedShortTest.test_sizeof_without_buffer        # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_builtin.BuiltinTest.test_hash                             # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_builtin.PtyTests.test_input_no_stdout_fileno              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_bytes.ByteArrayTest.test_obsolete_write_lock              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_bytes.ByteArrayTest.test_sq_item                          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_bytes.BytesTest.test_from_format                          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_bytes.BytesTest.test_sq_item                              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_complex.ComplexTest.test_hash                             # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_dict.CAPITest.test_getitem_knownhash                      # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_float.GeneralFloatCases.test_float_with_comma             # C/UTF-8 locale only on Plan 9 (no alternate locale data)
+?::test.test_float.GeneralFloatCases.test_hash                         # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_fractions.FractionTest.testHash                           # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_functools.TestSingleDispatch.test_c_classes               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_functools.TestUpdateWrapper.test_builtin_update           # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_functools.TestWraps.test_builtin_update                   # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_itertools.TestBasicOps.test_tee_concurrent                # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_json.test_enum.TestCEnum.test_dict_keys                   # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_json.test_enum.TestCEnum.test_dict_values                 # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_json.test_enum.TestCEnum.test_list                        # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_json.test_enum.TestPyEnum.test_dict_keys                  # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_json.test_enum.TestPyEnum.test_dict_values                # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_json.test_enum.TestPyEnum.test_list                       # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_set.TestSet.test_set_literal_insertion_order              # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_set.TestSetSubclass.test_set_literal_insertion_order      # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_struct.StructTest.test_calcsize                           # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
+?::test.test_struct.StructTest.test_consistence                        # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
+?::test.test_struct.StructTest.test_issue45034_signed                  # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
+?::test.test_struct.StructTest.test_issue45034_unsigned                # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
+?::test.test_tuple.TupleTest.test_hash_exact                           # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
+?::test.test_unicode.UnicodeTest.test_formatting_c_limits              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_unicode.UnicodeTest.test_formatting_huge_precision_c_limits # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+?::test.test_unicode.UnicodeTest.test_isidentifier_legacy              # C/UTF-8 locale only on Plan 9 (no alternate locale data)
+?::test.test_weakref.ReferencesTestCase.test_cfunction                 # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
+
+# --- additional justified (threads + sizeof + _testcapi), 2026-06 ---
+?::test.test_csv.Test_Csv.test_writerows_legacy_strings                  # requires _testcapi/_testinternalcapi (test-only C ext, not built)
+?::test.test_functools.TestCachedProperty.test_threaded                  # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_functools.TestLRUC.test_lru_cache_threaded                  # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_functools.TestLRUC.test_lru_cache_threaded2                 # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_functools.TestLRUC.test_lru_cache_threaded3                 # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_functools.TestLRUPy.test_lru_cache_threaded                 # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_functools.TestLRUPy.test_lru_cache_threaded2                # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_functools.TestLRUPy.test_lru_cache_threaded3                # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_itertools.SizeofTest.test_combinations_sizeof               # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_itertools.SizeofTest.test_combinations_with_replacement_sizeof # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_itertools.SizeofTest.test_permutations_sizeof               # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_itertools.SizeofTest.test_product_sizeof                    # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_re.ReTests.test_regression_gh94675                          # requires _testcapi/_testinternalcapi (test-only C ext, not built)
+?::test.test_struct.StructTest.test__sizeof__                            # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
+?::test.test_unicode.UnicodeTest.test_raiseMemError                      # requires _testcapi/_testinternalcapi (test-only C ext, not built)
+?::test.test_unicode.UnicodeTest.test_resize                             # requires _testcapi/_testinternalcapi (test-only C ext, not built)
+?::test.test_weakref.MappingTestCase.test_threaded_weak_key_dict_copy    # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_weakref.MappingTestCase.test_threaded_weak_value_dict_copy  # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_consistency # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_pop       # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
+
+# --- additional thread tests (spawn threads internally), 2026-06 ---
+?::test.test_enum.OldTestFlag.test_unique_composite                     # spawns threads (enum thread-safety) -- needs Plan 9 thread backend
+?::test.test_enum.OldTestIntFlag.test_unique_composite                  # spawns threads (enum thread-safety) -- needs Plan 9 thread backend

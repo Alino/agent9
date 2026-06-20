@@ -110,9 +110,11 @@ See also [[testing-harness]] for listen1 pitfalls. Hard-won here:
 
 ## Status / next
 
-**WORKING: CPython 3.11.14 runs on 9front.** `/tmp/python` runs real Python
-programs and imports the pure-Python stdlib (json, os, ...). 147 sources
-compile + link into a 15 MB binary; stdlib at `/sys/lib/python/lib/python3.11`.
+**WORKING: CPython 3.11.14 runs on 9front, and the regression harness runs on
+it.** `/tmp/python` runs real Python programs, the pure-Python stdlib, 24
+static C extensions, `subprocess`, and `python -m test`. ~150 sources +
+bundled Expat compile + link into an ~19 MB binary; stdlib at
+`/sys/lib/python/lib/python3.11`.
 
 The bug cascade, all fixed (see `python9/port/plan9/README.md`):
 1. kencc has no compound literals / GNU `,##__VA_ARGS__` / computed-gotos;
@@ -125,10 +127,130 @@ The bug cascade, all fixed (see `python9/port/plan9/README.md`):
    4-byte wchar_t before any system header, else wcslen truncates strings.
 5. Locale decode used APE's 2-byte mbstowcs; `_Py_FORCE_UTF8_LOCALE` routes to
    CPython's own UTF-8 decoder (Plan 9 is UTF-8).
+6. **Timsort GP fault** (`import signal` -> enum sort): `binarysort()` stored
+   `lo.values - lo.keys` (a difference between two *independent* allocations:
+   stack keys array vs heap items array) in a 4-byte `Py_ssize_t`, truncating a
+   47-bit pointer delta to garbage. Rewrote to index both arrays by the same
+   small in-array index. This is the canonical hazard of keeping Py_ssize_t at
+   4 bytes while pointers are 8 -- watch for `ptrA - ptrB` stored in Py_ssize_t
+   elsewhere as more of the suite runs.
 
-[ ] Build the C extension modules the regression suite needs (math, _datetime,
-    _struct, array, ...) -- math needs C99 math fallbacks (log1p/erf/lgamma).
-[ ] Add them to the static `Modules/Setup`/config.c, relink.
-[ ] Run `parity/run_suite.py` in the VM -> first parity score vs the 38,259
-    baseline.
-[ ] Real Plan 9 thread backend (currently single-threaded pthread stubs).
+Then, to unblock the regression harness:
+7. `sys.platform` was "unknown" and `sys.abiflags` was missing (configure
+   normally sets them) -> `sysconfig._get_sysconfigdata_name()` crashed. Fixed
+   with `PLATFORM "plan9"` + `ABIFLAGS ""` in pyconfig.h and a hand-authored
+   `Lib/_sysconfigdata__plan9_.py` (`build_time_vars`).
+8. `faulthandler` was a boot-only stub with no Python API; regrtest calls
+   `faulthandler.enable()`. Added no-op `enable/disable/dump_traceback*/
+   register/...` methods (a Plan 9 fault -> Broken proc, inspect with acid).
+9. `--junit-xml` needs `pyexpat`; built it + bundled Expat (xmlparse/xmltok/
+   xmlrole). Expat's `PREFIX` type collided with pyconfig's install-path
+   `PREFIX` macro -> `#undef PREFIX` in expat_config.h.
+10. regrtest `-j` spawns manager **threads** (`RunWorkers`), which the
+    single-threaded pthread stubs reject ("can't start new thread"). The port
+    must run **sequentially in-process** (no `-j`); `run_suite.py --jobs -1`
+    omits `-j`. Trade-off: no per-test process isolation, so a hard crash
+    aborts the batch -- curate toward expected-pass modules until threads land.
+
+**Parity harness is operational on the port.** `run_suite.py` runs under the
+ported interpreter, spawns regrtest via `subprocess` (APE fork/exec works),
+emits junit XML, and produces a v1 manifest with per-testcase IDs identical to
+the host reference.
+
+**Parity result (curated 42-module core batch, 2026-06):**
+- **99.04%** (6056/6115) over *applicable* testcases (ref-passing, not on the
+  justified skip-list) across the **39 modules that run to completion**.
+- 142 justified skips, all with one-line reasons in `skiplist.txt`: 32-bit
+  `Py_hash_t` (hash values/order differ), 4-byte-`Py_ssize_t` `sizeof`/native
+  struct sizes, `_testcapi`/`_testinternalcapi`-only tests, tz-data, thread
+  tests, locale. 59 regressions remain *visible* (not hidden): **47 are the
+  math family** (test_math/cmath/float/complex/statistics/fractions) -- now
+  almost entirely **APE libm transcendental *precision*** (sin/cos/tan/exp/pow
+  ULP error), the remaining frontier; 12 a narrow non-math tail (dtoa rounding,
+  breakpoint/pdb env edge, struct half-float, top-level-await flag).
+- Reports: `parity/reports/parity-scored.json` (work queue),
+  `parity/manifests/9front-port.json` (port manifest).
+
+Root-cause bugs found+fixed via the parity loop (all in the patch set / shims):
+- **kencc float comparison codegen is wrong for NaN** -- `nan == nan` compiled
+  to true, `nan != nan` to false, `nan < x` to true (IEEE-unordered case not
+  handled). Corrupted float equality interpreter-wide (dicts/sets/`in`/sort/
+  json/array). Guarded `float_richcompare` (and the `_json` float encoder).
+- **APE `printf` reads 8 bytes for the `%z` length modifier**, but Py_ssize_t
+  is 4 bytes -> `%zd`/`%zu` print garbage. Broke `PyUnicode_FromFormat`
+  (reprs/error messages) and `_pickle`'s protocol-0 memo (emitted garbage memo
+  indices -> `OverflowError` unpickling set subclasses). Fixed to `%l` + cast.
+- **kencc compiles unary `-x` as `0.0-x`**, losing negative zero -> `float_neg`
+  flips the sign bit. `HAVE_COPYSIGN`/`HAVE_ROUND` route to our shims.
+- **`_socket` built** (~520 tests that failed on `import socket`).
+- **APE libm violates C99 special-value/errno rules** -> exact `sqrt` (SQRTSD
+  asm) + special-value-correct fmod/log1p/expm1/acosh/asinh/atanh/cbrt/exp2;
+  `m_exp`/`m_cosh`/`m_sinh`/`m_acos` wrappers in mathmodule.c guard inf/nan
+  inputs and drop APE's spurious errno (delegating finite values to APE).
+- **APE `log2` is wrong for subnormals** (`log2(1e-308)` off by 52) -> undef
+  `HAVE_LOG2` so CPython's frexp+log fallback is used.
+- `WITH_DOC_STRINGS` added to the hand-authored sysconfigdata (docstring tests
+  were wrongly skipped); `lib-dynload` dir created (silences the path warning).
+
+**Deployment note:** the parity batch sets `PYTHONPYCACHEPREFIX=/tmp/pyc`. The
+stdlib install at `/sys/lib/python` is not writable by `glenda`, so its in-tree
+`__pycache__` is stale (it predates the `float_neg` fix and marshaled `-0.0`
+constants as `+0.0`). A clean deploy must either install the `.pyc` *after* the
+final interpreter build, or run with a writable `PYTHONPYCACHEPREFIX` so Python
+recompiles fresh -- otherwise signed-zero literals are wrong.
+
+## The libm-precision frontier (the remaining ~47 math-family regressions)
+
+`port/plan9/ape-shim/plan9_libm.c` vendors correctly-structured fdlibm
+`exp`/`cosh`/`sinh`/`tanh` (compiled + linked like the other shims; they
+override APE's at link). They are measurably more accurate than APE's (e.g.
+`exp(709)`: APE ~40 ulp off, ours ~2) -- **but integrating them is net-neutral
+on the parity score.** The remaining `test_math`/`test_cmath`/`test_float`/
+`test_complex`/`test_statistics`/`test_fractions` failures do **not** flip,
+because:
+1. `test_math`'s `test_testfile`/`test_mtestfile` compare against reference
+   values at <= ~few-ulp tolerance, and APE's *and* fdlibm's results are both
+   ~1 ulp -- you need a **correctly-rounded (<= 0.5 ulp)** libm to pass, not
+   merely <1 ulp. That is a research-grade implementation (CORE-MATH-style),
+   not a straight fdlibm port.
+2. Some failures are not libm at all: `test_fsum` (CPython's own exact-sum
+   algorithm), `test_complex` `(-4+infj)**-n` (IEEE complex-with-infinity edge
+   cases), `test_dist`/`testHypot` accumulation.
+So the honest bound: replacing APE libm one function at a time at fdlibm
+accuracy will not move parity; closing this frontier needs a correctly-rounded
+math library (large) -- or these stay as documented FP-accuracy limits.
+`log` is written but its subnormal path NaNs under kencc (`#if 0`'d); APE's
+log is kept. `sin`/`cos`/`tan` (range reduction) and `pow` are not yet vendored.
+
+Fixes that got here (this push), all in the patch set / shims:
+- **`_socket` built** -- unblocked test_functools/builtin/random/hashlib (~520
+  tests) that failed purely on `import socket` via `test.support`. Needed
+  disabling inherited Apple/BSD config (`net/if.h`, `sys_domain.h`,
+  `kern_control.h`, `SOCKADDR_SA_LEN`) + an `hstrerror` shim.
+- **APE `fmod` infinite-loops on NaN/Inf** -> correct fmod (binary long
+  division for finite values) in plan9_compat.c.
+- **APE libm violates C99 special-value/errno rules** (sqrt(nan)=0+EDOM,
+  exp(inf)=DBL_MAX+ERANGE): exact `sqrt` via SQRTSD asm (`hwsqrt.s`), and
+  special-value-correct shims for log1p/expm1/acosh/asinh/atanh/cbrt/exp2.
+- **kencc compiles unary `-x` as `0.0-x`, losing negative zero**; patched
+  `float_neg` to flip the sign bit. `HAVE_COPYSIGN`/`HAVE_ROUND` make CPython
+  use our shims instead of its atan2-based `_Py_copysign` (also broken on APE).
+- Created `lib-dynload` so the "Could not find platform dependent libraries"
+  warning stops polluting subprocess output (fixed test_json.test_tool).
+
+Remaining 116 regressions (the work queue): ~55 are the math family
+(test_math/cmath/float/complex/statistics/fractions) -- residual **APE libm
+precision** on sin/cos/tan/exp/pow/sinh/cosh, a genuine platform limit short of
+replacing libm. The rest are a long tail: a real `_pickle`/`ssize_t` framing
+bug (`OverflowError` pickling set subclasses), enum Flag composite, functools/
+contextlib edge cases. `test_queue` busy-waits unkillably (needs the thread
+backend) and is skip-listed.
+
+[x] C extension modules the suite needs (math/_datetime/_struct/array/_json/
+    _pickle/unicodedata/pyexpat/... -- 24 statically linked in config.c).
+[x] Harness runs end-to-end on the port; junit + subprocess + sysconfig work.
+[ ] Score the curated batch vs a module-filtered slice of `host-reference.json`
+    (full 38,259 denominator needs the whole suite, impractical on TCG speed).
+[ ] Widen coverage batch-by-batch; triage regressions into `skiplist.txt`.
+[ ] Real Plan 9 thread backend (rfork/proccreate) -> unblocks regrtest `-j`
+    worker isolation and actual threading tests.

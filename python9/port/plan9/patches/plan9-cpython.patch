@@ -504,3 +504,258 @@
  #ifdef HAVE_DIRENT_D_TYPE
                                               , direntp->d_type
  #endif
+--- a/Objects/listobject.c
++++ b/Objects/listobject.c
+@@ -1286,13 +1286,18 @@
+             *p = *(p-1);
+         *l = pivot;
+         if (lo.values != NULL) {
+-            Py_ssize_t offset = lo.values - lo.keys;
+-            p = start + offset;
+-            pivot = *p;
+-            l += offset;
+-            for (p = start + offset; p > l; --p)
+-                *p = *(p-1);
+-            *l = pivot;
++            /* plan9: keys and values are independent allocations, so the
++               original code's `offset = lo.values - lo.keys` overflows a
++               4-byte Py_ssize_t (Plan 9 amd64: ptr=8, size_t/Py_ssize_t=4).
++               Index both arrays by the same in-array index instead, which is
++               small and always fits. */
++            Py_ssize_t istart = start - lo.keys;
++            Py_ssize_t il = l - lo.keys;
++            Py_ssize_t k2;
++            pivot = lo.values[istart];
++            for (k2 = istart; k2 > il; --k2)
++                lo.values[k2] = lo.values[k2 - 1];
++            lo.values[il] = pivot;
+         }
+     }
+     return 0;
+--- a/Modules/expat/expat_config.h
++++ b/Modules/expat/expat_config.h
+@@ -6,6 +6,12 @@
+ #define EXPAT_CONFIG_H
+ 
+ #include <pyconfig.h>
++/* plan9: our hand-authored pyconfig.h defines PREFIX as the install path
++   ("/sys/lib/python") for getpath.c. Expat uses PREFIX both as a struct
++   typedef and as a function-like namespacing macro, so the object-like
++   macro collides (syntax error in xmlparse.c, redefinition in xmltok.c).
++   Expat does not want CPython's install prefix -- drop it here. */
++#undef PREFIX
+ #ifdef WORDS_BIGENDIAN
+ #define BYTEORDER 4321
+ #else
+--- a/Objects/floatobject.c
++++ b/Objects/floatobject.c
+@@ -870,7 +870,14 @@
+ static PyObject *
+ float_neg(PyFloatObject *v)
+ {
+-    return PyFloat_FromDouble(-v->ob_fval);
++    /* plan9: kencc compiles unary `-x` on a double as `0.0 - x`, which yields
++       +0.0 for x == 0.0 (IEEE 0-0=+0) -- losing negative zero. Negate by
++       flipping the sign bit so -(0.0) is a true -0.0 (fixes copysign, repr,
++       and other neg-zero semantics). */
++    union { double d; unsigned long long u; } v2;
++    v2.d = v->ob_fval;
++    v2.u ^= 0x8000000000000000ULL;
++    return PyFloat_FromDouble(v2.d);
+ }
+ 
+ static PyObject *
+--- a/Objects/unicodeobject.c
++++ b/Objects/unicodeobject.c
+@@ -2901,7 +2901,12 @@
+                 len = sprintf(buffer, "%llu", va_arg(*vargs, unsigned long long));
+             }
+             else if (size_tflag) {
+-                len = sprintf(buffer, "%zu", va_arg(*vargs, size_t));
++                /* plan9: APE's printf reads 8 bytes for the `z` length
++                   modifier (native usize), but Py_ssize_t/size_t are 4 bytes
++                   here, so "%zu" prints garbage. size_t == unsigned long == 4
++                   bytes, so format via "%lu" with a matching cast. */
++                len = sprintf(buffer, "%lu",
++                              (unsigned long)va_arg(*vargs, size_t));
+             }
+             else {
+                 len = sprintf(buffer, "%u", va_arg(*vargs, unsigned int));
+@@ -2918,7 +2923,10 @@
+                 len = sprintf(buffer, "%lli", va_arg(*vargs, long long));
+             }
+             else if (size_tflag) {
+-                len = sprintf(buffer, "%zi", va_arg(*vargs, Py_ssize_t));
++                /* plan9: see the "%zu" note above -- Py_ssize_t == long == 4
++                   bytes, so format via "%li" with a matching cast. */
++                len = sprintf(buffer, "%li",
++                              (long)va_arg(*vargs, Py_ssize_t));
+             }
+             else {
+                 len = sprintf(buffer, "%i", va_arg(*vargs, int));
+--- a/Objects/floatobject.c
++++ b/Objects/floatobject.c
+@@ -568,7 +568,15 @@
+         goto Unimplemented;
+ 
+  Compare:
+-    switch (op) {
++    /* plan9: kencc's float comparison codegen mishandles IEEE unordered (NaN)
++       operands -- `nan == nan` compiles to true, `nan != nan` to false, and
++       `nan < x` to true. Per IEEE-754, every comparison involving a NaN is
++       false except !=. Handle that explicitly so float (and thus dict/set/
++       sort) semantics are correct. */
++    if (Py_IS_NAN(i) || Py_IS_NAN(j)) {
++        r = (op == Py_NE);
++    }
++    else switch (op) {
+     case Py_EQ:
+         r = i == j;
+         break;
+--- a/Modules/_json.c
++++ b/Modules/_json.c
+@@ -1355,14 +1355,17 @@
+                     );
+             return NULL;
+         }
+-        if (i > 0) {
++        /* plan9: kencc's float comparison codegen is wrong for the IEEE
++           unordered (NaN) case -- `nan < 0` evaluates true -- so test NaN
++           explicitly first instead of relying on `i < 0` to exclude it. */
++        if (Py_IS_NAN(i)) {
++            return PyUnicode_FromString("NaN");
++        }
++        else if (i > 0) {
+             return PyUnicode_FromString("Infinity");
+-        }
+-        else if (i < 0) {
+-            return PyUnicode_FromString("-Infinity");
+         }
+         else {
+-            return PyUnicode_FromString("NaN");
++            return PyUnicode_FromString("-Infinity");
+         }
+     }
+     return PyFloat_Type.tp_repr(obj);
+--- a/Modules/_pickle.c
++++ b/Modules/_pickle.c
+@@ -1746,8 +1746,11 @@
+ 
+     if (!self->bin) {
+         pdata[0] = GET;
++        /* plan9: APE's *printf reads 8 bytes for the `z` length modifier but
++           Py_ssize_t is 4 bytes here, so "%zd" emits a garbage memo index in
++           protocol-0 (text) pickles. Py_ssize_t == long == 4 bytes -> "%ld". */
+         PyOS_snprintf(pdata + 1, sizeof(pdata) - 1,
+-                      "%zd\n", *value);
++                      "%ld\n", (long)*value);
+         len = strlen(pdata);
+     }
+     else {
+@@ -1803,8 +1806,9 @@
+     }
+     else if (!self->bin) {
+         pdata[0] = PUT;
++        /* plan9: see GET note above -- "%zd" is broken under APE printf. */
+         PyOS_snprintf(pdata + 1, sizeof(pdata) - 1,
+-                      "%zd\n", idx);
++                      "%ld\n", (long)idx);
+         len = strlen(pdata);
+     }
+     else {
+--- a/Modules/mathmodule.c
++++ b/Modules/mathmodule.c
+@@ -1151,8 +1151,57 @@
+         return NULL;
+     else
+         return PyFloat_FromDouble(r);
++}
++
++/* plan9: APE's exp/sinh/cosh return DBL_MAX and set errno=ERANGE for an
++   *infinite* argument instead of the C99 result, so math_1 wrongly raises
++   OverflowError; and acos sets a spurious EDOM at the +-1 boundary. Guard the
++   special inputs here and delegate only finite/valid arguments to APE (correct
++   for those, modulo precision). A genuine finite overflow (e.g. cosh(710))
++   still sets ERANGE via APE and correctly raises OverflowError. */
++static double
++m_exp(double x)
++{
++    if (Py_IS_NAN(x))
++        return x;
++    if (Py_IS_INFINITY(x))
++        return (x > 0.0) ? x : 0.0;     /* exp(+inf)=+inf, exp(-inf)=0 */
++    return exp(x);
+ }
+ 
++static double
++m_cosh(double x)
++{
++    if (Py_IS_NAN(x))
++        return x;
++    if (Py_IS_INFINITY(x))
++        return Py_HUGE_VAL;             /* cosh(+-inf)=+inf */
++    return cosh(x);
++}
++
++static double
++m_sinh(double x)
++{
++    if (Py_IS_NAN(x) || Py_IS_INFINITY(x))
++        return x;                       /* sinh(nan)=nan, sinh(+-inf)=+-inf */
++    return sinh(x);
++}
++
++static double
++m_acos(double x)
++{
++    double r;
++    if (Py_IS_NAN(x))
++        return x;
++    if (x < -1.0 || x > 1.0) {
++        errno = EDOM;
++        return Py_NAN;                  /* genuine domain error */
++    }
++    r = acos(x);
++    errno = 0;                          /* drop APE's spurious boundary EDOM */
++    return r;
++}
++
+ #define FUNC1(funcname, func, can_overflow, docstring)                  \
+     static PyObject * math_##funcname(PyObject *self, PyObject *args) { \
+         return math_1(args, func, can_overflow);                            \
+@@ -1171,7 +1220,7 @@
+     }\
+     PyDoc_STRVAR(math_##funcname##_doc, docstring);
+ 
+-FUNC1(acos, acos, 0,
++FUNC1(acos, m_acos, 0,
+       "acos($module, x, /)\n--\n\n"
+       "Return the arc cosine (measured in radians) of x.\n\n"
+       "The result is between 0 and pi.")
+@@ -1242,7 +1291,7 @@
+ FUNC1(cos, cos, 0,
+       "cos($module, x, /)\n--\n\n"
+       "Return the cosine of x (measured in radians).")
+-FUNC1(cosh, cosh, 1,
++FUNC1(cosh, m_cosh, 1,
+       "cosh($module, x, /)\n--\n\n"
+       "Return the hyperbolic cosine of x.")
+ FUNC1A(erf, m_erf,
+@@ -1251,7 +1300,7 @@
+ FUNC1A(erfc, m_erfc,
+        "erfc($module, x, /)\n--\n\n"
+        "Complementary error function at x.")
+-FUNC1(exp, exp, 1,
++FUNC1(exp, m_exp, 1,
+       "exp($module, x, /)\n--\n\n"
+       "Return e raised to the power of x.")
+ FUNC1(exp2, exp2, 1,
+@@ -1324,7 +1373,7 @@
+ FUNC1(sin, sin, 0,
+       "sin($module, x, /)\n--\n\n"
+       "Return the sine of x (measured in radians).")
+-FUNC1(sinh, sinh, 1,
++FUNC1(sinh, m_sinh, 1,
+       "sinh($module, x, /)\n--\n\n"
+       "Return the hyperbolic sine of x.")
+ FUNC1(sqrt, sqrt, 0,

@@ -1,0 +1,4 @@
+TEXT	hwsqrt(SB), $0
+	MOVSD	x+0(FP), X0
+	SQRTSD	X0, X0
+	RET

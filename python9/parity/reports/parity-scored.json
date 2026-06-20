@@ -1,0 +1,388 @@
+{
+ "applicable": 6115,
+ "justified_skips": [
+  "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DATE_GET",
+  "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DELTA_GET",
+  "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_GET",
+  "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_TIME_GET",
+  "?::test.datetimetester.CapiTest_Fast.test_check_date",
+  "?::test.datetimetester.CapiTest_Fast.test_check_datetime",
+  "?::test.datetimetester.CapiTest_Fast.test_check_delta",
+  "?::test.datetimetester.CapiTest_Fast.test_check_time",
+  "?::test.datetimetester.CapiTest_Fast.test_check_tzinfo",
+  "?::test.datetimetester.CapiTest_Fast.test_date_from_date",
+  "?::test.datetimetester.CapiTest_Fast.test_date_from_timestamp",
+  "?::test.datetimetester.CapiTest_Fast.test_datetime_from_dateandtime",
+  "?::test.datetimetester.CapiTest_Fast.test_datetime_from_dateandtimeandfold",
+  "?::test.datetimetester.CapiTest_Fast.test_datetime_from_timestamp",
+  "?::test.datetimetester.CapiTest_Fast.test_delta_from_dsu",
+  "?::test.datetimetester.CapiTest_Fast.test_time_from_time",
+  "?::test.datetimetester.CapiTest_Fast.test_time_from_timeandfold",
+  "?::test.datetimetester.CapiTest_Fast.test_timezones_capi",
+  "?::test.datetimetester.CapiTest_Fast.test_timezones_offset_zero",
+  "?::test.datetimetester.CapiTest_Fast.test_utc_capi",
+  "?::test.datetimetester.IranTest_Fast.test_folds",
+  "?::test.datetimetester.IranTest_Fast.test_gaps",
+  "?::test.datetimetester.IranTest_Pure.test_folds",
+  "?::test.datetimetester.IranTest_Pure.test_gaps",
+  "?::test.datetimetester.TestDateTimeTZ_Fast.test_astimezone_default_eastern",
+  "?::test.datetimetester.TestDateTimeTZ_Fast.test_fromtimestamp_limits",
+  "?::test.datetimetester.TestDateTimeTZ_Fast.test_utcfromtimestamp_limits",
+  "?::test.datetimetester.TestDateTimeTZ_Pure.test_astimezone_default_eastern",
+  "?::test.datetimetester.TestDateTimeTZ_Pure.test_fromtimestamp_limits",
+  "?::test.datetimetester.TestDateTimeTZ_Pure.test_utcfromtimestamp_limits",
+  "?::test.datetimetester.TestDateTime_Fast.test_fromtimestamp_limits",
+  "?::test.datetimetester.TestDateTime_Fast.test_utcfromtimestamp_limits",
+  "?::test.datetimetester.TestDateTime_Pure.test_fromtimestamp_limits",
+  "?::test.datetimetester.TestDateTime_Pure.test_utcfromtimestamp_limits",
+  "?::test.datetimetester.TestLocalTimeDisambiguation_Fast.test_astimezone",
+  "?::test.datetimetester.TestLocalTimeDisambiguation_Fast.test_fromtimestamp",
+  "?::test.datetimetester.TestLocalTimeDisambiguation_Fast.test_timestamp",
+  "?::test.datetimetester.TestLocalTimeDisambiguation_Pure.test_astimezone",
+  "?::test.datetimetester.TestLocalTimeDisambiguation_Pure.test_fromtimestamp",
+  "?::test.datetimetester.TestLocalTimeDisambiguation_Pure.test_timestamp",
+  "?::test.datetimetester.TestSubclassDateTime_Fast.test_fromtimestamp_limits",
+  "?::test.datetimetester.TestSubclassDateTime_Fast.test_utcfromtimestamp_limits",
+  "?::test.datetimetester.TestSubclassDateTime_Pure.test_fromtimestamp_limits",
+  "?::test.datetimetester.TestSubclassDateTime_Pure.test_utcfromtimestamp_limits",
+  "?::test.datetimetester.ZoneInfoTest_Fast.test_folds",
+  "?::test.datetimetester.ZoneInfoTest_Fast.test_gaps",
+  "?::test.datetimetester.ZoneInfoTest_Pure.test_folds",
+  "?::test.datetimetester.ZoneInfoTest_Pure.test_gaps",
+  "?::test.test_array.ByteTest.test_obsolete_write_lock",
+  "?::test.test_array.ByteTest.test_sizeof_with_buffer",
+  "?::test.test_array.ByteTest.test_sizeof_without_buffer",
+  "?::test.test_array.DoubleTest.test_obsolete_write_lock",
+  "?::test.test_array.DoubleTest.test_sizeof_with_buffer",
+  "?::test.test_array.DoubleTest.test_sizeof_without_buffer",
+  "?::test.test_array.FloatTest.test_obsolete_write_lock",
+  "?::test.test_array.FloatTest.test_sizeof_with_buffer",
+  "?::test.test_array.FloatTest.test_sizeof_without_buffer",
+  "?::test.test_array.IntTest.test_obsolete_write_lock",
+  "?::test.test_array.IntTest.test_sizeof_with_buffer",
+  "?::test.test_array.IntTest.test_sizeof_without_buffer",
+  "?::test.test_array.LongLongTest.test_obsolete_write_lock",
+  "?::test.test_array.LongLongTest.test_sizeof_with_buffer",
+  "?::test.test_array.LongLongTest.test_sizeof_without_buffer",
+  "?::test.test_array.LongTest.test_obsolete_write_lock",
+  "?::test.test_array.LongTest.test_sizeof_with_buffer",
+  "?::test.test_array.LongTest.test_sizeof_without_buffer",
+  "?::test.test_array.ShortTest.test_obsolete_write_lock",
+  "?::test.test_array.ShortTest.test_sizeof_with_buffer",
+  "?::test.test_array.ShortTest.test_sizeof_without_buffer",
+  "?::test.test_array.UnicodeTest.test_obsolete_write_lock",
+  "?::test.test_array.UnicodeTest.test_sizeof_with_buffer",
+  "?::test.test_array.UnicodeTest.test_sizeof_without_buffer",
+  "?::test.test_array.UnsignedByteTest.test_obsolete_write_lock",
+  "?::test.test_array.UnsignedByteTest.test_sizeof_with_buffer",
+  "?::test.test_array.UnsignedByteTest.test_sizeof_without_buffer",
+  "?::test.test_array.UnsignedIntTest.test_obsolete_write_lock",
+  "?::test.test_array.UnsignedIntTest.test_sizeof_with_buffer",
+  "?::test.test_array.UnsignedIntTest.test_sizeof_without_buffer",
+  "?::test.test_array.UnsignedLongLongTest.test_obsolete_write_lock",
+  "?::test.test_array.UnsignedLongLongTest.test_sizeof_with_buffer",
+  "?::test.test_array.UnsignedLongLongTest.test_sizeof_without_buffer",
+  "?::test.test_array.UnsignedLongTest.test_obsolete_write_lock",
+  "?::test.test_array.UnsignedLongTest.test_sizeof_with_buffer",
+  "?::test.test_array.UnsignedLongTest.test_sizeof_without_buffer",
+  "?::test.test_array.UnsignedShortTest.test_obsolete_write_lock",
+  "?::test.test_array.UnsignedShortTest.test_sizeof_with_buffer",
+  "?::test.test_array.UnsignedShortTest.test_sizeof_without_buffer",
+  "?::test.test_builtin.BuiltinTest.test_hash",
+  "?::test.test_builtin.PtyTests.test_input_no_stdout_fileno",
+  "?::test.test_bytes.ByteArrayTest.test_obsolete_write_lock",
+  "?::test.test_bytes.ByteArrayTest.test_sq_item",
+  "?::test.test_bytes.BytesTest.test_from_format",
+  "?::test.test_bytes.BytesTest.test_sq_item",
+  "?::test.test_complex.ComplexTest.test_hash",
+  "?::test.test_csv.Test_Csv.test_writerows_legacy_strings",
+  "?::test.test_dict.CAPITest.test_getitem_knownhash",
+  "?::test.test_enum.OldTestFlag.test_unique_composite",
+  "?::test.test_enum.OldTestIntFlag.test_unique_composite",
+  "?::test.test_float.GeneralFloatCases.test_float_with_comma",
+  "?::test.test_float.GeneralFloatCases.test_hash",
+  "?::test.test_fractions.FractionTest.testHash",
+  "?::test.test_functools.TestCachedProperty.test_threaded",
+  "?::test.test_functools.TestLRUC.test_lru_cache_threaded",
+  "?::test.test_functools.TestLRUC.test_lru_cache_threaded2",
+  "?::test.test_functools.TestLRUC.test_lru_cache_threaded3",
+  "?::test.test_functools.TestLRUPy.test_lru_cache_threaded",
+  "?::test.test_functools.TestLRUPy.test_lru_cache_threaded2",
+  "?::test.test_functools.TestLRUPy.test_lru_cache_threaded3",
+  "?::test.test_functools.TestSingleDispatch.test_c_classes",
+  "?::test.test_functools.TestUpdateWrapper.test_builtin_update",
+  "?::test.test_functools.TestWraps.test_builtin_update",
+  "?::test.test_itertools.SizeofTest.test_combinations_sizeof",
+  "?::test.test_itertools.SizeofTest.test_combinations_with_replacement_sizeof",
+  "?::test.test_itertools.SizeofTest.test_permutations_sizeof",
+  "?::test.test_itertools.SizeofTest.test_product_sizeof",
+  "?::test.test_itertools.TestBasicOps.test_tee_concurrent",
+  "?::test.test_json.test_enum.TestCEnum.test_dict_keys",
+  "?::test.test_json.test_enum.TestCEnum.test_dict_values",
+  "?::test.test_json.test_enum.TestCEnum.test_list",
+  "?::test.test_json.test_enum.TestPyEnum.test_dict_keys",
+  "?::test.test_json.test_enum.TestPyEnum.test_dict_values",
+  "?::test.test_json.test_enum.TestPyEnum.test_list",
+  "?::test.test_re.ReTests.test_regression_gh94675",
+  "?::test.test_set.TestSet.test_set_literal_insertion_order",
+  "?::test.test_set.TestSetSubclass.test_set_literal_insertion_order",
+  "?::test.test_struct.StructTest.test__sizeof__",
+  "?::test.test_struct.StructTest.test_calcsize",
+  "?::test.test_struct.StructTest.test_consistence",
+  "?::test.test_struct.StructTest.test_issue45034_signed",
+  "?::test.test_struct.StructTest.test_issue45034_unsigned",
+  "?::test.test_tuple.TupleTest.test_hash_exact",
+  "?::test.test_unicode.UnicodeTest.test_formatting_c_limits",
+  "?::test.test_unicode.UnicodeTest.test_formatting_huge_precision_c_limits",
+  "?::test.test_unicode.UnicodeTest.test_isidentifier_legacy",
+  "?::test.test_unicode.UnicodeTest.test_raiseMemError",
+  "?::test.test_unicode.UnicodeTest.test_resize",
+  "?::test.test_weakref.MappingTestCase.test_threaded_weak_key_dict_copy",
+  "?::test.test_weakref.MappingTestCase.test_threaded_weak_value_dict_copy",
+  "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_consistency",
+  "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_pop",
+  "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
+  "?::test.test_weakref.ReferencesTestCase.test_cfunction"
+ ],
+ "parity": 0.9903515944399018,
+ "port_bad_modules": {},
+ "port_passing": 6056,
+ "regressions": [
+  {
+   "port_status": "error",
+   "test": "?::test.test_builtin.BuiltinTest.test_compile_top_level_await"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_builtin.BuiltinTest.test_round_large"
+  },
+  {
+   "port_status": "error",
+   "test": "?::test.test_builtin.TestBreakpoint.test_envar_good_path_builtin"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_builtin.TestBreakpoint.test_envar_good_path_noop_0"
+  },
+  {
+   "port_status": "error",
+   "test": "?::test.test_builtin.TestBreakpoint.test_envar_good_path_other"
+  },
+  {
+   "port_status": "missing",
+   "test": "?::test.test_builtin.TestBreakpoint.test_envar_unimportable"
+  },
+  {
+   "port_status": "missing",
+   "test": "?::test.test_bytes.ByteArrayTest.test_mutating_index"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.CMathTests.testAtanSign"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.CMathTests.testAtanhSign"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.CMathTests.test_abs"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.CMathTests.test_cmath_matches_math"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.CMathTests.test_phase"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.CMathTests.test_polar"
+  },
+  {
+   "port_status": "skip",
+   "test": "?::test.test_cmath.CMathTests.test_polar_errno"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.CMathTests.test_specific_values"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_cmath.IsCloseTests.test_inf_ninf_nan"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_complex.ComplexTest.test_negated_imaginary_literal"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_complex.ComplexTest.test_plus_minus_0j"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_complex.ComplexTest.test_pow"
+  },
+  {
+   "port_status": "missing",
+   "test": "?::test.test_complex.ComplexTest.test_pow_with_small_integer_exponents"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_complex.ComplexTest.test_repr_roundtrip"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_complex.ComplexTest.test_repr_str"
+  },
+  {
+   "port_status": "error",
+   "test": "?::test.test_complex.ComplexTest.test_truediv"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_float.GeneralFloatCases.test_float_pow"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_float.HexFloatTestCase.test_from_hex"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_float.HexFloatTestCase.test_roundtrip"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_float.HexFloatTestCase.test_whitespace"
+  },
+  {
+   "port_status": "skip",
+   "test": "?::test.test_float.IEEEFormatTestCase.test_serialized_float_rounding"
+  },
+  {
+   "port_status": "skip",
+   "test": "?::test.test_float.PackTests.test_pack"
+  },
+  {
+   "port_status": "skip",
+   "test": "?::test.test_float.PackTests.test_roundtrip"
+  },
+  {
+   "port_status": "skip",
+   "test": "?::test.test_float.PackTests.test_unpack"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_float.ReprTestCase.test_short_repr"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_fractions.FractionTest.testArithmetic"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_fractions.FractionTest.testMixedArithmetic"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_functools.TestLRUC.test_lru_cache_typed_is_not_recursive"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_functools.TestLRUPy.test_lru_cache_typed_is_not_recursive"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_json.test_tool.TestTool.test_broken_pipe_error"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.IsCloseTests.test_inf_ninf_nan"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testAtan2"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testCos"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testCosh"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testDist"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testFsum"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testHypot"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testLdexp"
+  },
+  {
+   "port_status": "error",
+   "test": "?::test.test_math.MathTests.testLog2Exact"
+  },
+  {
+   "port_status": "error",
+   "test": "?::test.test_math.MathTests.testPow"
+  },
+  {
+   "port_status": "error",
+   "test": "?::test.test_math.MathTests.testRemainder"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testSin"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.testTan"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.test_mtestfile"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.test_nextafter"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_math.MathTests.test_testfile"
+  },
+  {
+   "port_status": "error",
+   "test": "?::test.test_random.TestDistributions.test_gammavariate_alpha_between_zero_and_one"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_statistics.TestFMean.test_special_values"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_statistics.TestGeometricMean.test_special_values"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_statistics.TestHarmonicMean.test_nan"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_statistics.TestMean.test_regression_25177"
+  },
+  {
+   "port_status": "fail",
+   "test": "?::test.test_struct.UnpackIteratorTest.test_half_float"
+  }
+ ]
+}

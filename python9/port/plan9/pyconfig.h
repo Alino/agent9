@@ -33,6 +33,18 @@
 #define PLATLIBDIR "lib"
 #endif
 
+/* plan9: configure normally sets these. Py_GetPlatform() (getplatform.c) and
+ * sys.abiflags (sysmodule.c) fall back to "unknown"/missing without them,
+ * which breaks sysconfig._get_sysconfigdata_name() (it builds the data-module
+ * name from sys.abiflags + sys.platform). Name resolves to
+ * "_sysconfigdata__plan9_" -- we ship that module in Lib. */
+#ifndef PLATFORM
+#define PLATFORM "plan9"
+#endif
+#ifndef ABIFLAGS
+#define ABIFLAGS ""
+#endif
+
 /* plan9: Plan 9 is UTF-8 everywhere. Force CPython's own UTF-8 decoder for
  * locale/fs decoding instead of APE's mbstowcs (which uses APE's 2-byte
  * wchar_t and corrupts our 4-byte strings -- truncating "posix" to "p").
@@ -752,7 +764,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_IEEEFP_H */
 
 /* Define to 1 if you have the `if_nameindex' function. */
-#define HAVE_IF_NAMEINDEX 1
+/* #undef HAVE_IF_NAMEINDEX */  /* plan9: APE lacks net/if.h */
 
 /* Define if you have the 'inet_aton' function. */
 #define HAVE_INET_ATON 1
@@ -905,7 +917,14 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_LOG1P */  /* plan9: APE pre-C99 math; CPython fallback */
 
 /* Define to 1 if you have the `log2' function. */
-#define HAVE_LOG2 1  /* plan9: APE provides it */
+/* #undef HAVE_LOG2 */  /* plan9: APE log2 is wrong for subnormals (log2(1e-308) off by 52); use CPython frexp+log fallback */
+
+/* plan9: use OUR copysign/round (plan9_compat.c) instead of CPython's
+ * _Py_copysign fallback, which detects sign-of-zero via atan2() -- and APE's
+ * atan2(-0.0,-1.0) gets the sign wrong, so copysign(4,-0.0) returned +4. Our
+ * shim copies the sign bit directly. */
+#define HAVE_COPYSIGN 1
+#define HAVE_ROUND 1
 
 /* Define to 1 if you have the `login_tty' function. */
 /* #undef HAVE_LOGIN_TTY */  /* plan9 */
@@ -914,7 +933,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 #define HAVE_LONG_DOUBLE 1
 
 /* Define to 1 if you have the `lstat' function. */
-/* #undef HAVE_LSTAT */  /* plan9: no *at/dir_fd */
+#define HAVE_LSTAT 1  /* plan9: APE provides lstat */
 
 /* Define to 1 if you have the `lutimes' function. */
 /* #undef HAVE_LUTIMES */  /* plan9 */
@@ -989,7 +1008,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_NETPACKET_PACKET_H */
 
 /* Define to 1 if you have the <net/if.h> header file. */
-#define HAVE_NET_IF_H 1
+/* #undef HAVE_NET_IF_H */  /* plan9: APE lacks net/if.h */
 
 /* Define to 1 if you have the `nice' function. */
 /* #undef HAVE_NICE */  /* plan9 */
@@ -1294,7 +1313,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_SOCKADDR_ALG */
 
 /* Define if sockaddr has sa_len member */
-#define HAVE_SOCKADDR_SA_LEN 1
+/* #undef HAVE_SOCKADDR_SA_LEN */  /* plan9: APE sockaddr has no sa_len */
 
 /* struct sockaddr_storage (sys/socket.h) */
 #define HAVE_SOCKADDR_STORAGE 1
@@ -1437,7 +1456,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 #define HAVE_SYS_IOCTL_H 1
 
 /* Define to 1 if you have the <sys/kern_control.h> header file. */
-#define HAVE_SYS_KERN_CONTROL_H 1
+/* #undef HAVE_SYS_KERN_CONTROL_H */  /* plan9: Apple-only */
 
 /* Define to 1 if you have the <sys/loadavg.h> header file. */
 /* #undef HAVE_SYS_LOADAVG_H */
@@ -1498,7 +1517,7 @@ extern struct tm *gmtime_r(const long *t, struct tm *result);
 /* #undef HAVE_SYS_SYSMACROS_H */
 
 /* Define to 1 if you have the <sys/sys_domain.h> header file. */
-#define HAVE_SYS_SYS_DOMAIN_H 1
+/* #undef HAVE_SYS_SYS_DOMAIN_H */  /* plan9: Apple-only */
 
 /* Define to 1 if you have the <sys/termio.h> header file. */
 /* #undef HAVE_SYS_TERMIO_H */
