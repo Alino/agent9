@@ -134,9 +134,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.992,
+ "parity": 0.9928163265306122,
  "port_bad_modules": {},
- "port_passing": 6076,
+ "port_passing": 6081,
  "regressions": [
   {
    "port_status": "fail",
@@ -248,14 +248,6 @@
   },
   {
    "port_status": "fail",
-   "test": "?::test.test_fractions.FractionTest.testArithmetic"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_fractions.FractionTest.testMixedArithmetic"
-  },
-  {
-   "port_status": "fail",
    "test": "?::test.test_json.test_tool.TestTool.test_broken_pipe_error"
   },
   {
@@ -265,10 +257,6 @@
   {
    "port_status": "fail",
    "test": "?::test.test_math.MathTests.testAtan2"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.testCos"
   },
   {
    "port_status": "fail",
@@ -292,19 +280,11 @@
   },
   {
    "port_status": "fail",
-   "test": "?::test.test_math.MathTests.testSin"
-  },
-  {
-   "port_status": "fail",
    "test": "?::test.test_math.MathTests.testTan"
   },
   {
    "port_status": "fail",
    "test": "?::test.test_math.MathTests.test_mtestfile"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.test_nextafter"
   },
   {
    "port_status": "fail",

@@ -124,6 +124,10 @@ expm1(double x)
 		return (x > 0.0) ? x : -1.0;	/* expm1(+inf)=+inf, expm1(-inf)=-1 */
 	/* exp(x)-1, accurate for small x */
 	u = exp(x);
+	if (isinf(u)) {			/* exp(x) overflowed -> expm1 overflows */
+		errno = ERANGE;
+		return u;
+	}
 	if (u == 1.0)
 		return x;
 	if (u - 1.0 == -1.0)
@@ -488,10 +492,12 @@ double
 nextafter(double x, double y)
 {
 	union { double d; unsigned long long u; } v;
-	if (x == y)
-		return y;
+	/* nan first: kencc compiles `x == y` as true for nan operands, so the
+	   == short-circuit below would wrongly return y for a nan argument. */
 	if (isnan(x) || isnan(y))
 		return x + y;
+	if (x == y)
+		return y;
 	if (x == 0.0) {
 		v.u = 1;
 		return y > 0.0 ? v.d : -v.d;

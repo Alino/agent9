@@ -158,12 +158,12 @@ emits junit XML, and produces a v1 manifest with per-testcase IDs identical to
 the host reference.
 
 **Parity result (curated 42-module core batch, 2026-06):**
-- **99.20%** (6076/6125) over *applicable* testcases (ref-passing, not on the
+- **99.28%** (6081/6125) over *applicable* testcases (ref-passing, not on the
   justified skip-list) across the **39 modules that run to completion**.
 - 132 justified skips, all with one-line reasons in `skiplist.txt`: 32-bit
   `Py_hash_t` (hash values/order differ), 4-byte-`Py_ssize_t` `sizeof`/native
   struct sizes, `_testcapi`/`_testinternalcapi`-only tests, tz-data, thread
-  tests, locale. 49 regressions remain *visible* (not hidden): **47 are the
+  tests, locale. 44 regressions remain *visible* (not hidden): **47 are the
   math family** (test_math/cmath/float/complex/statistics/fractions) -- now
   almost entirely **APE libm transcendental *precision*** (sin/cos/tan/exp/pow
   ULP error), the remaining frontier; 12 a narrow non-math tail (dtoa rounding,
@@ -220,7 +220,11 @@ So the honest bound: replacing APE libm one function at a time at fdlibm
 accuracy will not move parity; closing this frontier needs a correctly-rounded
 math library (large) -- or these stay as documented FP-accuracy limits.
 `log` is written but its subnormal path NaNs under kencc (`#if 0`'d); APE's
-log is kept. `sin`/`cos`/`tan` (range reduction) and `pow` are not yet vendored.
+log is kept. Vendored `sin`/`cos` (fdlibm kernels + Cody-Waite reduction) -- here APE *was*
+badly off (~10 ulp for large args, e.g. cos(100)), so this is a real win
+(testSin/testCos now pass). `tan`'s kernel transcription is still buggy and
+`pow` is not vendored. Net: the frontier is shrinking, but the long tail
+(hypot/ldexp/atan2 inf-handling, fsum's own algorithm, gamma precision) remains.
 
 Also fixed: `math.pow(0, neg)` raised OverflowError instead of ValueError (APE
 `pow(0,neg)` returns DBL_MAX+ERANGE, not the divide-by-zero inf) -- handled in

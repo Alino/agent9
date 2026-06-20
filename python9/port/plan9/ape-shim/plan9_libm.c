@@ -170,10 +170,16 @@ cosh(double x)
 	double ax, e;
 	if (x != x)
 		return x;			/* nan */
+	if (x > 1.7976931348623157e308 || x < -1.7976931348623157e308)
+		return _libm_inf();		/* cosh(+-inf)=+inf, no errno */
 	ax = fabs(x);
-	if (ax > 7.10e2) {			/* avoid overflow in exp(ax) */
+	if (ax > 710.4758600739439) {		/* ln(2*DBL_MAX): genuine overflow */
+		errno = ERANGE;
+		return _libm_inf();
+	}
+	if (ax > 709.0) {			/* exp(ax) overflows; split exp(ax/2)^2 */
 		e = exp(ax * 0.5);
-		return (0.5 * e) * e;		/* may overflow -> inf (ERANGE) */
+		return (0.5 * e) * e;
 	}
 	e = exp(ax);
 	return 0.5 * (e + 1.0 / e);
@@ -185,8 +191,17 @@ sinh(double x)
 	double ax, e, r;
 	if (x != x || x == 0.0)
 		return x;			/* nan, or preserve signed zero */
+	if (x > 1.7976931348623157e308)
+		return _libm_inf();		/* sinh(+inf)=+inf */
+	if (x < -1.7976931348623157e308)
+		return -_libm_inf();		/* sinh(-inf)=-inf */
 	ax = fabs(x);
-	if (ax > 7.10e2) {
+	if (ax > 710.4758600739439) {		/* genuine overflow */
+		errno = ERANGE;
+		r = _libm_inf();
+		return (x < 0.0) ? -r : r;
+	}
+	if (ax > 709.0) {
 		e = exp(ax * 0.5);
 		r = (0.5 * e) * e;
 	} else if (ax >= 0.5) {
@@ -219,4 +234,119 @@ tanh(double x)
 	return (x < 0.0) ? -r : r;
 }
 
+
+
+/* sin/cos via fdlibm kernels + Cody-Waite range reduction (3-part pi/2,
+   accurate for |x| up to ~2^28 -- covers the test range). APE's trig degrades
+   to ~10 ulp for larger arguments because its reduction is imprecise. */
+static const double
+  _S1 = -1.66666666666666324348e-01, _S2 = 8.33333333332248946124e-03,
+  _S3 = -1.98412698298579493134e-04, _S4 = 2.75573137070700676789e-06,
+  _S5 = -2.50507602534068634195e-08, _S6 = 1.58969099521155010221e-10,
+  _C1 = 4.16666666666666019037e-02, _C2 = -1.38888888888741095749e-03,
+  _C3 = 2.48015872894767294178e-05, _C4 = -2.75573143513906633035e-07,
+  _C5 = 2.08757232129817482790e-09, _C6 = -1.13596475577881948265e-11,
+  _pio4 = 7.85398163397448278999e-01,
+  _invpio2 = 6.36619772367581382433e-01,
+  _pio2_1 = 1.57079632673412561417e+00,
+  _pio2_1t = 6.07710050650619224932e-11,
+  _pio2_2 = 6.07710050630396597660e-11,
+  _pio2_2t = 2.02226624879595063154e-21,
+  _pio2_3 = 2.02226624871116645580e-21,
+  _pio2_3t = 8.47842766036889956997e-32;
+
+static double
+k_sin(double x, double y)
+{
+	double z = x * x, w = z * z;
+	double r = _S2 + z * (_S3 + z * _S4) + z * w * (_S5 + z * _S6);
+	double v = z * x;
+	if (y == 0.0)
+		return x + v * (_S1 + z * r);
+	return x - ((z * (0.5 * y - v * r) - y) - v * _S1);
+}
+
+static double
+k_cos(double x, double y)
+{
+	double z = x * x, w = z * z;
+	double r = z * (_C1 + z * (_C2 + z * _C3)) + w * w * (_C4 + z * (_C5 + z * _C6));
+	double hz = 0.5 * z, q = 1.0 - hz;
+	return q + (((1.0 - q) - hz) + (z * r - x * y));
+}
+
+/* reduce x to y[0]+y[1] in [-pi/4,pi/4]; returns n mod 4 (medium-size path). */
+static int
+rem_pio2(double x, double *y)
+{
+	double z, w, t, r, fn;
+	int n, sign = 0;
+
+	if (fabs(x) <= _pio4) {
+		y[0] = x;
+		y[1] = 0.0;
+		return 0;
+	}
+	if (x < 0.0) {
+		sign = 1;
+		x = -x;
+	}
+	fn = x * _invpio2 + 0.5;
+	n = (int)fn;
+	fn = (double)n;			/* nearest int to x*2/pi (round toward 0 after +0.5) */
+	if (fn > x * _invpio2 + 0.5)
+		;
+	r = x - fn * _pio2_1;
+	w = fn * _pio2_1t;		/* 1st round, good to 85 bits */
+	y[0] = r - w;
+	/* 2nd iteration needed for accuracy */
+	t = r;
+	w = fn * _pio2_2;
+	r = t - w;
+	w = fn * _pio2_2t - ((t - r) - w);
+	y[0] = r - w;
+	y[1] = (r - y[0]) - w;
+	if (sign) {
+		y[0] = -y[0];
+		y[1] = -y[1];
+		return (-n) & 3;
+	}
+	return n & 3;
+}
+
+double
+sin(double x)
+{
+	double y[2];
+	int n;
+	if (isnan(x) || isinf(x))
+		return x - x;		/* nan */
+	if (fabs(x) <= _pio4)
+		return k_sin(x, 0.0);
+	n = rem_pio2(x, y);
+	switch (n) {
+	case 0: return k_sin(y[0], y[1]);
+	case 1: return k_cos(y[0], y[1]);
+	case 2: return -k_sin(y[0], y[1]);
+	default: return -k_cos(y[0], y[1]);
+	}
+}
+
+double
+cos(double x)
+{
+	double y[2];
+	int n;
+	if (isnan(x) || isinf(x))
+		return x - x;
+	if (fabs(x) <= _pio4)
+		return k_cos(x, 0.0);
+	n = rem_pio2(x, y);
+	switch (n) {
+	case 0: return k_cos(y[0], y[1]);
+	case 1: return -k_sin(y[0], y[1]);
+	case 2: return -k_cos(y[0], y[1]);
+	default: return k_sin(y[0], y[1]);
+	}
+}
 
