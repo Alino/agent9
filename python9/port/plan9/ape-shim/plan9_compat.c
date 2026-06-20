@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
 #include <errno.h>
@@ -293,6 +294,64 @@ clock_getres(int clk_id, struct timespec *res)
  * /env, so writing the value there is the native equivalent. APE has no
  * setenv(); CPython uses it for locale coercion.
  */
+/*
+ * environ[] maintenance. APE builds the child's /env from the parent's
+ * environ[] at execve() time, so writing only to /env (below) is *not* enough:
+ * a subprocess spawned without an explicit env would get a child /env rebuilt
+ * from the STALE environ[], dropping the new variable. So mirror every change
+ * into environ[] too. (Memory for replaced/removed entries is intentionally
+ * leaked -- safe and simple, and matches glibc's setenv.)
+ */
+extern char **environ;
+
+static int
+env_array_set(const char *name, const char *value)
+{
+	size_t nl = strlen(name), vl = strlen(value);
+	char *entry, **ne;
+	int n;
+
+	entry = malloc(nl + vl + 2);
+	if (entry == 0)
+		return -1;
+	memcpy(entry, name, nl);
+	entry[nl] = '=';
+	memcpy(entry + nl + 1, value, vl + 1);
+
+	for (n = 0; environ && environ[n]; n++) {
+		if (strncmp(environ[n], name, nl) == 0 && environ[n][nl] == '=') {
+			environ[n] = entry;		/* replace in place */
+			return 0;
+		}
+	}
+	ne = malloc((n + 2) * sizeof(char *));
+	if (ne == 0) {
+		free(entry);
+		return -1;
+	}
+	memcpy(ne, environ, n * sizeof(char *));
+	ne[n] = entry;
+	ne[n + 1] = 0;
+	environ = ne;
+	return 0;
+}
+
+static void
+env_array_unset(const char *name)
+{
+	size_t nl = strlen(name);
+	int i, j;
+
+	if (environ == 0)
+		return;
+	for (i = j = 0; environ[i]; i++) {
+		if (strncmp(environ[i], name, nl) == 0 && environ[i][nl] == '=')
+			continue;		/* drop it */
+		environ[j++] = environ[i];
+	}
+	environ[j] = 0;
+}
+
 int
 setenv(const char *name, const char *value, int overwrite)
 {
@@ -313,6 +372,8 @@ setenv(const char *name, const char *value, int overwrite)
 			return 0;
 		}
 	}
+	if (env_array_set(name, value) != 0)
+		return -1;
 	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0)
 		return -1;
@@ -360,6 +421,7 @@ unsetenv(const char *name)
 		return -1;
 	strcpy(path, "/env/");
 	strcat(path, name);
+	env_array_unset(name);
 	remove(path);
 	return 0;
 }

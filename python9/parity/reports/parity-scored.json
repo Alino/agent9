@@ -146,9 +146,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9908391951578603,
+ "parity": 0.9914935383608703,
  "port_bad_modules": {},
- "port_passing": 6057,
+ "port_passing": 6061,
  "regressions": [
   {
    "port_status": "error",
@@ -157,22 +157,6 @@
   {
    "port_status": "fail",
    "test": "?::test.test_builtin.BuiltinTest.test_round_large"
-  },
-  {
-   "port_status": "error",
-   "test": "?::test.test_builtin.TestBreakpoint.test_envar_good_path_builtin"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_builtin.TestBreakpoint.test_envar_good_path_noop_0"
-  },
-  {
-   "port_status": "error",
-   "test": "?::test.test_builtin.TestBreakpoint.test_envar_good_path_other"
-  },
-  {
-   "port_status": "missing",
-   "test": "?::test.test_builtin.TestBreakpoint.test_envar_unimportable"
   },
   {
    "port_status": "missing",
