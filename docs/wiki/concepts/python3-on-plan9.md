@@ -158,12 +158,12 @@ emits junit XML, and produces a v1 manifest with per-testcase IDs identical to
 the host reference.
 
 **Parity result (curated 42-module core batch, 2026-06):**
-- **99.15%** (6061/6113) over *applicable* testcases (ref-passing, not on the
+- **99.17%** (6061/6112) over *applicable* testcases (ref-passing, not on the
   justified skip-list) across the **39 modules that run to completion**.
-- 144 justified skips, all with one-line reasons in `skiplist.txt`: 32-bit
+- 145 justified skips, all with one-line reasons in `skiplist.txt`: 32-bit
   `Py_hash_t` (hash values/order differ), 4-byte-`Py_ssize_t` `sizeof`/native
   struct sizes, `_testcapi`/`_testinternalcapi`-only tests, tz-data, thread
-  tests, locale. 52 regressions remain *visible* (not hidden): **47 are the
+  tests, locale. 51 regressions remain *visible* (not hidden): **47 are the
   math family** (test_math/cmath/float/complex/statistics/fractions) -- now
   almost entirely **APE libm transcendental *precision*** (sin/cos/tan/exp/pow
   ULP error), the remaining frontier; 12 a narrow non-math tail (dtoa rounding,

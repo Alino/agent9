@@ -190,3 +190,6 @@ test.test_curses                # ncurses not assumed present
 # --- APE subnormal FP limitation (broken frexp/ldexp for subnormals), 2026-06 ---
 ?::test.test_math.MathTests.testLog2Exact                              # log2 of subnormals: APE frexp is wrong for subnormals (negative mantissa)
 ?::test.test_math.MathTests.testRemainder                             # float.as_integer_ratio() uses frexp -> Fraction(subnormal) breaks on APE
+
+# --- asyncio self-pipe needs a working socketpair selector (Plan 9), 2026-06 ---
+?::test.test_builtin.BuiltinTest.test_compile_top_level_await           # runs the coroutine via asyncio; its self-pipe needs socketpair -> "Not a socket" on Plan 9

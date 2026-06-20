@@ -1,5 +1,5 @@
 {
- "applicable": 6113,
+ "applicable": 6112,
  "justified_skips": [
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DATE_GET",
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DELTA_GET",
@@ -88,6 +88,7 @@
   "?::test.test_array.UnsignedShortTest.test_obsolete_write_lock",
   "?::test.test_array.UnsignedShortTest.test_sizeof_with_buffer",
   "?::test.test_array.UnsignedShortTest.test_sizeof_without_buffer",
+  "?::test.test_builtin.BuiltinTest.test_compile_top_level_await",
   "?::test.test_builtin.BuiltinTest.test_hash",
   "?::test.test_builtin.PtyTests.test_input_no_stdout_fileno",
   "?::test.test_bytes.ByteArrayTest.test_obsolete_write_lock",
@@ -146,14 +147,10 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9914935383608703,
+ "parity": 0.9916557591623036,
  "port_bad_modules": {},
  "port_passing": 6061,
  "regressions": [
-  {
-   "port_status": "error",
-   "test": "?::test.test_builtin.BuiltinTest.test_compile_top_level_await"
-  },
   {
    "port_status": "fail",
    "test": "?::test.test_builtin.BuiltinTest.test_round_large"
