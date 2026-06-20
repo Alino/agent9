@@ -788,3 +788,45 @@
      }
      else {
          /* let libm handle finite**finite */
+--- a/Objects/complexobject.c
++++ b/Objects/complexobject.c
+@@ -40,14 +40,26 @@
+     r.real = a.real - b.real;
+     r.imag = a.imag - b.imag;
+     return r;
++}
++
++/* plan9: kencc compiles unary `-x` on a double as `0.0 - x`, which loses the
++   sign of zero (-(0.0) == +0.0). Negate via the sign bit so complex negation
++   preserves signed zeros (e.g. -0j, -(0+0j)). See also float_neg. */
++static double
++_plan9_dneg(double x)
++{
++    union { double d; unsigned long long u; } v;
++    v.d = x;
++    v.u ^= 0x8000000000000000ULL;
++    return v.d;
+ }
+ 
+ Py_complex
+ _Py_c_neg(Py_complex a)
+ {
+     Py_complex r;
+-    r.real = -a.real;
+-    r.imag = -a.imag;
++    r.real = _plan9_dneg(a.real);
++    r.imag = _plan9_dneg(a.imag);
+     return r;
+ }
+ 
+@@ -544,8 +556,8 @@
+ complex_neg(PyComplexObject *v)
+ {
+     Py_complex neg;
+-    neg.real = -v->cval.real;
+-    neg.imag = -v->cval.imag;
++    neg.real = _plan9_dneg(v->cval.real);
++    neg.imag = _plan9_dneg(v->cval.imag);
+     return PyComplex_FromCComplex(neg);
+ }
+ 

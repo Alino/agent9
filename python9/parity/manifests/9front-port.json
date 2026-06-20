@@ -4,11 +4,11 @@
   "machine": "amd64",
   "note": "per-module watchdog batch; module=missing means killed/crashed",
   "platform": "plan9",
-  "started_utc": "2026-06-21T02:05:21.646277Z",
+  "started_utc": "2026-06-21T02:16:14.656503Z",
   "testcase_counts": {
    "error": 21,
-   "fail": 36,
-   "pass": 6152,
+   "fail": 34,
+   "pass": 6154,
    "skip": 190
   },
   "version": "3.11.14"
@@ -2636,10 +2636,10 @@
   "?::test.test_complex.ComplexTest.test_mod": "pass",
   "?::test.test_complex.ComplexTest.test_mod_zero_division": "pass",
   "?::test.test_complex.ComplexTest.test_neg": "pass",
-  "?::test.test_complex.ComplexTest.test_negated_imaginary_literal": "fail",
+  "?::test.test_complex.ComplexTest.test_negated_imaginary_literal": "pass",
   "?::test.test_complex.ComplexTest.test_negative_zero_repr_str": "pass",
   "?::test.test_complex.ComplexTest.test_overflow": "pass",
-  "?::test.test_complex.ComplexTest.test_plus_minus_0j": "fail",
+  "?::test.test_complex.ComplexTest.test_plus_minus_0j": "pass",
   "?::test.test_complex.ComplexTest.test_pow": "pass",
   "?::test.test_complex.ComplexTest.test_repr_roundtrip": "fail",
   "?::test.test_complex.ComplexTest.test_repr_str": "fail",
