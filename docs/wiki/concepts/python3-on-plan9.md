@@ -158,12 +158,12 @@ emits junit XML, and produces a v1 manifest with per-testcase IDs identical to
 the host reference.
 
 **Parity result (curated 42-module core batch, 2026-06):**
-- **99.04%** (6056/6115) over *applicable* testcases (ref-passing, not on the
+- **99.08%** (6057/6113) over *applicable* testcases (ref-passing, not on the
   justified skip-list) across the **39 modules that run to completion**.
-- 142 justified skips, all with one-line reasons in `skiplist.txt`: 32-bit
+- 144 justified skips, all with one-line reasons in `skiplist.txt`: 32-bit
   `Py_hash_t` (hash values/order differ), 4-byte-`Py_ssize_t` `sizeof`/native
   struct sizes, `_testcapi`/`_testinternalcapi`-only tests, tz-data, thread
-  tests, locale. 59 regressions remain *visible* (not hidden): **47 are the
+  tests, locale. 56 regressions remain *visible* (not hidden): **47 are the
   math family** (test_math/cmath/float/complex/statistics/fractions) -- now
   almost entirely **APE libm transcendental *precision*** (sin/cos/tan/exp/pow
   ULP error), the remaining frontier; 12 a narrow non-math tail (dtoa rounding,
@@ -221,6 +221,13 @@ accuracy will not move parity; closing this frontier needs a correctly-rounded
 math library (large) -- or these stay as documented FP-accuracy limits.
 `log` is written but its subnormal path NaNs under kencc (`#if 0`'d); APE's
 log is kept. `sin`/`cos`/`tan` (range reduction) and `pow` are not yet vendored.
+
+Also fixed: `math.pow(0, neg)` raised OverflowError instead of ValueError (APE
+`pow(0,neg)` returns DBL_MAX+ERANGE, not the divide-by-zero inf) -- handled in
+`math_pow_impl`. `testLog2Exact`/`testRemainder` are skip-listed: both need
+correct `frexp` on subnormals (`log2(2**-1074)`, `float.as_integer_ratio`), and
+APE's `frexp`/`ldexp`/`modf` are wrong for subnormals *and* bundled in one libc
+object, so overriding one needs all three -- deferred.
 
 Fixes that got here (this push), all in the patch set / shims:
 - **`_socket` built** -- unblocked test_functools/builtin/random/hashlib (~520

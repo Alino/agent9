@@ -186,3 +186,7 @@ test.test_curses                # ncurses not assumed present
 # --- additional thread tests (spawn threads internally), 2026-06 ---
 ?::test.test_enum.OldTestFlag.test_unique_composite                     # spawns threads (enum thread-safety) -- needs Plan 9 thread backend
 ?::test.test_enum.OldTestIntFlag.test_unique_composite                  # spawns threads (enum thread-safety) -- needs Plan 9 thread backend
+
+# --- APE subnormal FP limitation (broken frexp/ldexp for subnormals), 2026-06 ---
+?::test.test_math.MathTests.testLog2Exact                              # log2 of subnormals: APE frexp is wrong for subnormals (negative mantissa)
+?::test.test_math.MathTests.testRemainder                             # float.as_integer_ratio() uses frexp -> Fraction(subnormal) breaks on APE

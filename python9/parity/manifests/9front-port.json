@@ -4,11 +4,11 @@
   "machine": "amd64",
   "note": "per-module watchdog batch; module=missing means killed/crashed",
   "platform": "plan9",
-  "started_utc": "2026-06-20T23:43:36.314208Z",
+  "started_utc": "2026-06-20T23:58:32.930449Z",
   "testcase_counts": {
-   "error": 24,
+   "error": 23,
    "fail": 62,
-   "pass": 6122,
+   "pass": 6123,
    "skip": 190
   },
   "version": "3.11.14"
@@ -4641,7 +4641,7 @@
   "?::test.test_math.MathTests.testLog2Exact": "error",
   "?::test.test_math.MathTests.testModf": "pass",
   "?::test.test_math.MathTests.testPerm": "pass",
-  "?::test.test_math.MathTests.testPow": "error",
+  "?::test.test_math.MathTests.testPow": "pass",
   "?::test.test_math.MathTests.testRadians": "pass",
   "?::test.test_math.MathTests.testRemainder": "error",
   "?::test.test_math.MathTests.testSin": "fail",

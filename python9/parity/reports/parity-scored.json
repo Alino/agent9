@@ -1,5 +1,5 @@
 {
- "applicable": 6115,
+ "applicable": 6113,
  "justified_skips": [
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DATE_GET",
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DELTA_GET",
@@ -123,6 +123,8 @@
   "?::test.test_json.test_enum.TestPyEnum.test_dict_keys",
   "?::test.test_json.test_enum.TestPyEnum.test_dict_values",
   "?::test.test_json.test_enum.TestPyEnum.test_list",
+  "?::test.test_math.MathTests.testLog2Exact",
+  "?::test.test_math.MathTests.testRemainder",
   "?::test.test_re.ReTests.test_regression_gh94675",
   "?::test.test_set.TestSet.test_set_literal_insertion_order",
   "?::test.test_set.TestSetSubclass.test_set_literal_insertion_order",
@@ -144,9 +146,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9903515944399018,
+ "parity": 0.9908391951578603,
  "port_bad_modules": {},
- "port_passing": 6056,
+ "port_passing": 6057,
  "regressions": [
   {
    "port_status": "error",
@@ -327,18 +329,6 @@
   {
    "port_status": "fail",
    "test": "?::test.test_math.MathTests.testLdexp"
-  },
-  {
-   "port_status": "error",
-   "test": "?::test.test_math.MathTests.testLog2Exact"
-  },
-  {
-   "port_status": "error",
-   "test": "?::test.test_math.MathTests.testPow"
-  },
-  {
-   "port_status": "error",
-   "test": "?::test.test_math.MathTests.testRemainder"
   },
   {
    "port_status": "fail",

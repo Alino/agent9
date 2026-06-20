@@ -665,12 +665,22 @@
      else {
 --- a/Modules/mathmodule.c
 +++ b/Modules/mathmodule.c
-@@ -1151,8 +1151,57 @@
-         return NULL;
-     else
+@@ -790,6 +790,11 @@
+ #else
+         double m;
+         int e;
++        /* plan9: APE's frexp is wrong for subnormals (negative mantissa), so
++           log2 of a subnormal hit log(<0)=domain error. Scale subnormals up to
++           a normal value first: log2(x) = log2(x*2**54) - 54. */
++        if (x < 2.2250738585072014e-308)
++            return m_log2(x * 18014398509481984.0) - 54.0;
+         m = frexp(x, &e);
+         /* We want log2(m * 2**e) == log(m) / log(2) + e.  Care is needed when
+          * x is just greater than 1.0: in that case e is 1, log(m) is negative,
+@@ -1153,6 +1158,55 @@
          return PyFloat_FromDouble(r);
-+}
-+
+ }
+ 
 +/* plan9: APE's exp/sinh/cosh return DBL_MAX and set errno=ERANGE for an
 +   *infinite* argument instead of the C99 result, so math_1 wrongly raises
 +   OverflowError; and acos sets a spurious EDOM at the +-1 boundary. Guard the
@@ -685,8 +695,8 @@
 +    if (Py_IS_INFINITY(x))
 +        return (x > 0.0) ? x : 0.0;     /* exp(+inf)=+inf, exp(-inf)=0 */
 +    return exp(x);
- }
- 
++}
++
 +static double
 +m_cosh(double x)
 +{
@@ -723,7 +733,7 @@
  #define FUNC1(funcname, func, can_overflow, docstring)                  \
      static PyObject * math_##funcname(PyObject *self, PyObject *args) { \
          return math_1(args, func, can_overflow);                            \
-@@ -1171,7 +1220,7 @@
+@@ -1171,7 +1225,7 @@
      }\
      PyDoc_STRVAR(math_##funcname##_doc, docstring);
  
@@ -732,7 +742,7 @@
        "acos($module, x, /)\n--\n\n"
        "Return the arc cosine (measured in radians) of x.\n\n"
        "The result is between 0 and pi.")
-@@ -1242,7 +1291,7 @@
+@@ -1242,7 +1296,7 @@
  FUNC1(cos, cos, 0,
        "cos($module, x, /)\n--\n\n"
        "Return the cosine of x (measured in radians).")
@@ -741,7 +751,7 @@
        "cosh($module, x, /)\n--\n\n"
        "Return the hyperbolic cosine of x.")
  FUNC1A(erf, m_erf,
-@@ -1251,7 +1300,7 @@
+@@ -1251,7 +1305,7 @@
  FUNC1A(erfc, m_erfc,
         "erfc($module, x, /)\n--\n\n"
         "Complementary error function at x.")
@@ -750,7 +760,7 @@
        "exp($module, x, /)\n--\n\n"
        "Return e raised to the power of x.")
  FUNC1(exp2, exp2, 1,
-@@ -1324,7 +1373,7 @@
+@@ -1324,7 +1378,7 @@
  FUNC1(sin, sin, 0,
        "sin($module, x, /)\n--\n\n"
        "Return the sine of x (measured in radians).")
@@ -759,3 +769,19 @@
        "sinh($module, x, /)\n--\n\n"
        "Return the hyperbolic sine of x.")
  FUNC1(sqrt, sqrt, 0,
+@@ -2861,6 +2915,15 @@
+                 r = 0.;
+         }
+     }
++    else if (x == 0.0 && y < 0.0) {
++        /* plan9: C99 pow(+-0, y<0) is a divide-by-zero -> +-inf, which CPython
++           maps to ValueError. APE's pow instead returns DBL_MAX and sets
++           ERANGE, so the (finite) result slipped past the !isfinite check below
++           and raised OverflowError. Handle it directly. */
++        int odd_y = (fmod(fabs(y), 2.0) == 1.0);
++        errno = EDOM;
++        r = odd_y ? copysign(Py_HUGE_VAL, x) : Py_HUGE_VAL;
++    }
+     else {
+         /* let libm handle finite**finite */
+         errno = 0;
