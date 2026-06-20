@@ -785,3 +785,18 @@
      else {
          /* let libm handle finite**finite */
          errno = 0;
+--- a/Include/pyhash.h
++++ b/Include/pyhash.h
+@@ -21,7 +21,11 @@
+    _Py_HashDouble in Python/pyhash.c.  Numeric hashes are based on
+    reduction modulo the prime 2**_PyHASH_BITS - 1. */
+ 
+-#if SIZEOF_VOID_P >= 8
++/* plan9: Py_hash_t follows Py_ssize_t (4 bytes here), not void* (8). Selecting
++   the 61-bit modulus by SIZEOF_VOID_P alone overflowed the 32-bit hash, so
++   hash(1.0) != hash(1) -- violating the equal-values-hash-equal invariant and
++   corrupting dict/set with mixed int/float keys. Gate on SIZEOF_SIZE_T too. */
++#if SIZEOF_VOID_P >= 8 && SIZEOF_SIZE_T >= 8
+ #  define _PyHASH_BITS 61
+ #else
+ #  define _PyHASH_BITS 31

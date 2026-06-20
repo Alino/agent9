@@ -1,5 +1,5 @@
 {
- "applicable": 6112,
+ "applicable": 6125,
  "justified_skips": [
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DATE_GET",
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DELTA_GET",
@@ -89,20 +89,16 @@
   "?::test.test_array.UnsignedShortTest.test_sizeof_with_buffer",
   "?::test.test_array.UnsignedShortTest.test_sizeof_without_buffer",
   "?::test.test_builtin.BuiltinTest.test_compile_top_level_await",
-  "?::test.test_builtin.BuiltinTest.test_hash",
   "?::test.test_builtin.PtyTests.test_input_no_stdout_fileno",
   "?::test.test_bytes.ByteArrayTest.test_obsolete_write_lock",
   "?::test.test_bytes.ByteArrayTest.test_sq_item",
   "?::test.test_bytes.BytesTest.test_from_format",
   "?::test.test_bytes.BytesTest.test_sq_item",
-  "?::test.test_complex.ComplexTest.test_hash",
   "?::test.test_csv.Test_Csv.test_writerows_legacy_strings",
   "?::test.test_dict.CAPITest.test_getitem_knownhash",
   "?::test.test_enum.OldTestFlag.test_unique_composite",
   "?::test.test_enum.OldTestIntFlag.test_unique_composite",
   "?::test.test_float.GeneralFloatCases.test_float_with_comma",
-  "?::test.test_float.GeneralFloatCases.test_hash",
-  "?::test.test_fractions.FractionTest.testHash",
   "?::test.test_functools.TestCachedProperty.test_threaded",
   "?::test.test_functools.TestLRUC.test_lru_cache_threaded",
   "?::test.test_functools.TestLRUC.test_lru_cache_threaded2",
@@ -118,23 +114,14 @@
   "?::test.test_itertools.SizeofTest.test_permutations_sizeof",
   "?::test.test_itertools.SizeofTest.test_product_sizeof",
   "?::test.test_itertools.TestBasicOps.test_tee_concurrent",
-  "?::test.test_json.test_enum.TestCEnum.test_dict_keys",
-  "?::test.test_json.test_enum.TestCEnum.test_dict_values",
-  "?::test.test_json.test_enum.TestCEnum.test_list",
-  "?::test.test_json.test_enum.TestPyEnum.test_dict_keys",
-  "?::test.test_json.test_enum.TestPyEnum.test_dict_values",
-  "?::test.test_json.test_enum.TestPyEnum.test_list",
   "?::test.test_math.MathTests.testLog2Exact",
   "?::test.test_math.MathTests.testRemainder",
   "?::test.test_re.ReTests.test_regression_gh94675",
-  "?::test.test_set.TestSet.test_set_literal_insertion_order",
-  "?::test.test_set.TestSetSubclass.test_set_literal_insertion_order",
   "?::test.test_struct.StructTest.test__sizeof__",
   "?::test.test_struct.StructTest.test_calcsize",
   "?::test.test_struct.StructTest.test_consistence",
   "?::test.test_struct.StructTest.test_issue45034_signed",
   "?::test.test_struct.StructTest.test_issue45034_unsigned",
-  "?::test.test_tuple.TupleTest.test_hash_exact",
   "?::test.test_unicode.UnicodeTest.test_formatting_c_limits",
   "?::test.test_unicode.UnicodeTest.test_formatting_huge_precision_c_limits",
   "?::test.test_unicode.UnicodeTest.test_isidentifier_legacy",
@@ -147,9 +134,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9916557591623036,
+ "parity": 0.992,
  "port_bad_modules": {},
- "port_passing": 6061,
+ "port_passing": 6076,
  "regressions": [
   {
    "port_status": "fail",
@@ -266,14 +253,6 @@
   {
    "port_status": "fail",
    "test": "?::test.test_fractions.FractionTest.testMixedArithmetic"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_functools.TestLRUC.test_lru_cache_typed_is_not_recursive"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_functools.TestLRUPy.test_lru_cache_typed_is_not_recursive"
   },
   {
    "port_status": "fail",

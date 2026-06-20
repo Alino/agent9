@@ -127,34 +127,21 @@ test.test_curses                # ncurses not assumed present
 ?::test.test_array.UnsignedShortTest.test_obsolete_write_lock          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_array.UnsignedShortTest.test_sizeof_with_buffer           # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
 ?::test.test_array.UnsignedShortTest.test_sizeof_without_buffer        # object layout differs: 4-byte Py_ssize_t on Plan 9 amd64
-?::test.test_builtin.BuiltinTest.test_hash                             # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
 ?::test.test_builtin.PtyTests.test_input_no_stdout_fileno              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_bytes.ByteArrayTest.test_obsolete_write_lock              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_bytes.ByteArrayTest.test_sq_item                          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_bytes.BytesTest.test_from_format                          # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_bytes.BytesTest.test_sq_item                              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
-?::test.test_complex.ComplexTest.test_hash                             # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
 ?::test.test_dict.CAPITest.test_getitem_knownhash                      # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_float.GeneralFloatCases.test_float_with_comma             # C/UTF-8 locale only on Plan 9 (no alternate locale data)
-?::test.test_float.GeneralFloatCases.test_hash                         # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_fractions.FractionTest.testHash                           # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
 ?::test.test_functools.TestSingleDispatch.test_c_classes               # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_functools.TestUpdateWrapper.test_builtin_update           # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_functools.TestWraps.test_builtin_update                   # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_itertools.TestBasicOps.test_tee_concurrent                # requires a Plan 9 thread backend (rfork/proccreate) -- not yet implemented
-?::test.test_json.test_enum.TestCEnum.test_dict_keys                   # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_json.test_enum.TestCEnum.test_dict_values                 # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_json.test_enum.TestCEnum.test_list                        # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_json.test_enum.TestPyEnum.test_dict_keys                  # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_json.test_enum.TestPyEnum.test_dict_values                # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_json.test_enum.TestPyEnum.test_list                       # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_set.TestSet.test_set_literal_insertion_order              # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
-?::test.test_set.TestSetSubclass.test_set_literal_insertion_order      # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
 ?::test.test_struct.StructTest.test_calcsize                           # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
 ?::test.test_struct.StructTest.test_consistence                        # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
 ?::test.test_struct.StructTest.test_issue45034_signed                  # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
 ?::test.test_struct.StructTest.test_issue45034_unsigned                # native struct item sizes use 4-byte size_t/ssize_t on Plan 9
-?::test.test_tuple.TupleTest.test_hash_exact                           # 32-bit Py_hash_t on Plan 9: hash values/iteration order differ from 64-bit reference
 ?::test.test_unicode.UnicodeTest.test_formatting_c_limits              # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_unicode.UnicodeTest.test_formatting_huge_precision_c_limits # requires _testcapi/_testinternalcapi (test-only C ext, not built) or pty
 ?::test.test_unicode.UnicodeTest.test_isidentifier_legacy              # C/UTF-8 locale only on Plan 9 (no alternate locale data)
