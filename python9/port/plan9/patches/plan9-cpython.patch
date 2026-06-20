@@ -790,12 +790,10 @@
          /* let libm handle finite**finite */
 --- a/Objects/complexobject.c
 +++ b/Objects/complexobject.c
-@@ -40,14 +40,26 @@
-     r.real = a.real - b.real;
-     r.imag = a.imag - b.imag;
+@@ -42,12 +42,24 @@
      return r;
-+}
-+
+ }
+ 
 +/* plan9: kencc compiles unary `-x` on a double as `0.0 - x`, which loses the
 +   sign of zero (-(0.0) == +0.0). Negate via the sign bit so complex negation
 +   preserves signed zeros (e.g. -0j, -(0+0j)). See also float_neg. */
@@ -806,8 +804,8 @@
 +    v.d = x;
 +    v.u ^= 0x8000000000000000ULL;
 +    return v.d;
- }
- 
++}
++
  Py_complex
  _Py_c_neg(Py_complex a)
  {
@@ -819,7 +817,37 @@
      return r;
  }
  
-@@ -544,8 +556,8 @@
+@@ -94,6 +106,15 @@
+      const double abs_breal = b.real < 0 ? -b.real : b.real;
+      const double abs_bimag = b.imag < 0 ? -b.imag : b.imag;
+ 
++    /* plan9: kencc commutes `abs_breal >= abs_bimag` to `abs_bimag <= abs_breal`
++       and its `<=` codegen is true for a NaN operand, so a NaN-containing
++       denominator wrongly entered the `abs_breal == 0` -> EDOM branch (raising
++       ZeroDivisionError instead of yielding nan+nanj). Handle NaN up front. */
++    if (Py_IS_NAN(b.real) || Py_IS_NAN(b.imag)) {
++        r.real = r.imag = Py_NAN;
++        return r;
++    }
++
+     if (abs_breal >= abs_bimag) {
+         /* divide tops and bottom by b.real */
+         if (abs_breal == 0.0) {
+@@ -364,9 +385,11 @@
+     const char *lead = "";
+     const char *tail = "";
+ 
+-    if (v->cval.real == 0. && copysign(1.0, v->cval.real)==1.0) {
++    if (v->cval.real == 0. && !Py_IS_NAN(v->cval.real) &&
++            copysign(1.0, v->cval.real)==1.0) {
+         /* Real part is +0: just output the imaginary part and do not
+-           include parens. */
++           include parens. (plan9: guard NaN -- kencc `nan == 0.` is true,
++           which would drop a NaN real part from the repr.) */
+         re = "";
+         im = PyOS_double_to_string(v->cval.imag, format_code,
+                                    precision, 0, NULL);
+@@ -544,8 +567,8 @@
  complex_neg(PyComplexObject *v)
  {
      Py_complex neg;
