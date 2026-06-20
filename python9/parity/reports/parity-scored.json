@@ -138,9 +138,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9968959320372488,
+ "parity": 0.9972226760333279,
  "port_bad_modules": {},
- "port_passing": 6102,
+ "port_passing": 6104,
  "regressions": [
   {
    "port_status": "fail",
@@ -168,19 +168,11 @@
   },
   {
    "port_status": "fail",
-   "test": "?::test.test_complex.ComplexTest.test_repr_roundtrip"
-  },
-  {
-   "port_status": "fail",
    "test": "?::test.test_float.GeneralFloatCases.test_float_pow"
   },
   {
    "port_status": "fail",
    "test": "?::test.test_float.HexFloatTestCase.test_from_hex"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_float.ReprTestCase.test_short_repr"
   },
   {
    "port_status": "fail",

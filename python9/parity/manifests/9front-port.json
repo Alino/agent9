@@ -4,11 +4,11 @@
   "machine": "amd64",
   "note": "per-module watchdog batch; module=missing means killed/crashed",
   "platform": "plan9",
-  "started_utc": "2026-06-21T03:02:20.037277Z",
+  "started_utc": "2026-06-21T03:09:20.247355Z",
   "testcase_counts": {
    "error": 20,
-   "fail": 28,
-   "pass": 6162,
+   "fail": 26,
+   "pass": 6164,
    "skip": 190
   },
   "version": "3.11.14"
@@ -2642,7 +2642,7 @@
   "?::test.test_complex.ComplexTest.test_plus_minus_0j": "pass",
   "?::test.test_complex.ComplexTest.test_pow": "pass",
   "?::test.test_complex.ComplexTest.test_pow_with_small_integer_exponents": "pass",
-  "?::test.test_complex.ComplexTest.test_repr_roundtrip": "fail",
+  "?::test.test_complex.ComplexTest.test_repr_roundtrip": "pass",
   "?::test.test_complex.ComplexTest.test_repr_str": "pass",
   "?::test.test_complex.ComplexTest.test_richcompare": "pass",
   "?::test.test_complex.ComplexTest.test_richcompare_boundaries": "pass",
@@ -3723,7 +3723,7 @@
   "?::test.test_float.PackTests.test_roundtrip": "skip",
   "?::test.test_float.PackTests.test_unpack": "skip",
   "?::test.test_float.ReprTestCase.test_repr": "pass",
-  "?::test.test_float.ReprTestCase.test_short_repr": "fail",
+  "?::test.test_float.ReprTestCase.test_short_repr": "pass",
   "?::test.test_float.RoundTestCase.test_None_ndigits": "pass",
   "?::test.test_float.RoundTestCase.test_format_specials": "pass",
   "?::test.test_float.RoundTestCase.test_inf_nan": "pass",

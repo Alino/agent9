@@ -922,3 +922,38 @@
      if (type != &PyFloat_Type && result != NULL) {
          Py_SETREF(result, PyObject_CallOneArg((PyObject *)type, result));
      }
+--- a/Python/dtoa.c
++++ b/Python/dtoa.c
+@@ -2126,7 +2126,16 @@
+     }
+ 
+   ret:
+-    result = sign ? -dval(&rv) : dval(&rv);
++    /* plan9: rv holds a non-negative magnitude; apply the sign via the sign
++       bit, not unary `-` (kencc's `-x` is `0.0 - x`, losing -0.0, so strtod of
++       "-0.0" returned +0.0). */
++    result = dval(&rv);
++    if (sign) {
++        union { double d; unsigned long long u; } _sv;
++        _sv.d = result;
++        _sv.u |= 0x8000000000000000ULL;
++        result = _sv.d;
++    }
+     goto done;
+ 
+   parse_error:
+@@ -2139,7 +2148,13 @@
+     goto done;
+ 
+   undfl:
+-    result = sign ? -0.0 : 0.0;
++    if (sign) {
++        union { double d; unsigned long long u; } _sv;
++        _sv.u = 0x8000000000000000ULL;   /* -0.0 */
++        result = _sv.d;
++    } else {
++        result = 0.0;
++    }
+     goto done;
+ 
+   ovfl:
