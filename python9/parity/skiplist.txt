@@ -180,3 +180,9 @@ test.test_curses                # ncurses not assumed present
 
 # --- asyncio self-pipe needs a working socketpair selector (Plan 9), 2026-06 ---
 ?::test.test_builtin.BuiltinTest.test_compile_top_level_await           # runs the coroutine via asyncio; its self-pipe needs socketpair -> "Not a socket" on Plan 9
+
+# --- test_float PackTests / serialized rounding need _testcapi, 2026-06 ---
+?::test.test_float.PackTests.test_pack                                  # requires _testcapi (struct pack helpers)
+?::test.test_float.PackTests.test_unpack                                # requires _testcapi
+?::test.test_float.PackTests.test_roundtrip                             # requires _testcapi
+?::test.test_float.IEEEFormatTestCase.test_serialized_float_rounding    # requires _testcapi

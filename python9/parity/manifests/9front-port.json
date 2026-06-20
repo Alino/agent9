@@ -4,11 +4,11 @@
   "machine": "amd64",
   "note": "per-module watchdog batch; module=missing means killed/crashed",
   "platform": "plan9",
-  "started_utc": "2026-06-21T02:50:31.392659Z",
+  "started_utc": "2026-06-21T02:56:41.893070Z",
   "testcase_counts": {
    "error": 20,
-   "fail": 30,
-   "pass": 6160,
+   "fail": 28,
+   "pass": 6162,
    "skip": 190
   },
   "version": "3.11.14"
@@ -3707,9 +3707,9 @@
   "?::test.test_float.HexFloatTestCase.test_ends": "pass",
   "?::test.test_float.HexFloatTestCase.test_from_hex": "fail",
   "?::test.test_float.HexFloatTestCase.test_invalid_inputs": "pass",
-  "?::test.test_float.HexFloatTestCase.test_roundtrip": "fail",
+  "?::test.test_float.HexFloatTestCase.test_roundtrip": "pass",
   "?::test.test_float.HexFloatTestCase.test_subclass": "pass",
-  "?::test.test_float.HexFloatTestCase.test_whitespace": "fail",
+  "?::test.test_float.HexFloatTestCase.test_whitespace": "pass",
   "?::test.test_float.IEEEFormatTestCase.test_double_specials_do_unpack": "pass",
   "?::test.test_float.IEEEFormatTestCase.test_float_specials_do_unpack": "pass",
   "?::test.test_float.IEEEFormatTestCase.test_serialized_float_rounding": "skip",

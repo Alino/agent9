@@ -1,5 +1,5 @@
 {
- "applicable": 6125,
+ "applicable": 6121,
  "justified_skips": [
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DATE_GET",
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DELTA_GET",
@@ -99,6 +99,10 @@
   "?::test.test_enum.OldTestFlag.test_unique_composite",
   "?::test.test_enum.OldTestIntFlag.test_unique_composite",
   "?::test.test_float.GeneralFloatCases.test_float_with_comma",
+  "?::test.test_float.IEEEFormatTestCase.test_serialized_float_rounding",
+  "?::test.test_float.PackTests.test_pack",
+  "?::test.test_float.PackTests.test_roundtrip",
+  "?::test.test_float.PackTests.test_unpack",
   "?::test.test_functools.TestCachedProperty.test_threaded",
   "?::test.test_functools.TestLRUC.test_lru_cache_threaded",
   "?::test.test_functools.TestLRUC.test_lru_cache_threaded2",
@@ -134,9 +138,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9959183673469387,
+ "parity": 0.9968959320372488,
  "port_bad_modules": {},
- "port_passing": 6100,
+ "port_passing": 6102,
  "regressions": [
   {
    "port_status": "fail",
@@ -173,30 +177,6 @@
   {
    "port_status": "fail",
    "test": "?::test.test_float.HexFloatTestCase.test_from_hex"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_float.HexFloatTestCase.test_roundtrip"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_float.HexFloatTestCase.test_whitespace"
-  },
-  {
-   "port_status": "skip",
-   "test": "?::test.test_float.IEEEFormatTestCase.test_serialized_float_rounding"
-  },
-  {
-   "port_status": "skip",
-   "test": "?::test.test_float.PackTests.test_pack"
-  },
-  {
-   "port_status": "skip",
-   "test": "?::test.test_float.PackTests.test_roundtrip"
-  },
-  {
-   "port_status": "skip",
-   "test": "?::test.test_float.PackTests.test_unpack"
   },
   {
    "port_status": "fail",
