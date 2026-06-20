@@ -748,10 +748,35 @@
          if (Py_IS_NAN(inf_sum))
              PyErr_SetString(PyExc_ValueError,
                              "-inf + inf in fsum");
-@@ -2861,6 +2888,15 @@
-                 r = 0.;
+@@ -2720,7 +2747,10 @@
+         x = fabs(px - qx);
+         diffs[i] = x;
+         found_nan |= Py_IS_NAN(x);
+-        if (x > max) {
++        /* plan9: kencc commutes `x > max` to `max < x`, and its `<` codegen
++           returns true for a NaN operand, so a NaN x would wrongly become max
++           (-> nan result for e.g. hypot(inf, nan)). Skip NaN in max-tracking. */
++        if (!Py_IS_NAN(x) && x > max) {
+             max = x;
          }
      }
+@@ -2773,7 +2803,10 @@
+         x = fabs(x);
+         coordinates[i] = x;
+         found_nan |= Py_IS_NAN(x);
+-        if (x > max) {
++        /* plan9: kencc commutes `x > max` to `max < x`, and its `<` codegen
++           returns true for a NaN operand, so a NaN x would wrongly become max
++           (-> nan result for e.g. hypot(inf, nan)). Skip NaN in max-tracking. */
++        if (!Py_IS_NAN(x) && x > max) {
+             max = x;
+         }
+     }
+@@ -2860,6 +2893,15 @@
+             else
+                 r = 0.;
+         }
++    }
 +    else if (x == 0.0 && y < 0.0) {
 +        /* plan9: C99 pow(+-0, y<0) is a divide-by-zero -> +-inf, which CPython
 +           maps to ValueError. APE's pow instead returns DBL_MAX and sets
@@ -760,7 +785,6 @@
 +        int odd_y = (fmod(fabs(y), 2.0) == 1.0);
 +        errno = EDOM;
 +        r = odd_y ? copysign(Py_HUGE_VAL, x) : Py_HUGE_VAL;
-+    }
+     }
      else {
          /* let libm handle finite**finite */
-         errno = 0;

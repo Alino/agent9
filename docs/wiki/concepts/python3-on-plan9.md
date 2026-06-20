@@ -158,12 +158,12 @@ emits junit XML, and produces a v1 manifest with per-testcase IDs identical to
 the host reference.
 
 **Parity result (curated 42-module core batch, 2026-06):**
-- **99.43%** (6090/6125) over *applicable* testcases (ref-passing, not on the
+- **99.46%** (6092/6125) over *applicable* testcases (ref-passing, not on the
   justified skip-list) across the **39 modules that run to completion**.
 - 132 justified skips, all with one-line reasons in `skiplist.txt`: 32-bit
   `Py_hash_t` (hash values/order differ), 4-byte-`Py_ssize_t` `sizeof`/native
   struct sizes, `_testcapi`/`_testinternalcapi`-only tests, tz-data, thread
-  tests, locale. 35 regressions remain *visible* (not hidden): **47 are the
+  tests, locale. 33 regressions remain *visible* (not hidden): **47 are the
   math family** (test_math/cmath/float/complex/statistics/fractions) -- now
   almost entirely **APE libm transcendental *precision*** (sin/cos/tan/exp/pow
   ULP error), the remaining frontier; 12 a narrow non-math tail (dtoa rounding,
@@ -192,7 +192,10 @@ Root-cause bugs found+fixed via the parity loop (all in the patch set / shims):
 - `WITH_DOC_STRINGS` added to the hand-authored sysconfigdata (docstring tests
   were wrongly skipped); `lib-dynload` dir created (silences the path warning).
 
-**Deployment note:** the parity batch sets `PYTHONPYCACHEPREFIX=/tmp/pyc`. The
+**Deployment note:** pyconfig.h now sets `NDEBUG` (release builds disable C
+asserts; ours did not, so strict asserts like vector_norm's IEEE-scaling checks
+crashed on APE libm/frexp imprecision -- a full rebuild propagates it to every
+object). The parity batch sets `PYTHONPYCACHEPREFIX=/tmp/pyc`. The
 stdlib install at `/sys/lib/python` is not writable by `glenda`, so its in-tree
 `__pycache__` is stale (it predates the `float_neg` fix and marshaled `-0.0`
 constants as `+0.0`). A clean deploy must either install the `.pyc` *after* the

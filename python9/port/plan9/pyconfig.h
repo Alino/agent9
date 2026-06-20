@@ -17,6 +17,13 @@
 
 /* plan9: install-path macros normally passed by the Makefile as -D. getpath.c
  * #errors without them. The stdlib will live under /sys/lib/python. */
+/* plan9: release build -- disable C asserts. CPython release builds define
+ * NDEBUG; ours did not, so strict asserts (e.g. vector_norm's IEEE-scaling
+ * checks) crashed on APE libm imprecision. */
+#ifndef NDEBUG
+#define NDEBUG 1
+#endif
+
 #ifndef PREFIX
 #define PREFIX "/sys/lib/python"
 #endif

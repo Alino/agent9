@@ -4,11 +4,11 @@
   "machine": "amd64",
   "note": "per-module watchdog batch; module=missing means killed/crashed",
   "platform": "plan9",
-  "started_utc": "2026-06-21T01:52:43.044102Z",
+  "started_utc": "2026-06-21T02:05:21.646277Z",
   "testcase_counts": {
    "error": 21,
-   "fail": 38,
-   "pass": 6150,
+   "fail": 36,
+   "pass": 6152,
    "skip": 190
   },
   "version": "3.11.14"
@@ -4616,7 +4616,7 @@
   "?::test.test_math.MathTests.testCos": "pass",
   "?::test.test_math.MathTests.testCosh": "pass",
   "?::test.test_math.MathTests.testDegrees": "pass",
-  "?::test.test_math.MathTests.testDist": "fail",
+  "?::test.test_math.MathTests.testDist": "pass",
   "?::test.test_math.MathTests.testExp": "pass",
   "?::test.test_math.MathTests.testExp2": "pass",
   "?::test.test_math.MathTests.testFabs": "pass",
@@ -4628,7 +4628,7 @@
   "?::test.test_math.MathTests.testFrexp": "pass",
   "?::test.test_math.MathTests.testFsum": "pass",
   "?::test.test_math.MathTests.testGcd": "pass",
-  "?::test.test_math.MathTests.testHypot": "fail",
+  "?::test.test_math.MathTests.testHypot": "pass",
   "?::test.test_math.MathTests.testHypotAccuracy": "pass",
   "?::test.test_math.MathTests.testIsfinite": "pass",
   "?::test.test_math.MathTests.testIsinf": "pass",
