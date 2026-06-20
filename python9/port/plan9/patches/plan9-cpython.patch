@@ -872,7 +872,40 @@
          */
 --- a/Modules/cmathmodule.c
 +++ b/Modules/cmathmodule.c
-@@ -433,11 +433,11 @@
+@@ -139,6 +139,16 @@
+ /* forward declarations */
+ static Py_complex cmath_asinh_impl(PyObject *, Py_complex);
+ static Py_complex cmath_atanh_impl(PyObject *, Py_complex);
++
++/* plan9: sign-bit negation (kencc's unary `-x` is `0.0 - x`, losing -0.0). */
++static double
++_plan9_dneg(double x)
++{
++    union { double d; unsigned long long u; } v;
++    v.d = x;
++    v.u ^= 0x8000000000000000ULL;
++    return v.d;
++}
+ static Py_complex cmath_cosh_impl(PyObject *, Py_complex);
+ static Py_complex cmath_sinh_impl(PyObject *, Py_complex);
+ static Py_complex cmath_sqrt_impl(PyObject *, Py_complex);
+@@ -363,11 +373,13 @@
+ {
+     /* atan(z) = -i atanh(iz) */
+     Py_complex s, r;
+-    s.real = -z.imag;
++    /* plan9: negate via the sign bit -- kencc's unary `-x` is `0.0 - x` and
++       loses the sign of zero, which breaks atan's signed-zero branch cuts. */
++    s.real = _plan9_dneg(z.imag);
+     s.imag = z.real;
+     s = cmath_atanh_impl(module, s);
+     r.real = s.imag;
+-    r.imag = -s.real;
++    r.imag = _plan9_dneg(s.real);
+     return r;
+ }
+ 
+@@ -433,11 +445,11 @@
          */
          h = hypot(z.real/2., z.imag/2.);  /* safe from overflow */
          r.real = z.real/4./h/h;
@@ -889,7 +922,7 @@
          errno = 0;
      } else if (z.real == 1. && ay < CM_SQRT_DBL_MIN) {
          /* C99 standard says:  atanh(1+/-0.) should be inf +/- 0i */
-@@ -1200,7 +1200,11 @@
+@@ -1200,7 +1212,11 @@
          return -1;
      }
  
