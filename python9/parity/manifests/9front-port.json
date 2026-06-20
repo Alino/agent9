@@ -4,11 +4,11 @@
   "machine": "amd64",
   "note": "per-module watchdog batch; module=missing means killed/crashed",
   "platform": "plan9",
-  "started_utc": "2026-06-21T02:24:22.943693Z",
+  "started_utc": "2026-06-21T02:30:16.254488Z",
   "testcase_counts": {
    "error": 20,
-   "fail": 33,
-   "pass": 6157,
+   "fail": 31,
+   "pass": 6159,
    "skip": 190
   },
   "version": "3.11.14"
@@ -2517,7 +2517,7 @@
   "?::test.test_cmath.IsCloseTests.test_fractions": "pass",
   "?::test.test_cmath.IsCloseTests.test_identical": "pass",
   "?::test.test_cmath.IsCloseTests.test_identical_infinite": "pass",
-  "?::test.test_cmath.IsCloseTests.test_inf_ninf_nan": "fail",
+  "?::test.test_cmath.IsCloseTests.test_inf_ninf_nan": "pass",
   "?::test.test_cmath.IsCloseTests.test_integers": "pass",
   "?::test.test_cmath.IsCloseTests.test_near_zero": "pass",
   "?::test.test_cmath.IsCloseTests.test_negative_tolerances": "pass",
@@ -4597,7 +4597,7 @@
   "?::test.test_math.IsCloseTests.test_fractions": "pass",
   "?::test.test_math.IsCloseTests.test_identical": "pass",
   "?::test.test_math.IsCloseTests.test_identical_infinite": "pass",
-  "?::test.test_math.IsCloseTests.test_inf_ninf_nan": "fail",
+  "?::test.test_math.IsCloseTests.test_inf_ninf_nan": "pass",
   "?::test.test_math.IsCloseTests.test_integers": "pass",
   "?::test.test_math.IsCloseTests.test_near_zero": "pass",
   "?::test.test_math.IsCloseTests.test_negative_tolerances": "pass",

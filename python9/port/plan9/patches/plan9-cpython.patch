@@ -678,6 +678,91 @@
  #  define _PyHASH_BITS 61
  #else
  #  define _PyHASH_BITS 31
+--- a/Objects/complexobject.c
++++ b/Objects/complexobject.c
+@@ -42,12 +42,24 @@
+     return r;
+ }
+ 
++/* plan9: kencc compiles unary `-x` on a double as `0.0 - x`, which loses the
++   sign of zero (-(0.0) == +0.0). Negate via the sign bit so complex negation
++   preserves signed zeros (e.g. -0j, -(0+0j)). See also float_neg. */
++static double
++_plan9_dneg(double x)
++{
++    union { double d; unsigned long long u; } v;
++    v.d = x;
++    v.u ^= 0x8000000000000000ULL;
++    return v.d;
++}
++
+ Py_complex
+ _Py_c_neg(Py_complex a)
+ {
+     Py_complex r;
+-    r.real = -a.real;
+-    r.imag = -a.imag;
++    r.real = _plan9_dneg(a.real);
++    r.imag = _plan9_dneg(a.imag);
+     return r;
+ }
+ 
+@@ -94,6 +106,15 @@
+      const double abs_breal = b.real < 0 ? -b.real : b.real;
+      const double abs_bimag = b.imag < 0 ? -b.imag : b.imag;
+ 
++    /* plan9: kencc commutes `abs_breal >= abs_bimag` to `abs_bimag <= abs_breal`
++       and its `<=` codegen is true for a NaN operand, so a NaN-containing
++       denominator wrongly entered the `abs_breal == 0` -> EDOM branch (raising
++       ZeroDivisionError instead of yielding nan+nanj). Handle NaN up front. */
++    if (Py_IS_NAN(b.real) || Py_IS_NAN(b.imag)) {
++        r.real = r.imag = Py_NAN;
++        return r;
++    }
++
+     if (abs_breal >= abs_bimag) {
+         /* divide tops and bottom by b.real */
+         if (abs_breal == 0.0) {
+@@ -364,9 +385,11 @@
+     const char *lead = "";
+     const char *tail = "";
+ 
+-    if (v->cval.real == 0. && copysign(1.0, v->cval.real)==1.0) {
++    if (v->cval.real == 0. && !Py_IS_NAN(v->cval.real) &&
++            copysign(1.0, v->cval.real)==1.0) {
+         /* Real part is +0: just output the imaginary part and do not
+-           include parens. */
++           include parens. (plan9: guard NaN -- kencc `nan == 0.` is true,
++           which would drop a NaN real part from the repr.) */
+         re = "";
+         im = PyOS_double_to_string(v->cval.imag, format_code,
+                                    precision, 0, NULL);
+@@ -544,8 +567,8 @@
+ complex_neg(PyComplexObject *v)
+ {
+     Py_complex neg;
+-    neg.real = -v->cval.real;
+-    neg.imag = -v->cval.imag;
++    neg.real = _plan9_dneg(v->cval.real);
++    neg.imag = _plan9_dneg(v->cval.imag);
+     return PyComplex_FromCComplex(neg);
+ }
+ 
+--- a/Modules/cmathmodule.c
++++ b/Modules/cmathmodule.c
+@@ -1200,7 +1200,11 @@
+         return -1;
+     }
+ 
+-    if ( (a.real == b.real) && (a.imag == b.imag) ) {
++    /* plan9: kencc compiles `x == y` as true for NaN operands; exclude NaN so
++       isclose(complex(nan), complex(nan)) is correctly not-close. */
++    if ( (a.real == b.real) && (a.imag == b.imag)
++         && !Py_IS_NAN(a.real) && !Py_IS_NAN(a.imag)
++         && !Py_IS_NAN(b.real) && !Py_IS_NAN(b.imag) ) {
+         /* short circuit exact equality -- needed to catch two infinities of
+            the same sign. And perhaps speeds things up a bit sometimes.
+         */
 --- a/Modules/mathmodule.c
 +++ b/Modules/mathmodule.c
 @@ -790,6 +790,11 @@
@@ -692,12 +777,10 @@
          m = frexp(x, &e);
          /* We want log2(m * 2**e) == log(m) / log(2) + e.  Care is needed when
           * x is just greater than 1.0: in that case e is 1, log(m) is negative,
-@@ -1151,6 +1156,24 @@
-         return NULL;
-     else
+@@ -1153,6 +1158,24 @@
          return PyFloat_FromDouble(r);
-+}
-+
+ }
+ 
 +/* plan9: APE's acos sets a spurious EDOM at the +-1 boundary; guard the genuine
 +   domain and drop the spurious errno. (exp/cosh/sinh now come from the vendored
 +   plan9_libm.c, which handles inf/nan per C99, so they need no wrapper.) */
@@ -714,9 +797,11 @@
 +    r = acos(x);
 +    errno = 0;                          /* drop APE's spurious boundary EDOM */
 +    return r;
- }
- 
++}
++
  #define FUNC1(funcname, func, can_overflow, docstring)                  \
+     static PyObject * math_##funcname(PyObject *self, PyObject *args) { \
+         return math_1(args, func, can_overflow);                            \
 @@ -1171,7 +1194,7 @@
      }\
      PyDoc_STRVAR(math_##funcname##_doc, docstring);
@@ -788,73 +873,15 @@
      }
      else {
          /* let libm handle finite**finite */
---- a/Objects/complexobject.c
-+++ b/Objects/complexobject.c
-@@ -42,12 +42,24 @@
-     return r;
- }
+@@ -3019,7 +3061,10 @@
+         return -1;
+     }
  
-+/* plan9: kencc compiles unary `-x` on a double as `0.0 - x`, which loses the
-+   sign of zero (-(0.0) == +0.0). Negate via the sign bit so complex negation
-+   preserves signed zeros (e.g. -0j, -(0+0j)). See also float_neg. */
-+static double
-+_plan9_dneg(double x)
-+{
-+    union { double d; unsigned long long u; } v;
-+    v.d = x;
-+    v.u ^= 0x8000000000000000ULL;
-+    return v.d;
-+}
-+
- Py_complex
- _Py_c_neg(Py_complex a)
- {
-     Py_complex r;
--    r.real = -a.real;
--    r.imag = -a.imag;
-+    r.real = _plan9_dneg(a.real);
-+    r.imag = _plan9_dneg(a.imag);
-     return r;
- }
- 
-@@ -94,6 +106,15 @@
-      const double abs_breal = b.real < 0 ? -b.real : b.real;
-      const double abs_bimag = b.imag < 0 ? -b.imag : b.imag;
- 
-+    /* plan9: kencc commutes `abs_breal >= abs_bimag` to `abs_bimag <= abs_breal`
-+       and its `<=` codegen is true for a NaN operand, so a NaN-containing
-+       denominator wrongly entered the `abs_breal == 0` -> EDOM branch (raising
-+       ZeroDivisionError instead of yielding nan+nanj). Handle NaN up front. */
-+    if (Py_IS_NAN(b.real) || Py_IS_NAN(b.imag)) {
-+        r.real = r.imag = Py_NAN;
-+        return r;
-+    }
-+
-     if (abs_breal >= abs_bimag) {
-         /* divide tops and bottom by b.real */
-         if (abs_breal == 0.0) {
-@@ -364,9 +385,11 @@
-     const char *lead = "";
-     const char *tail = "";
- 
--    if (v->cval.real == 0. && copysign(1.0, v->cval.real)==1.0) {
-+    if (v->cval.real == 0. && !Py_IS_NAN(v->cval.real) &&
-+            copysign(1.0, v->cval.real)==1.0) {
-         /* Real part is +0: just output the imaginary part and do not
--           include parens. */
-+           include parens. (plan9: guard NaN -- kencc `nan == 0.` is true,
-+           which would drop a NaN real part from the repr.) */
-         re = "";
-         im = PyOS_double_to_string(v->cval.imag, format_code,
-                                    precision, 0, NULL);
-@@ -544,8 +567,8 @@
- complex_neg(PyComplexObject *v)
- {
-     Py_complex neg;
--    neg.real = -v->cval.real;
--    neg.imag = -v->cval.imag;
-+    neg.real = _plan9_dneg(v->cval.real);
-+    neg.imag = _plan9_dneg(v->cval.imag);
-     return PyComplex_FromCComplex(neg);
- }
- 
+-    if ( a == b ) {
++    /* plan9: kencc compiles `a == b` as true for NaN operands, so this
++       short-circuit would wrongly report isclose(nan, nan) as close. Exclude
++       NaN explicitly (NaN is close to nothing, including itself). */
++    if ( a == b && !Py_IS_NAN(a) && !Py_IS_NAN(b) ) {
+         /* short circuit exact equality -- needed to catch two infinities of
+            the same sign. And perhaps speeds things up a bit sometimes.
+         */
