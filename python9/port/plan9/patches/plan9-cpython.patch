@@ -877,7 +877,19 @@
          */
 --- a/Objects/floatobject.c
 +++ b/Objects/floatobject.c
-@@ -878,7 +878,14 @@
+@@ -769,7 +769,10 @@
+     CONVERT_TO_DOUBLE(w, iw);
+ 
+     /* Sort out special cases here instead of relying on pow() */
+-    if (iw == 0) {              /* v**0 is 1, even 0**0 */
++    /* plan9: kencc compiles `iw == 0` as true when iw is NaN, which would make
++       v**nan return 1 (e.g. (-inf)**nan). Exclude NaN here; the NaN exponent is
++       handled below. */
++    if (iw == 0 && !Py_IS_NAN(iw)) {  /* v**0 is 1, even 0**0 */
+         return PyFloat_FromDouble(1.0);
+     }
+     if (Py_IS_NAN(iv)) {        /* nan**w = nan, unless w == 0 */
+@@ -878,7 +881,14 @@
  static PyObject *
  float_neg(PyFloatObject *v)
  {
@@ -893,7 +905,7 @@
  }
  
  static PyObject *
-@@ -1538,7 +1545,15 @@
+@@ -1538,7 +1548,15 @@
          s++;
      if (s != s_end)
          goto parse_error;
