@@ -60,6 +60,25 @@ sqrt(double x)
 	return hwsqrt(x);		/* finite positive: exact */
 }
 
+/* plan9: real +inf / quiet NaN by bit pattern -- APE's HUGE_VAL is finite, so
+ * CPython's Py_HUGE_VAL/Py_NAN (and NAN) are broken without these. Referenced
+ * from pyconfig.h's NAN/Py_NAN/Py_HUGE_VAL macros. */
+double
+_plan9_inf(void)
+{
+	union { unsigned long long u; double d; } v;
+	v.u = 0x7ff0000000000000ULL;
+	return v.d;
+}
+
+double
+_plan9_nan(void)
+{
+	union { unsigned long long u; double d; } v;
+	v.u = 0x7ff8000000000000ULL;
+	return v.d;
+}
+
 /* C99 math functions APE's libm lacks (CPython 3.11 assumes they exist). */
 double
 copysign(double x, double y)

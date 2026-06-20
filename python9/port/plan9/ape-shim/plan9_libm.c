@@ -168,7 +168,7 @@ double
 cosh(double x)
 {
 	double ax, e;
-	if (x != x)
+	if (isnan(x))
 		return x;			/* nan */
 	if (x > 1.7976931348623157e308 || x < -1.7976931348623157e308)
 		return _libm_inf();		/* cosh(+-inf)=+inf, no errno */
@@ -189,7 +189,7 @@ double
 sinh(double x)
 {
 	double ax, e, r;
-	if (x != x || x == 0.0)
+	if (isnan(x) || x == 0.0)
 		return x;			/* nan, or preserve signed zero */
 	if (x > 1.7976931348623157e308)
 		return _libm_inf();		/* sinh(+inf)=+inf */
@@ -219,7 +219,7 @@ double
 tanh(double x)
 {
 	double ax, t, r;
-	if (x != x || x == 0.0)
+	if (isnan(x) || x == 0.0)
 		return x;			/* nan, or preserve signed zero */
 	ax = fabs(x);
 	if (ax > 22.0)

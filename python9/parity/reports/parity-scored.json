@@ -134,9 +134,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9928163265306122,
+ "parity": 0.9942857142857143,
  "port_bad_modules": {},
- "port_passing": 6081,
+ "port_passing": 6090,
  "regressions": [
   {
    "port_status": "fail",
@@ -156,19 +156,7 @@
   },
   {
    "port_status": "fail",
-   "test": "?::test.test_cmath.CMathTests.test_abs"
-  },
-  {
-   "port_status": "fail",
    "test": "?::test.test_cmath.CMathTests.test_cmath_matches_math"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_cmath.CMathTests.test_phase"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_cmath.CMathTests.test_polar"
   },
   {
    "port_status": "skip",
@@ -189,10 +177,6 @@
   {
    "port_status": "fail",
    "test": "?::test.test_complex.ComplexTest.test_plus_minus_0j"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_complex.ComplexTest.test_pow"
   },
   {
    "port_status": "missing",
@@ -256,19 +240,7 @@
   },
   {
    "port_status": "fail",
-   "test": "?::test.test_math.MathTests.testAtan2"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.testCosh"
-  },
-  {
-   "port_status": "fail",
    "test": "?::test.test_math.MathTests.testDist"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.testFsum"
   },
   {
    "port_status": "fail",
@@ -293,14 +265,6 @@
   {
    "port_status": "error",
    "test": "?::test.test_random.TestDistributions.test_gammavariate_alpha_between_zero_and_one"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_statistics.TestFMean.test_special_values"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_statistics.TestGeometricMean.test_special_values"
   },
   {
    "port_status": "fail",

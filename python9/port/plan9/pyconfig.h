@@ -73,9 +73,17 @@
 #define INT32_C(c)   (c)
 #define INT64_C(c)   (c ## LL)
 #endif
-#ifndef NAN
-#define NAN (HUGE_VAL * 0.0)
-#endif
+/* plan9: APE's HUGE_VAL is a FINITE value (0x7fefffffffffffe2), not +inf, so
+ * the usual `HUGE_VAL * 0.0` for NAN yields 0.0, and Py_NAN/Py_HUGE_VAL (which
+ * CPython derives from these) are broken interpreter-wide -- every math
+ * function returning Py_NAN returned 0.0, and isnan() of the result was false.
+ * Provide real inf/nan via bit patterns (helpers in plan9_compat.c). */
+double _plan9_inf(void);
+double _plan9_nan(void);
+#undef NAN
+#define NAN (_plan9_nan())
+#define Py_HUGE_VAL (_plan9_inf())
+#define Py_NAN (_plan9_nan())
 
 /* plan9: resolve the wchar_t size conflict. APE's <stddef.h> typedefs wchar_t
  * as 2-byte `unsigned short`, but kencc's L"..." wide string/char literals are

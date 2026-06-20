@@ -726,11 +726,32 @@
        "acos($module, x, /)\n--\n\n"
        "Return the arc cosine (measured in radians) of x.\n\n"
        "The result is between 0 and pi.")
-@@ -2860,6 +2883,15 @@
-             else
+@@ -1487,7 +1510,9 @@
+         }
+ 
+         n = i;                              /* ps[i:] = [x] */
+-        if (x != 0.0) {
++        /* plan9: kencc compiles `nan != 0.0` as false, so a NaN x would skip
++           the nonfinite handling and be dropped; admit non-finite x too. */
++        if (x != 0.0 || !Py_IS_FINITE(x)) {
+             if (! Py_IS_FINITE(x)) {
+                 /* a nonfinite x could arise either as
+                    a result of intermediate overflow, or
+@@ -1511,7 +1536,9 @@
+         }
+     }
+ 
+-    if (special_sum != 0.0) {
++    /* plan9: kencc compiles `nan != 0.0` as false, so a NaN special_sum would
++       skip this branch and be dropped; test Py_IS_NAN explicitly. */
++    if (special_sum != 0.0 || Py_IS_NAN(special_sum)) {
+         if (Py_IS_NAN(inf_sum))
+             PyErr_SetString(PyExc_ValueError,
+                             "-inf + inf in fsum");
+@@ -2861,6 +2888,15 @@
                  r = 0.;
          }
-+    }
+     }
 +    else if (x == 0.0 && y < 0.0) {
 +        /* plan9: C99 pow(+-0, y<0) is a divide-by-zero -> +-inf, which CPython
 +           maps to ValueError. APE's pow instead returns DBL_MAX and sets
@@ -739,6 +760,7 @@
 +        int odd_y = (fmod(fabs(y), 2.0) == 1.0);
 +        errno = EDOM;
 +        r = odd_y ? copysign(Py_HUGE_VAL, x) : Py_HUGE_VAL;
-     }
++    }
      else {
          /* let libm handle finite**finite */
+         errno = 0;
