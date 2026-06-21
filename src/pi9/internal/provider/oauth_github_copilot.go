@@ -11,18 +11,18 @@
 //     it
 //
 // Flow:
-//   1. POST github.com/login/device/code → device_code + user_code +
-//      verification_uri + interval + expires_in
-//   2. Show user: "go to https://github.com/login/device and enter
-//      ABCD-EFGH"
-//   3. Poll github.com/login/oauth/access_token every N seconds
-//      until success (or expiry). Server returns
-//      `authorization_pending` until user completes, then
-//      `access_token`.
-//   4. Exchange GitHub access_token for the Copilot token via
-//      api.github.com/copilot_internal/v2/token (different
-//      endpoint, returns a token with embedded expiry +
-//      `proxy-ep=...` for the API base URL).
+//  1. POST github.com/login/device/code → device_code + user_code +
+//     verification_uri + interval + expires_in
+//  2. Show user: "go to https://github.com/login/device and enter
+//     ABCD-EFGH"
+//  3. Poll github.com/login/oauth/access_token every N seconds
+//     until success (or expiry). Server returns
+//     `authorization_pending` until user completes, then
+//     `access_token`.
+//  4. Exchange GitHub access_token for the Copilot token via
+//     api.github.com/copilot_internal/v2/token (different
+//     endpoint, returns a token with embedded expiry +
+//     `proxy-ep=...` for the API base URL).
 //
 // We DO NOT call the model-policy enablement endpoint pi.dev does
 // — pi9 uses whatever models GitHub gives us by default. Adding

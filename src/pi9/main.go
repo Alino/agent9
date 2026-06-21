@@ -40,14 +40,18 @@ The user runs you inside a vts terminal session inside rio.
 Be concise; this is a TUI with limited screen space.
 
 Tools (portable):
-  read_file(path)         read a file
-  write_file(path,content) write a file
+  read(path,offset?,limit?) read a file (offset/limit are 1-indexed lines)
+  write(path,content)     write a whole file (overwrites)
+  edit(path,edits[])      replace exact text regions; each oldText must be unique
   run_rc(command)         run a shell command (rc on plan9, sh elsewhere)
+  grep(pattern,...)       search file contents (regex or literal)
+  find(pattern,...)       find files by glob ('**' recurses)
+  ls(path?)               list a directory
   remember(content)       save a durable fact to long-term memory
   read_skill(name)        load detailed instructions for a named skill
 
-Tools (Plan 9-native — use these when relevant, no other agent can):
-  plumb(port,content)     route text via plumber (port: edit/web/image/…)
+Tools (Plan 9-native - use these when relevant, no other agent can):
+  plumb(port,content)     route text via plumber (port: edit/web/image/...)
   hget(url)               fetch URL via plan9's native HTTP client
   walk(path,depth)        recursive directory listing
   ns(filter)              dump current namespace (per-process!)
@@ -58,11 +62,41 @@ When the user asks you to do something concrete, just do it: call
 tools, observe results, report back briefly. When the user just
 chats, chat back.
 
-On Plan 9 the shell is rc — use rc syntax, not bash. e.g. ` + "`" + `for(f in *)` + "`" + ` not ` + "`" + `for f in *` + "`" + `, no $() or backticks for command substitution.`
+On Plan 9 the shell is rc - use rc syntax, not bash. e.g. ` + "`" + `for(f in *)` + "`" + ` not ` + "`" + `for f in *` + "`" + `, no $() or backticks for command substitution.`
 
 	defaultModel = "moonshotai/kimi-k2.5"
 	maxTurnLoops = 10
 )
+
+// thinkingLevels is the cycle order for Shift+Tab. "off" disables
+// extended thinking / reasoning effort; the rest map to per-provider
+// wire values inside the provider package (see provider.Config.
+// ThinkingLevel). Cycling wraps back to "off" after "xhigh".
+var thinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+
+// nextThinkingLevel returns the level after cur in thinkingLevels,
+// wrapping around. An unknown cur (including "") is treated as "off",
+// so the first cycle lands on "minimal".
+func nextThinkingLevel(cur string) string {
+	for i, l := range thinkingLevels {
+		if l == cur {
+			return thinkingLevels[(i+1)%len(thinkingLevels)]
+		}
+	}
+	return thinkingLevels[1] // off -> minimal
+}
+
+// isThinkingLevel reports whether s is one of the recognized thinking
+// levels (off/minimal/low/medium/high/xhigh). Used to detect a trailing
+// ":LEVEL" shorthand on --model (e.g. "sonnet:high").
+func isThinkingLevel(s string) bool {
+	for _, l := range thinkingLevels {
+		if l == s {
+			return true
+		}
+	}
+	return false
+}
 
 // ---------- Bubble Tea model ----------
 
@@ -72,10 +106,33 @@ type pi9Model struct {
 
 	history chat.History
 
+	// tree is the tree-structured session that owns ALL branches. The
+	// active branch is mirrored into history (which rendering + the agent
+	// loop use UNCHANGED). After each turn saveSession() folds history
+	// back into the tree and persists it as JSONL. Branch navigation
+	// (/fork, /clone, /tree) mutates the tree's leaf and re-materializes
+	// history. Never nil after main() builds the model.
+	tree *chat.SessionTree
+
 	input        []rune
 	inputCursor  int
 	streaming    bool
 	streamCancel context.CancelFunc
+
+	// Task 2.2 steering + follow-up queues (pi parity). While a run is in
+	// flight the user can keep typing: Enter queues a STEERING message
+	// (delivered at the safe point between tool rounds, mid-run) and
+	// Alt+Enter queues a FOLLOW-UP message (delivered only once the whole
+	// run finishes). Alt+Up dequeues the most recent pending message back
+	// into the editor. The queues are ephemeral — nothing extra persists.
+	//
+	// steeringMode / followUpMode mirror pi's settings: drainOneAtATime
+	// (default) delivers one queued message per drain point; drainAll
+	// delivers everything queued at once.
+	steerQueue    msgQueue
+	followUpQueue msgQueue
+	steeringMode  drainMode
+	followUpMode  drainMode
 
 	statusMsg string
 
@@ -84,13 +141,21 @@ type pi9Model struct {
 	tools     []provider.Tool
 	sessionID string
 
+	// thinkingLevel is the current extended-thinking / reasoning level
+	// ("off", "minimal", "low", "medium", "high", "xhigh"). Cycled by
+	// Shift+Tab and passed into provider.Config.ThinkingLevel per request.
+	// hideThinking, toggled by Ctrl+T, hides streamed reasoning text in
+	// the assistant turn without changing what we request from the model.
+	thinkingLevel string
+	hideThinking  bool
+
 	scrollOffset int
 
 	// Phase 10 login picker state. inputMode flips between normal
 	// chat input and provider/key picker overlays for /login.
-	loginMode    loginMode
-	loginCursor  int             // which provider is highlighted
-	loginPicked  provider.ProviderID // chosen provider; we're now in key-entry
+	loginMode   loginMode
+	loginCursor int                 // which provider is highlighted
+	loginPicked provider.ProviderID // chosen provider; we're now in key-entry
 
 	// Model picker state (Phase 12). Activated by /model with no
 	// args. modelList is the merged curated+live list; modelQuery
@@ -101,6 +166,84 @@ type pi9Model struct {
 	modelQuery      []rune
 	modelQueryCur   int
 	modelCursor     int
+
+	// Token / context tracking. lastTotalTokens is the provider-
+	// reported total from the most recent terminal chunk (0 until the
+	// provider reports usage). When it's 0 we fall back to a byte-based
+	// estimate of the whole history for the "NN% ctx" footer indicator.
+	lastTotalTokens int
+
+	// Compaction settings + state. autoCompact toggles auto-compaction
+	// (default on); reserveTokens/keepRecentTokens mirror pi's defaults.
+	// compacting is set while a summarization request is in flight so we
+	// don't fire two at once.
+	autoCompact      bool
+	reserveTokens    int
+	keepRecentTokens int
+	compacting       bool
+
+	// trusted caches whether the project cwd is trusted, so the /trust
+	// hint and prompt-template/project-resource gating don't re-stat on
+	// every keystroke.
+	trusted bool
+
+	// noSession is set by --no-session: the run is ephemeral, so
+	// saveSession() and the startup/exit persistence are skipped. State
+	// still lives in memory for the duration of the run.
+	noSession bool
+
+	// Task 3.3 flag-driven startup actions, consumed once on startupMsg.
+	//   startupResume — -r/--resume: open the /resume picker immediately.
+	//   startupPrompt — the raw initial @file/positional prompt to
+	//                   auto-submit (submitInput @file-expands it); empty
+	//                   when none was given.
+	startupResume bool
+	startupPrompt string
+
+	// Settings overlay state (/settings). When open it replaces the
+	// scrollback like the model picker. settingsCursor selects a row.
+	settingsOpen   bool
+	settingsCursor int
+
+	// Task 2.1 tree-session overlays. Each replaces the scrollback like
+	// the model picker and has its own key handler. Only one is open at a
+	// time.
+	//
+	//   resumeOpen  — /resume: pick a session to switch to.
+	//   forkOpen    — /fork:   pick a prior user message to fork from.
+	//   treeOpen    — /tree:   navigate the branch tree, set the leaf.
+	resumeOpen   bool
+	resumeList   []sessionRow
+	resumeCursor int
+
+	forkOpen   bool
+	forkList   []forkRow
+	forkCursor int
+
+	treeOpen   bool
+	treeList   []treeRow
+	treeCursor int
+
+	// Task 2.4 scoped models. enabledModels is the ordered set Ctrl+P /
+	// Shift+Ctrl+P cycle the active model through (seeded by --models,
+	// edited via /scoped-models). The scopedModels* fields back the
+	// /scoped-models overlay (search box + cursor), reusing the model
+	// picker overlay pattern.
+	enabledModels    []string
+	scopedModelsOpen bool
+	scopedQuery      []rune
+	scopedQueryCur   int
+	scopedCursor     int
+
+	// Task 2.3 autocomplete dropdown. Non-intrusive completion shown only
+	// while a "/" or "@" token is being typed. completeKind selects which
+	// list (slash commands / files); completeList is the current
+	// candidates; completeStart is the rune offset where the active token
+	// begins; completeCursor is the highlighted row.
+	completeKind   completionKind
+	completeList   []completion
+	completeStart  int
+	completeCursor int
 }
 
 // loginMode controls what the input area does. In picker modes the
@@ -115,18 +258,36 @@ const (
 	loginModeOAuthRunning                  // OAuth in progress; status bar shows browser URL
 )
 
-func (m pi9Model) Init() tea.Cmd { return nil }
+// Init fires once when the program starts. We use it to dispatch the
+// startup actions requested by CLI flags: -r/--resume opens the /resume
+// picker, and an initial @file/positional prompt is auto-submitted. Both
+// are delivered via a startupMsg so they run inside the Update loop with a
+// fully-sized model (after the first WindowSizeMsg would be ideal, but the
+// picker and submit paths don't need the size, and submit re-renders).
+func (m pi9Model) Init() tea.Cmd {
+	if !m.startupResume && m.startupPrompt == "" {
+		return nil
+	}
+	return func() tea.Msg { return startupMsg{} }
+}
+
+// startupMsg triggers the flag-driven startup actions (see Init).
+type startupMsg struct{}
 
 // ---------- streaming plumbing ----------
 
 type chunkMsg struct{ delta string }
 
+// reasoningMsg carries a streamed thinking/reasoning delta. Rendered as
+// dimmed "thinking" text in the assistant turn unless hideThinking is on.
+type reasoningMsg struct{ delta string }
+
 // Phase 10 S2 OAuth messages. Sent from the OAuth login goroutine
 // back to the bubbletea Update loop so the picker UI can react.
 //
-//   oauthURLMsg     - URL is built + callback server is up; show URL in status
-//   oauthDoneMsg    - login completed (success or error). UI returns to chat
-//                     and shows result as a local turn.
+//	oauthURLMsg     - URL is built + callback server is up; show URL in status
+//	oauthDoneMsg    - login completed (success or error). UI returns to chat
+//	                  and shows result as a local turn.
 type oauthURLMsg struct{ url string }
 
 // modelsLoadedMsg arrives when the async live-model fetch finishes.
@@ -164,6 +325,7 @@ func fetchModelsCmd(currentID string) tea.Cmd {
 		return modelsLoadedMsg{merged: merged}
 	}
 }
+
 type oauthDoneMsg struct {
 	provider provider.ProviderID
 	err      error
@@ -172,6 +334,7 @@ type oauthDoneMsg struct {
 type streamDoneMsg struct {
 	err       error
 	toolCalls []provider.ToolCall
+	usage     *provider.Usage // provider-reported token accounting, if any
 }
 
 type toolResultMsg struct {
@@ -267,81 +430,130 @@ func runOAuthLogin(providerID provider.ProviderID) tea.Cmd {
 	}
 }
 
-func runStream(ctx context.Context, apiKey, model string, toolList []provider.Tool, msgs []provider.Message) tea.Cmd {
-	return func() tea.Msg {
-		// Phase 10: pick the provider for this model. If the user
-		// has a key for it in auth.json, use that — otherwise fall
-		// back to the apiKey passed in (legacy config.api_key, set
-		// at startup from the OpenRouter slot).
-		providerID := provider.ProviderForModel(model)
+// resolveProvider performs the shared provider-selection + credential
+// resolution used by both runStream and streamOnce. It returns the
+// chosen Provider implementation and the per-request Config (with key,
+// model, tools, and any Codex-Responses smuggling already applied), or
+// an error when no credentials / no implementation exist.
+func resolveProvider(ctx context.Context, apiKey, model, thinkingLevel string, toolList []provider.Tool) (provider.Provider, provider.Config, error) {
+	// Phase 10: pick the provider for this model. If the user has a
+	// key for it in auth.json, use that — otherwise fall back to the
+	// apiKey passed in (legacy config.api_key, set at startup from the
+	// OpenRouter slot).
+	providerID := provider.ProviderForModel(model)
 
-		// Phase 10 S2: if this provider has an OAuth entry and the
-		// token is expired (or near-expired), refresh BEFORE making
-		// the request. The refresh hits the token endpoint
-		// synchronously — adds 1-2s to the first message after a
-		// long pause but is invisible to the user otherwise.
-		key := refreshIfNeeded(ctx, providerID)
-		if key == "" {
-			key = store.LookupAPIKey(string(providerID))
-		}
-		if key == "" {
-			key = apiKey // legacy fallback
-		}
-		if key == "" {
-			return streamDoneMsg{err: fmt.Errorf("no credentials for %q. run /login to add", providerID)}
-		}
+	// Phase 10 S2: if this provider has an OAuth entry and the token
+	// is expired (or near-expired), refresh BEFORE making the request.
+	key := refreshIfNeeded(ctx, providerID)
+	if key == "" {
+		key = store.LookupAPIKey(string(providerID))
+	}
+	if key == "" {
+		key = apiKey // legacy fallback
+	}
+	if key == "" {
+		return nil, provider.Config{}, fmt.Errorf("no credentials for %q. run /login to add", providerID)
+	}
 
-		// Phase 10 S4: when ProviderOpenAI is in use AND the auth
-		// entry is OAuth (ChatGPT Plus/Pro), dispatch to the Codex
-		// Responses API provider instead of the standard OpenAI
-		// Chat Completions provider. The Responses API needs the
-		// chatgpt-account-id header — we smuggle it through the
-		// Config.APIURL field with a "codex:" prefix.
-		var impl provider.Provider
-		cfg := provider.Config{
-			APIKey:    key,
-			Model:     model,
-			MaxTokens: 4096,
-			Tools:     toolList,
+	// Phase 10 S4: OAuth-authed OpenAI (ChatGPT Plus/Pro) dispatches to
+	// the Codex Responses API; the account id is smuggled through
+	// Config.APIURL with a "codex:" prefix.
+	var impl provider.Provider
+	cfg := provider.Config{
+		APIKey:        key,
+		Model:         model,
+		MaxTokens:     4096,
+		Tools:         toolList,
+		ThinkingLevel: thinkingLevel,
+	}
+	if providerID == provider.ProviderOpenAI {
+		if entry, ok := store.LookupAuthEntry(string(provider.ProviderOpenAI)); ok && entry.Type == "oauth" {
+			impl = provider.GetCodexResponses()
+			cfg.APIURL = "codex:" + entry.AccountID
 		}
-		if providerID == provider.ProviderOpenAI {
-			if entry, ok := store.LookupAuthEntry(string(provider.ProviderOpenAI)); ok && entry.Type == "oauth" {
-				// OAuth-authed OpenAI = Codex Responses API.
-				impl = provider.GetCodexResponses()
-				cfg.APIURL = "codex:" + entry.AccountID
+	}
+	if impl == nil {
+		impl = provider.Get(providerID)
+	}
+	if impl == nil {
+		return nil, provider.Config{}, fmt.Errorf("provider %q is not implemented in this build", providerID)
+	}
+	return impl, cfg, nil
+}
+
+// streamOnce runs a one-shot, tool-less streaming request and returns
+// the fully-assembled assistant text (reasoning is ignored). Used by
+// summarizeCmd for compaction. Blocks until the stream completes or ctx
+// is cancelled.
+func streamOnce(ctx context.Context, apiKey, model, thinkingLevel string, msgs []provider.Message) (string, error) {
+	impl, cfg, err := resolveProvider(ctx, apiKey, model, thinkingLevel, nil)
+	if err != nil {
+		return "", err
+	}
+	chunks, errs := impl.Stream(ctx, cfg, msgs)
+	var b strings.Builder
+	for {
+		select {
+		case <-ctx.Done():
+			return b.String(), ctx.Err()
+		case c, ok := <-chunks:
+			if !ok {
+				select {
+				case e := <-errs:
+					return b.String(), e
+				default:
+					return b.String(), nil
+				}
+			}
+			if c.Delta != "" {
+				b.WriteString(c.Delta)
+			}
+		case e := <-errs:
+			if e != nil {
+				return b.String(), e
 			}
 		}
-		if impl == nil {
-			impl = provider.Get(providerID)
-		}
-		if impl == nil {
-			return streamDoneMsg{err: fmt.Errorf("provider %q is not implemented in this build", providerID)}
+	}
+}
+
+func runStream(ctx context.Context, apiKey, model, thinkingLevel string, toolList []provider.Tool, msgs []provider.Message) tea.Cmd {
+	return func() tea.Msg {
+		impl, cfg, err := resolveProvider(ctx, apiKey, model, thinkingLevel, toolList)
+		if err != nil {
+			return streamDoneMsg{err: err}
 		}
 
 		chunks, errs := impl.Stream(ctx, cfg, msgs)
 		var toolCalls []provider.ToolCall
+		var usage *provider.Usage
 		for {
 			select {
 			case <-ctx.Done():
-				return streamDoneMsg{err: ctx.Err()}
+				return streamDoneMsg{err: ctx.Err(), usage: usage}
 			case c, ok := <-chunks:
 				if !ok {
 					select {
 					case e := <-errs:
-						return streamDoneMsg{err: e, toolCalls: toolCalls}
+						return streamDoneMsg{err: e, toolCalls: toolCalls, usage: usage}
 					default:
-						return streamDoneMsg{toolCalls: toolCalls}
+						return streamDoneMsg{toolCalls: toolCalls, usage: usage}
 					}
+				}
+				if c.Reasoning != "" {
+					teaSendFn(reasoningMsg{delta: c.Reasoning})
 				}
 				if c.Delta != "" {
 					teaSendFn(chunkMsg{delta: c.Delta})
 				}
 				if c.Done {
 					toolCalls = c.ToolCalls
+					if c.Usage != nil {
+						usage = c.Usage
+					}
 				}
 			case e := <-errs:
 				if e != nil {
-					return streamDoneMsg{err: e, toolCalls: toolCalls}
+					return streamDoneMsg{err: e, toolCalls: toolCalls, usage: usage}
 				}
 			}
 		}
@@ -402,17 +614,121 @@ func runTool(idx int, name, args string) tea.Cmd {
 
 // ---------- session persistence ----------
 
-// saveSession writes the current history to disk. Best-effort: errors
-// are swallowed because we don't want autosave failures crashing the
-// agent loop. The user sees them via the status bar instead.
+// saveSession folds the active branch (m.history) back into the session
+// tree and persists it as JSONL. Best-effort: errors are swallowed because
+// we don't want autosave failures crashing the agent loop. The user sees
+// them via the status bar instead.
+//
+// SyncFromHistory is idempotent, so calling saveSession repeatedly between
+// turns (as the existing handlers do) adds nothing the second time.
 func (m *pi9Model) saveSession() {
+	// --no-session: ephemeral run. Keep all state in memory but never
+	// touch the session store.
+	if m.noSession {
+		return
+	}
 	if m.sessionID == "" {
 		return
 	}
-	if err := store.SaveAny(m.sessionID, m.history); err != nil {
+	if m.tree == nil {
+		// Defensive: should never happen post-main, but never panic the
+		// agent loop. Fall back to the legacy snapshot save.
+		_ = store.SaveAny(m.sessionID, m.history)
+		return
+	}
+	m.tree.ID = m.sessionID
+	m.tree.SyncFromHistory(&m.history)
+	jsonl, err := m.tree.MarshalJSONL()
+	if err != nil {
 		m.statusMsg = "save failed: " + err.Error()
 		return
 	}
+	if err := store.SaveSessionTree(m.sessionID, jsonl); err != nil {
+		m.statusMsg = "save failed: " + err.Error()
+		return
+	}
+}
+
+// loadSessionTree loads the session tree for id, preferring the new JSONL
+// tree format and migrating a legacy chat.History JSON snapshot when only
+// that exists. Returns nil when nothing loadable is on disk (the caller
+// then starts a fresh tree). system is pinned onto the result.
+func loadSessionTree(id, cwd, system string) *chat.SessionTree {
+	// Prefer the tree format.
+	if data, err := store.LoadSessionTree(id); err == nil {
+		if tree, err := chat.UnmarshalJSONL(data, system); err == nil {
+			return tree
+		} else {
+			fmt.Fprintf(os.Stderr, "pi9: parse session tree %s: %v\n", id, err)
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "pi9: load session tree %s: %v\n", id, err)
+	}
+	// Legacy migration: a chat.History JSON snapshot becomes a single
+	// linear branch.
+	if data, err := store.LoadSession(id); err == nil {
+		var loaded chat.History
+		if err := json.Unmarshal(data, &loaded); err == nil {
+			loaded.RestoreErrs()
+			return chat.FromHistory(id, cwd, &loaded)
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "pi9: load session %s: %v\n", id, err)
+	}
+	return nil
+}
+
+// recordCompaction folds the (pre-compaction) history into the tree and
+// appends a compaction entry whose firstKeptEntryId points at the first
+// kept turn's entry, so the branch reloads as summary + kept tail and the
+// tree's ToProviderMessages honors the compaction. cut is the index of the
+// first kept turn in m.history (turns[:cut] are summarized).
+//
+// Must be called BEFORE applyCompaction mutates m.history.
+func (m *pi9Model) recordCompaction(cut int, summary string, tokensBefore int) {
+	if m.tree == nil {
+		return
+	}
+	// Sync the full pre-compaction history so every turn is an entry and
+	// the leaf sits on the last turn.
+	m.tree.SyncFromHistory(&m.history)
+	// firstKept = the stable id of the first KEPT turn. Use the turn's own ID
+	// (post-sync every turn has one) rather than indexing MessageEntryIDs by
+	// position, which can misalign if the active path holds non-1:1 entries.
+	firstKept := ""
+	if cut >= 0 && cut < len(m.history.Turns) {
+		firstKept = m.history.Turns[cut].ID
+	}
+	if firstKept == "" { // defensive fallback to positional mapping
+		ids := m.tree.MessageEntryIDs()
+		if cut >= 0 && cut < len(ids) {
+			firstKept = ids[cut]
+		}
+	}
+	// Persist the SAME body the live applyCompaction shows (summary + the
+	// <read-files>/<modified-files> footer), so a reloaded compacted session
+	// keeps the file-ops context that was sent to the model live.
+	body := summary
+	if cut >= 0 && cut <= len(m.history.Turns) {
+		readFiles, modifiedFiles := extractFileOps(m.history.Turns[:cut])
+		body = strings.TrimSpace(summary) + formatFileOps(readFiles, modifiedFiles)
+	}
+	m.tree.AppendCompaction(body, firstKept, tokensBefore)
+}
+
+// reMaterialize rebuilds m.history from the tree's current leaf after a
+// branch-navigation operation (/fork, /clone, /tree). The system prompt is
+// re-pinned from the current sources, never trusted from disk.
+func (m *pi9Model) reMaterialize() {
+	if m.tree == nil {
+		return
+	}
+	m.tree.System = m.history.System
+	h := m.tree.Materialize()
+	m.history = *h
+	// Reset provider-reported usage: the active branch changed, so the
+	// last total no longer reflects the context.
+	m.lastTotalTokens = 0
 }
 
 // ---------- input handling ----------
@@ -422,20 +738,180 @@ func (m *pi9Model) submitInput() (tea.Model, tea.Cmd) {
 	if text == "" {
 		return m, nil
 	}
+	// While a run is in flight, Enter QUEUES a steering message rather than
+	// dropping the input. It is delivered at the safe point between tool
+	// rounds (see drainSteering). Slash commands can't be queued (they're
+	// local UI actions), so they're ignored mid-run — the user can run
+	// them once the stream finishes.
 	if m.streaming {
+		if strings.HasPrefix(text, "/") {
+			m.statusMsg = "slash commands can't be queued - wait for the run to finish"
+			return m, nil
+		}
+		m.steerQueue.push(text)
+		m.input = m.input[:0]
+		m.inputCursor = 0
+		m.statusMsg = m.queueStatus()
 		return m, nil
 	}
 	m.input = m.input[:0]
 	m.inputCursor = 0
+	m.clearCompletions()
 
 	// Slash command? Handle locally without bothering the LLM.
 	if strings.HasPrefix(text, "/") {
 		return m.handleSlash(text)
 	}
 
-	m.history.AppendUser(text)
+	// Task 2.3 inline shell. "!cmd" runs cmd and SENDS its output to the
+	// model as context; "!!cmd" runs it but does NOT send (local-only).
+	if kind, cmd := parseInlineShell(text); kind != shellNone {
+		out, _ := tools.RunShellCommand(cmd)
+		switch kind {
+		case shellLocal:
+			// Local-only: render as a Local turn, never sent to the model.
+			m.history.AppendLocal(text, out)
+			m.saveSession()
+			return m, nil
+		case shellSend:
+			// Send the command + its output to the model as a user turn.
+			msg := fmt.Sprintf("$ %s\n%s", cmd, out)
+			m.history.AppendUser(msg)
+			m.saveSession()
+			return m.beginStream()
+		}
+	}
+
+	// Task 2.3 @file include: expand any @path tokens by appending the
+	// referenced files' contents (clearly delimited) to the outgoing
+	// message.
+	out := expandAtFiles(text, nil)
+	m.history.AppendUser(out)
 	m.saveSession()
 	return m.beginStream()
+}
+
+// queueFollowUp queues the current input as a FOLLOW-UP message (Alt+Enter
+// while a run is in flight): delivered only after ALL current work
+// finishes. When idle it behaves like a normal submit so Alt+Enter is
+// never a dead key. Slash commands can't be queued.
+func (m *pi9Model) queueFollowUp() (tea.Model, tea.Cmd) {
+	text := strings.TrimSpace(string(m.input))
+	if text == "" {
+		return m, nil
+	}
+	if !m.streaming {
+		return m.submitInput()
+	}
+	if strings.HasPrefix(text, "/") {
+		m.statusMsg = "slash commands can't be queued - wait for the run to finish"
+		return m, nil
+	}
+	m.followUpQueue.push(text)
+	m.input = m.input[:0]
+	m.inputCursor = 0
+	m.statusMsg = m.queueStatus()
+	return m, nil
+}
+
+// dequeueToEditor pulls the most recently queued (not-yet-sent) message
+// back into the editor for editing (Alt+Up). Follow-up messages dequeue
+// before steering ones (most-recently-queued first within each), matching
+// pi's "restore queued messages" affordance. Returns false when nothing
+// was queued so the caller can fall back to its prior Alt+Up behavior
+// (scroll up).
+func (m *pi9Model) dequeueToEditor() bool {
+	text, ok := m.followUpQueue.popLast()
+	if !ok {
+		text, ok = m.steerQueue.popLast()
+	}
+	if !ok {
+		return false
+	}
+	// Prepend the restored text to whatever is currently in the editor so
+	// nothing the user already typed is lost.
+	cur := string(m.input)
+	combined := text
+	if strings.TrimSpace(cur) != "" {
+		combined = text + "\n\n" + cur
+	}
+	m.input = []rune(combined)
+	m.inputCursor = len(m.input)
+	m.statusMsg = "restored queued message - " + m.queueStatus()
+	return true
+}
+
+// drainSteering is called at the SAFE POINT between tool rounds (after all
+// tool calls of a turn finish, before the next LLM request). If steering
+// messages are queued it delivers them as a new user turn — respecting
+// steeringMode — and begins the next stream from that turn. Returns false
+// (and leaves the queue untouched) when nothing is queued, so the caller
+// continues the loop normally.
+func (m *pi9Model) drainSteering() (tea.Model, tea.Cmd, bool) {
+	text, ok := m.steerQueue.drain(m.steeringMode)
+	if !ok {
+		return m, nil, false
+	}
+	// Close out the in-flight assistant turn that issued the tool calls before
+	// starting the steering turn; otherwise it renders/persists as "running..."
+	// forever (the loop never returns to it).
+	m.history.FinishTurn(nil)
+	m.history.AppendUser(text)
+	m.statusMsg = "steering: " + firstLine(text)
+	m.saveSession()
+	model, cmd := m.beginStream()
+	return model, cmd, true
+}
+
+// drainFollowUp is called once a run FULLY finishes. If follow-up messages
+// are queued it delivers them as the next user turn — respecting
+// followUpMode — and begins a fresh stream. Returns false when nothing is
+// queued. Steering takes precedence: any steering still queued when a run
+// ends is delivered first (as a steering turn) before follow-ups.
+func (m *pi9Model) drainFollowUp() (tea.Model, tea.Cmd, bool) {
+	if !m.steerQueue.empty() {
+		return m.drainSteering()
+	}
+	text, ok := m.followUpQueue.drain(m.followUpMode)
+	if !ok {
+		return m, nil, false
+	}
+	m.history.AppendUser(text)
+	m.statusMsg = "follow-up: " + firstLine(text)
+	m.saveSession()
+	model, cmd := m.beginStream()
+	return model, cmd, true
+}
+
+// queueStatus renders a short indicator of how many messages are queued,
+// e.g. "2 steering, 1 follow-up queued (alt+up to edit)". Returns "" when
+// both queues are empty.
+func (m pi9Model) queueStatus() string {
+	s, f := m.steerQueue.len(), m.followUpQueue.len()
+	if s == 0 && f == 0 {
+		return ""
+	}
+	var parts []string
+	if s > 0 {
+		parts = append(parts, fmt.Sprintf("%d steering", s))
+	}
+	if f > 0 {
+		parts = append(parts, fmt.Sprintf("%d follow-up", f))
+	}
+	return strings.Join(parts, ", ") + " queued (alt+up to edit)"
+}
+
+// firstLine returns the first line of s, trimmed and clipped to a short
+// length, for compact status messages.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > 48 {
+		s = s[:45] + "..." // ASCII only; vtwin lacks U+2026
+	}
+	return s
 }
 
 // handleSlash dispatches a /command. Returns a tea.Cmd; the command
@@ -444,14 +920,64 @@ func (m *pi9Model) submitInput() (tea.Model, tea.Cmd) {
 // Convention: every slash command appends a Local turn so the user
 // has a record of what they ran and what came back. Local turns are
 // excluded from ToProviderMessages.
+// splitArgs tokenizes a slash-command line on whitespace while honoring
+// single and double quotes (matching pi's parseCommandArgs), so
+// `/cmd "foo bar"` yields ["/cmd", "foo bar"]. Quote characters are
+// stripped; inside double quotes a backslash escapes the next character.
+func splitArgs(s string) []string {
+	var args []string
+	var cur strings.Builder
+	inWord := false
+	quote := byte(0) // 0, '\'' or '"'
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else if quote == '"' && c == '\\' && i+1 < len(s) {
+				i++
+				cur.WriteByte(s[i])
+			} else {
+				cur.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			quote = c
+			inWord = true
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			if inWord {
+				args = append(args, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		default:
+			cur.WriteByte(c)
+			inWord = true
+		}
+	}
+	if inWord {
+		args = append(args, cur.String())
+	}
+	return args
+}
+
 func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
-	parts := strings.Fields(text)
+	parts := splitArgs(text)
+	if len(parts) == 0 {
+		return m, nil
+	}
 	cmd := strings.TrimPrefix(parts[0], "/")
 	args := parts[1:]
 
 	switch cmd {
-	case "help", "?", "hotkeys":
+	case "help", "?":
 		m.history.AppendLocal(text, slashHelp())
+		m.saveSession()
+		return m, nil
+
+	case "hotkeys", "keys":
+		// Task 5: dedicated key-binding reference (was aliased to /help).
+		m.history.AppendLocal(text, hotkeysHelp())
 		m.saveSession()
 		return m, nil
 
@@ -520,36 +1046,47 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "clear":
-		// Drop all turns but keep the system prompt.
-		m.history.Turns = nil
-		m.history.AppendLocal(text, "history cleared (system prompt + memory + skills intact).")
+		// Reset the active branch to empty, starting a NEW branch from
+		// before the root so prior turns stay in the tree (reachable via
+		// /tree). Keeps the system prompt + name.
+		if m.tree != nil {
+			m.tree.SetLeaf("")
+		}
+		name := m.history.Name
+		m.history = chat.History{System: m.history.System, Name: name}
+		m.history.AppendLocal(text, "conversation cleared (system prompt + memory + skills intact; prior turns kept in /tree).")
 		m.statusMsg = ""
 		m.saveSession()
 		return m, nil
 
 	case "new":
 		// Start a fresh session, abandoning the current one. The old
-		// session JSON stays on disk; only `current` pointer moves.
+		// session file stays on disk; only the `current` pointer moves.
 		newID := store.NewSessionID()
-		m.history.Turns = nil
-		m.history.Name = ""
+		cwd, _ := os.Getwd()
 		m.sessionID = newID
+		m.tree = chat.NewSessionTree(newID, cwd, m.history.System)
+		m.history = chat.History{System: m.history.System}
 		_ = store.SetCurrentSession(newID)
 		m.history.AppendLocal(text, "started new session "+newID)
 		m.saveSession()
 		return m, nil
 
 	case "name":
-		// Set the session's display name. Persists to JSON.
+		// Set the session's display name. Recorded as a session_info
+		// entry in the tree (via saveSession -> SyncFromHistory).
 		if len(args) == 0 {
 			cur := m.history.Name
 			if cur == "" {
-				cur = "(none — using session id "+m.sessionID+")"
+				cur = "(none - using session id " + m.sessionID + ")"
 			}
 			m.history.AppendLocal(text, "current name: "+cur+"\nusage: /name <new name>")
 		} else {
 			n := strings.Join(args, " ")
 			m.history.Name = n
+			if m.tree != nil {
+				m.tree.AppendSessionInfo(n)
+			}
 			m.history.AppendLocal(text, "session name: "+n)
 		}
 		m.saveSession()
@@ -557,7 +1094,7 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 
 	case "save":
 		m.saveSession()
-		m.history.AppendLocal(text, "saved to "+store.SessionPath(m.sessionID))
+		m.history.AppendLocal(text, "saved to "+store.SessionTreePath(m.sessionID))
 		m.saveSession()
 		return m, nil
 
@@ -571,16 +1108,22 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 			len(m.history.Turns),
 			countNonLocal(m.history.Turns),
 			countLocal(m.history.Turns))
-		fmt.Fprintf(&b, "path:     %s\n", store.SessionPath(m.sessionID))
+		if m.tree != nil {
+			fmt.Fprintf(&b, "entries:  %d in tree (leaf %s)\n", len(m.tree.Tree()), or(m.tree.Leaf(), "(root)"))
+		}
+		fmt.Fprintf(&b, "path:     %s\n", store.SessionTreePath(m.sessionID))
 		m.history.AppendLocal(text, b.String())
 		m.saveSession()
 		return m, nil
 
-	case "sessions", "resume":
-		// List sessions; "/resume" is pi-compatible alias.
-		// True /resume picks a session interactively — we don't have
-		// a picker yet, so we list and tell the user to relaunch
-		// with -session <id>.
+	case "resume":
+		// Interactive session picker overlay (newest first).
+		m.openResume()
+		return m, nil
+
+	case "sessions":
+		// Text listing of sessions (newest first). /resume is the
+		// interactive picker.
 		ids, err := store.ListSessions()
 		var body string
 		if err != nil {
@@ -602,14 +1145,41 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 				}
 				b.WriteByte('\n')
 			}
-			if cmd == "resume" {
-				b.WriteString("\nrelaunch pi9 with -session <id> to resume one")
-			}
+			b.WriteString("\nuse /resume for an interactive picker")
 			body = b.String()
 		}
 		m.history.AppendLocal(text, body)
 		m.saveSession()
 		return m, nil
+
+	case "fork":
+		// Overlay listing prior user messages; selecting one forks a new
+		// branch from that point.
+		if !m.openFork() {
+			m.history.AppendLocal(text, "nothing to fork from (no prior user messages on this branch)")
+			m.saveSession()
+		}
+		return m, nil
+
+	case "clone":
+		// Duplicate the active branch into a new session and switch.
+		return m.cloneSession(text)
+
+	case "tree":
+		// Interactive overlay navigating the branch tree.
+		if !m.openTree() {
+			m.history.AppendLocal(text, "the session tree is empty")
+			m.saveSession()
+		}
+		return m, nil
+
+	case "import":
+		// Load an external .jsonl session file into the store + switch.
+		path := ""
+		if len(args) > 0 {
+			path = args[0]
+		}
+		return m.importSession(text, path)
 
 	case "memory":
 		mem, err := store.LoadMemory()
@@ -645,17 +1215,37 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 				m.history.AppendLocal(text, b.String())
 			}
 		} else {
-			body, err := store.ReadSkillBody(args[0])
+			// Match pi's /skill:name -- build a model-visible skill block
+			// and SUBMIT it as a real user turn so the model actually sees
+			// the skill (AppendLocal is skipped by ToProviderMessages).
+			name := args[0]
+			body, err := store.ReadSkillBody(name)
 			if err != nil {
 				m.history.AppendLocal(text, "error: "+err.Error())
-			} else {
-				m.history.AppendLocal(text, body)
+				m.saveSession()
+				return m, nil
 			}
+			path := name
+			if skills, _ := store.ListSkills(); skills != nil {
+				for _, s := range skills {
+					if s.Name == name {
+						path = s.Path
+						break
+					}
+				}
+			}
+			block := fmt.Sprintf("<skill name=%q location=%q>\n%s\n</skill>", name, path, body)
+			if len(args) > 1 {
+				block += "\n\n" + strings.Join(args[1:], " ")
+			}
+			m.history.AppendUser(block)
+			m.saveSession()
+			return m.beginStream()
 		}
 		m.saveSession()
 		return m, nil
 
-	case "config", "settings":
+	case "config":
 		// Show resolved config (api_key masked).
 		var b strings.Builder
 		cfg, _ := store.LoadConfig()
@@ -665,6 +1255,33 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		fmt.Fprintf(&b, "  api_url       = %s\n", or(cfg.APIURL, "(default)"))
 		fmt.Fprintf(&b, "  ssl_cert_file = %s\n", or(cfg.SSLCertFile, "(none)"))
 		m.history.AppendLocal(text, b.String())
+		m.saveSession()
+		return m, nil
+
+	case "settings":
+		// Task 5: interactive settings overlay (thinking level, auto-
+		// compaction toggle, placeholder theme). Reuses the model/login
+		// picker overlay pattern.
+		m.settingsOpen = true
+		m.settingsCursor = 0
+		m.statusMsg = "settings: arrows to move, enter/space to change, esc to close"
+		return m, nil
+
+	case "trust":
+		// Task 6: mark this project directory trusted so project-local
+		// .pi/ resources (skills, prompts, SYSTEM.md, AGENTS.md) load.
+		cwd, _ := os.Getwd()
+		if err := store.SetTrust(cwd, store.TrustAlways); err != nil {
+			m.history.AppendLocal(text, "error: "+err.Error())
+			m.saveSession()
+			return m, nil
+		}
+		m.trusted = true
+		// Rebuild the system prompt now that project resources are
+		// allowed to load.
+		m.history.System = buildSystemPrompt()
+		m.history.AppendLocal(text, "trusted "+cwd+"\nproject-local .pi/ resources now load. /reload already applied.")
+		m.statusMsg = ""
 		m.saveSession()
 		return m, nil
 
@@ -685,9 +1302,27 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		}
 		old := m.model
 		m.model = args[0]
+		if m.tree != nil && m.model != old {
+			m.tree.AppendModelChange(m.model)
+		}
 		m.history.AppendLocal(text, fmt.Sprintf("model: %s -> %s", old, m.model))
 		m.saveSession()
 		return m, nil
+
+	case "scoped-models", "scoped":
+		// Task 2.4: open the overlay to toggle which models Ctrl+P /
+		// Shift+Ctrl+P cycle through. Reuses the model-picker overlay
+		// pattern; a live OpenRouter fetch merges into modelList async so
+		// the toggle list isn't limited to the curated set.
+		m.scopedModelsOpen = true
+		m.scopedCursor = 0
+		m.scopedQuery = m.scopedQuery[:0]
+		m.scopedQueryCur = 0
+		if len(m.modelList) == 0 {
+			m.modelList = provider.CuratedModels()
+		}
+		m.statusMsg = scopedStatus(m.enabledModels)
+		return m, fetchModelsCmd(m.model)
 
 	case "reload":
 		// Re-read config + memory + skill index. Rebuilds system
@@ -728,24 +1363,39 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "compact":
-		// Manually drop the oldest half of turns. Pi's /compact
-		// actually asks the model to summarize them; we'd need an
-		// extra round-trip with the provider. For now we just trim,
-		// which gets the user out of "running out of context" without
-		// needing a summarization call.
-		//
-		// Future: send turns[:N] to provider with "summarize" prompt,
-		// replace with synthetic assistant turn containing the summary.
-		n := len(m.history.Turns)
-		if n < 4 {
-			m.history.AppendLocal(text, fmt.Sprintf("only %d turns - too few to compact", n))
-		} else {
-			drop := n / 2
-			m.history.Turns = m.history.Turns[drop:]
-			m.history.AppendLocal(text, fmt.Sprintf("dropped oldest %d turns; %d remain", drop, len(m.history.Turns)))
+		// Real compaction (task 2): summarize the oldest turns into one
+		// synthetic assistant turn via the current provider, keeping the
+		// most-recent ~keepRecentTokens worth verbatim. Optional extra
+		// instructions after the command focus the summary:
+		//   /compact focus on the parser bug
+		if m.streaming || m.compacting {
+			m.history.AppendLocal(text, "busy - wait for the current request to finish")
+			m.saveSession()
+			return m, nil
 		}
+		if m.apiKey == "" {
+			m.history.AppendLocal(text, "no API key set - run /login first")
+			m.saveSession()
+			return m, nil
+		}
+		cut := m.compactionCut()
+		if cut <= 0 {
+			// Force a cut for tiny histories so /compact always does
+			// something useful: summarize all but the last turn.
+			if len(m.history.Turns) >= 2 {
+				cut = len(m.history.Turns) - 1
+			} else {
+				m.history.AppendLocal(text, fmt.Sprintf("only %d turn(s) - nothing to compact", len(m.history.Turns)))
+				m.saveSession()
+				return m, nil
+			}
+		}
+		extra := strings.Join(args, " ")
+		m.compacting = true
+		m.statusMsg = "compacting..."
+		turns := append([]chat.Turn(nil), m.history.Turns...)
 		m.saveSession()
-		return m, nil
+		return m, summarizeCmd(m.apiKey, m.model, m.thinkingLevel, turns, cut, extra, false)
 
 	case "copy":
 		// Pi's /copy puts the last assistant message on the
@@ -783,6 +1433,27 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	default:
+		// Task 4: prompt-template dispatch. When /word isn't a built-in,
+		// try to resolve it as a prompt template (global $home/prompts/
+		// *.md, plus project ./.pi/prompts/*.md when trusted). If found,
+		// expand with the remaining args and submit as a normal user
+		// message; otherwise fall through to "unknown command".
+		cwd, _ := os.Getwd()
+		if expanded, found, err := store.ResolvePromptTemplate(cmd, args, cwd, m.trusted); found && err == nil {
+			expanded = strings.TrimSpace(expanded)
+			if expanded == "" {
+				m.history.AppendLocal(text, "template /"+cmd+" expanded to empty text")
+				m.saveSession()
+				return m, nil
+			}
+			m.history.AppendUser(expanded)
+			m.saveSession()
+			return m.beginStream()
+		} else if err != nil {
+			m.history.AppendLocal(text, "template /"+cmd+" error: "+err.Error())
+			m.saveSession()
+			return m, nil
+		}
 		m.history.AppendLocal(text, fmt.Sprintf("unknown command: /%s\nTry /help.", cmd))
 		m.saveSession()
 		return m, nil
@@ -844,8 +1515,8 @@ func exportPlain(h *chat.History) string {
 // handleLoginKey routes key events when we're in the /login picker
 // overlay. Mode flow:
 //
-//   loginModePicker   ↑↓ to navigate, enter to pick, esc to cancel
-//   loginModeKeyEntry typing into m.input, enter to save, esc back
+//	loginModePicker   ↑↓ to navigate, enter to pick, esc to cancel
+//	loginModeKeyEntry typing into m.input, enter to save, esc back
 //
 // Saving stores the key in auth.json under the chosen provider id,
 // rebuilds m.apiKey if the provider matches the current model's,
@@ -1142,6 +1813,9 @@ func (m pi9Model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		old := m.model
 		m.model = picked.ID
 		m.modelPickerOpen = false
+		if m.tree != nil && m.model != old {
+			m.tree.AppendModelChange(m.model)
+		}
 		m.history.AppendLocal("/model", fmt.Sprintf("model: %s -> %s (%s)", old, m.model, picked.Label))
 		m.statusMsg = ""
 		m.saveSession()
@@ -1207,13 +1881,13 @@ func (m pi9Model) filteredModels() []provider.ModelInfo {
 
 // renderModelPicker draws the picker overlay. Layout:
 //
-//   +-----------------------------------------+
-//   | /model: search... [42 / 200 matches]    |
-//   +-----------------------------------------+
-//   | > anthropic/claude-sonnet-4.5  200K    |
-//   |   openai/gpt-5                          |
-//   |   ... visible rows fitted to height     |
-//   +-----------------------------------------+
+//	+-----------------------------------------+
+//	| /model: search... [42 / 200 matches]    |
+//	+-----------------------------------------+
+//	| > anthropic/claude-sonnet-4.5  200K    |
+//	|   openai/gpt-5                          |
+//	|   ... visible rows fitted to height     |
+//	+-----------------------------------------+
 //
 // Highlighted row gets inverted color.
 func (m pi9Model) renderModelPicker(cols, rows int) string {
@@ -1255,7 +1929,7 @@ func (m pi9Model) renderModelPicker(cols, rows int) string {
 		// Provider tag, model ID, optional recent marker
 		marker := " "
 		if mi.Recent {
-			marker = "★"
+			marker = "*" // ASCII only; vtwin lacks U+2605
 		}
 		ctx := ""
 		if mi.ContextWindow > 0 {
@@ -1284,7 +1958,7 @@ func (m pi9Model) renderModelPicker(cols, rows int) string {
 	}
 
 	// Footer
-	footer := " ↑↓ nav · enter select · type filter · esc cancel"
+	footer := " ^v nav - enter select - type filter - esc cancel"
 	out = append(out, lipgloss.NewStyle().
 		Foreground(lipgloss.Color("8")).
 		Render(fitRow(footer, cols)))
@@ -1295,10 +1969,10 @@ func (m pi9Model) renderModelPicker(cols, rows int) string {
 // renderLoginPicker renders the picker overlay in place of the input
 // box. Four modes:
 //
-//   loginModePicker:       provider list
-//   loginModeAuthMethod:   subscription vs api key choice
-//   loginModeKeyEntry:     masked key input box
-//   loginModeOAuthRunning: progress message ("waiting for browser...")
+//	loginModePicker:       provider list
+//	loginModeAuthMethod:   subscription vs api key choice
+//	loginModeKeyEntry:     masked key input box
+//	loginModeOAuthRunning: progress message ("waiting for browser...")
 //
 // Both honor `cols` to fit the available width.
 func (m pi9Model) renderLoginPicker(cols int) string {
@@ -1417,25 +2091,50 @@ func slashHelp() string {
     /name <name>       set this session's display name
     /session           show current session metadata
     /sessions          list sessions, newest first  (pi9-specific)
-    /resume            list sessions + how to load one
+    /resume            interactive session picker (newest first)
+    /tree              navigate the branch tree, jump to any point
+    /fork              fork a new branch from a prior user message
+    /clone             duplicate the active branch into a new session
+    /import <path>     load an external .jsonl session and switch to it
     /clear             clear conversation but keep this session
     /save              force-save current session
     /export [path]     write transcript to a file
-    /compact           trim oldest half of turns
+    /compact [focus]   summarize older turns into one (frees context)
 
   content
     /memory            show $home/lib/pi9/memory.md     (pi9-specific)
-    /skill [name]      list / show a named skill         (pi9-specific)
+    /skill [name]      list skills / inject one as a turn  (pi9-specific)
     /copy              copy last assistant message to /dev/snarf
     /reload            reload config + memory + skills
 
   settings
     /model [name]      show or switch model
-    /config            show resolved config (aliased: /settings)
-    /hotkeys           same as /help
+    /scoped-models     toggle which models Ctrl+P cycles through
+    /config            show resolved config (file values)
+    /settings          interactive settings overlay (thinking, compaction)
+    /trust             trust this project's .pi/ resources
+    /hotkeys           list key bindings (aliased: /keys)
 
   exit
     /quit              (also: /q, /exit, ctrl-c, ctrl-d)
+
+  keys
+    shift+tab          cycle thinking level (off->minimal->...->xhigh->off)
+    ctrl+t             toggle showing the model's thinking text
+    ctrl+p             cycle active model forward through scoped set
+    shift+ctrl+p       cycle active model backward
+    pgup/pgdn          scroll - ctrl+end jump to latest
+
+  editor
+    /                  open slash-command + prompt-template completion
+    @path              fuzzy-complete a file; on send, append its contents
+    !cmd               run cmd, send its output to the model as context
+    !!cmd              run cmd locally, do NOT send to the model
+    tab / enter        accept the highlighted completion - esc dismiss
+
+A /word that isn't a built-in is looked up as a prompt template
+(global $home/prompts/*.md, plus project .pi/prompts/*.md when trusted),
+expanded with its args, and sent to the LLM.
 
 Anything not starting with / is sent to the LLM. Slash commands and
 their responses are visible in the scrollback but excluded from what
@@ -1461,19 +2160,144 @@ func (m *pi9Model) beginStream() (tea.Model, tea.Cmd) {
 		m.saveSession()
 		return m, nil
 	}
+	// Auto-compaction (task 3): if the estimated context exceeds the
+	// model's window minus the reserve, summarize the oldest turns
+	// first. The deferred user turn is sent from the summaryDoneMsg
+	// handler once the synthetic summary turn is in place. Guard against
+	// re-entry (m.compacting) so we don't fire two summarizations.
+	if !m.compacting && m.shouldAutoCompact() {
+		if cut := m.compactionCut(); cut > 0 {
+			m.compacting = true
+			m.streaming = true
+			m.statusMsg = "context full - auto-compacting..."
+			turns := append([]chat.Turn(nil), m.history.Turns...)
+			return m, summarizeCmd(m.apiKey, m.model, m.thinkingLevel, turns, cut, "", true)
+		}
+	}
+
 	m.streaming = true
 	m.statusMsg = "thinking..."
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.streamCancel = cancel
 	msgs := m.history.ToProviderMessages()
-	return m, runStream(ctx, m.apiKey, m.model, m.tools, msgs)
+	return m, runStream(ctx, m.apiKey, m.model, m.thinkingLevel, m.tools, msgs)
+}
+
+// contextWindow returns the active model's context window in tokens, or
+// 0 when unknown.
+func (m pi9Model) contextWindow() int {
+	return provider.ContextWindowFor(m.model)
+}
+
+// contextTokens returns the best estimate of current context usage:
+// the provider-reported total when available, else a byte-based
+// estimate of the whole history.
+func (m pi9Model) contextTokens() int {
+	if m.lastTotalTokens > 0 {
+		return m.lastTotalTokens
+	}
+	return estimateHistoryTokens(&m.history)
+}
+
+// reserve returns the configured reserve-tokens, defaulting when unset.
+func (m pi9Model) reserve() int {
+	if m.reserveTokens > 0 {
+		return m.reserveTokens
+	}
+	return defaultReserveTokens
+}
+
+// keepRecent returns the configured keep-recent-tokens, defaulting when unset.
+func (m pi9Model) keepRecent() int {
+	if m.keepRecentTokens > 0 {
+		return m.keepRecentTokens
+	}
+	return defaultKeepRecentTokens
+}
+
+// shouldAutoCompact reports whether estimated context exceeds the
+// window minus the reserve. Returns false when auto-compaction is off
+// or the window is unknown.
+func (m pi9Model) shouldAutoCompact() bool {
+	if !m.autoCompact {
+		return false
+	}
+	win := m.contextWindow()
+	if win <= 0 {
+		return false
+	}
+	return m.contextTokens() > win-m.reserve()
+}
+
+// compactionCut returns the turn index of the first turn to keep, using
+// the configured keep-recent budget. 0 means "nothing to compact".
+func (m pi9Model) compactionCut() int {
+	return findCompactionCut(m.history.Turns, m.keepRecent())
+}
+
+// contextStatus renders the header's context-usage indicator. With a
+// known window it shows "NN% ctx · 12.3k tok"; without one it shows just
+// the token count. (est) marks a byte-based estimate (no provider usage
+// reported yet).
+func (m pi9Model) contextStatus() string {
+	tok := m.contextTokens()
+	if tok <= 0 {
+		return ""
+	}
+	suffix := ""
+	if m.lastTotalTokens == 0 {
+		suffix = " est"
+	}
+	win := m.contextWindow()
+	if win > 0 {
+		pct := tok * 100 / win
+		return fmt.Sprintf("%d%% ctx (%s/%s%s)", pct, humanTokens(tok), humanTokens(win), suffix)
+	}
+	return fmt.Sprintf("%s tok%s", humanTokens(tok), suffix)
+}
+
+// humanTokens formats a token count compactly: 850, 12.3k, 1.2M.
+func humanTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 // ---------- Update ----------
 
 func (m pi9Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case startupMsg:
+		// Task 3.3: flag-driven startup actions. -r/--resume opens the
+		// picker; an initial @file/positional prompt is auto-submitted.
+		// -r takes precedence: if both were given we open the picker and
+		// stash the prompt in the editor for the user to send after they
+		// pick a session.
+		if m.startupResume {
+			m.startupResume = false
+			if m.startupPrompt != "" {
+				m.input = []rune(m.startupPrompt)
+				m.inputCursor = len(m.input)
+				m.startupPrompt = ""
+			}
+			m.openResume()
+			return m, nil
+		}
+		if m.startupPrompt != "" {
+			prompt := m.startupPrompt
+			m.startupPrompt = ""
+			m.input = []rune(prompt)
+			m.inputCursor = len(m.input)
+			return m.submitInput()
+		}
+		return m, nil
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		// Clamp scroll offset to new size — if window grew, we may
@@ -1504,6 +2328,12 @@ func (m pi9Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case chunkMsg:
 		m.history.AppendDelta(msg.delta)
+		return m, nil
+
+	case reasoningMsg:
+		// Always accumulate reasoning so it can be revealed later by
+		// toggling hideThinking; rendering decides whether to show it.
+		m.history.AppendReasoning(msg.delta)
 		return m, nil
 
 	case oauthURLMsg:
@@ -1550,6 +2380,13 @@ func (m pi9Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case streamDoneMsg:
+		// Capture provider-reported token usage into model state for the
+		// "NN% ctx" footer. The terminal chunk's TotalTokens is the most
+		// accurate figure we get; keep the last non-zero value.
+		if msg.usage != nil && msg.usage.TotalTokens > 0 {
+			m.lastTotalTokens = msg.usage.TotalTokens
+		}
+
 		if msg.err == nil && len(msg.toolCalls) > 0 {
 			var cmds []tea.Cmd
 			for _, tc := range msg.toolCalls {
@@ -1569,6 +2406,58 @@ func (m pi9Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.statusMsg = ""
 		}
+		m.saveSession()
+		// The run fully finished: drain any queued steering (delivered
+		// first) or follow-up messages as the next turn(s). On error we
+		// still deliver so queued work isn't silently lost.
+		if model, cmd, drained := m.drainFollowUp(); drained {
+			return model, cmd
+		}
+		return m, nil
+
+	case summaryDoneMsg:
+		// A compaction summary finished streaming. Replace the
+		// summarized turns with one synthetic assistant turn, then —
+		// for auto-compaction — kick off the user turn we deferred.
+		m.compacting = false
+		if msg.err != nil {
+			m.statusMsg = "compact failed: " + msg.err.Error()
+			if !msg.auto {
+				m.history.AppendLocal("/compact", "summarization failed: "+msg.err.Error())
+			}
+			m.saveSession()
+			// Auto-compaction failed: still send the pending turn so the
+			// user isn't stuck (the request may succeed or surface the
+			// real provider error).
+			if msg.auto {
+				return m.beginStream()
+			}
+			return m, nil
+		}
+		// Recompute the cut against the current history in case it grew;
+		// applyCompaction clamps defensively.
+		cut := msg.cut
+		if cut > len(m.history.Turns) {
+			cut = len(m.history.Turns)
+		}
+		tokensBefore := m.contextTokens()
+		// Record the compaction in the tree BEFORE mutating m.history:
+		// sync the full pre-compaction history so every turn is an entry,
+		// find the first-kept turn's entry id, then append a compaction
+		// entry whose firstKeptEntryId points at it.
+		m.recordCompaction(cut, msg.summary, tokensBefore)
+		dropped := applyCompaction(&m.history, cut, msg.summary)
+		// Provider usage no longer reflects the (now smaller) context;
+		// reset so the footer falls back to the byte estimate until the
+		// next real response reports fresh usage.
+		m.lastTotalTokens = 0
+		if msg.auto {
+			m.statusMsg = fmt.Sprintf("auto-compacted %d turns", dropped)
+			m.saveSession()
+			return m.beginStream()
+		}
+		m.history.AppendLocal("/compact", fmt.Sprintf("summarized %d turns into 1; %d remain", dropped, len(m.history.Turns)))
+		m.statusMsg = ""
 		m.saveSession()
 		return m, nil
 
@@ -1613,7 +2502,18 @@ func (m pi9Model) continueLoop() (tea.Model, tea.Cmd) {
 		m.streamCancel = nil
 		m.statusMsg = "max tool loops"
 		m.saveSession()
+		// The run ended (capped): deliver any queued steering / follow-up
+		// as a fresh turn rather than dropping it.
+		if model, cmd, drained := m.drainFollowUp(); drained {
+			return model, cmd
+		}
 		return m, nil
+	}
+	// SAFE POINT between tool rounds: if the user queued a steering message
+	// while the tools ran, deliver it as the next user turn now (mid-run
+	// course-correction) instead of looping back to the model unchanged.
+	if model, cmd, drained := m.drainSteering(); drained {
+		return model, cmd
 	}
 	return m, func() tea.Msg { return loopContinueMsg{} }
 }
@@ -1637,11 +2537,43 @@ func (m pi9Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.modelPickerOpen {
 		return m.handleModelPickerKey(msg)
 	}
+	// Task 5: settings overlay has its own key handling.
+	if m.settingsOpen {
+		return m.handleSettingsKey(msg)
+	}
+	// Task 2.1: tree-session overlays each have their own key handling.
+	if m.resumeOpen {
+		return m.handleResumeKey(msg)
+	}
+	if m.forkOpen {
+		return m.handleForkKey(msg)
+	}
+	if m.treeOpen {
+		return m.handleTreeKey(msg)
+	}
+	// Task 2.4: /scoped-models overlay has its own key handling.
+	if m.scopedModelsOpen {
+		return m.handleScopedModelsKey(msg)
+	}
+
+	// Task 2.3: when the autocomplete dropdown is open, let it claim
+	// navigation/accept/dismiss keys (tab/enter-on-nothing/up/down/esc)
+	// before normal editor handling. acceptCompletion replaces the token;
+	// plain typing falls through and re-filters via refreshCompletions.
+	if m.completionsOpen() {
+		switch msg.String() {
+		case "up", "down", "tab", "esc":
+			if m.handleCompletionKey(msg.String()) {
+				return m, nil
+			}
+		}
+	}
 
 	switch msg.String() {
 	case "ctrl+c":
 		if m.streaming && m.streamCancel != nil {
 			m.streamCancel()
+			m.restoreQueuesToEditor()
 			m.statusMsg = "cancelled"
 			return m, nil
 		}
@@ -1651,12 +2583,33 @@ func (m pi9Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		if m.streaming && m.streamCancel != nil {
 			m.streamCancel()
+			m.restoreQueuesToEditor()
 			m.statusMsg = "cancelled"
 			return m, nil
 		}
 		return m, tea.Quit
 	case "enter", "ctrl+j", "ctrl+m":
+		// Task 2.3: Enter accepts the highlighted completion when the
+		// dropdown is open instead of submitting, so a /command or @file
+		// can be picked with one key.
+		if m.completionsOpen() {
+			m.acceptCompletion()
+			return m, nil
+		}
 		return m.submitInput()
+	case "ctrl+p":
+		// Task 2.4: cycle the active model forward through the scoped set.
+		m.applyModelCycle(+1)
+		return m, nil
+	case "shift+ctrl+p", "ctrl+shift+p":
+		// Cycle backward. Some terminals report the modifier order
+		// differently, so accept both spellings.
+		m.applyModelCycle(-1)
+		return m, nil
+	case "alt+enter":
+		// Alt+Enter queues a FOLLOW-UP message (delivered only after the
+		// whole run finishes). When idle it behaves like a normal submit.
+		return m.queueFollowUp()
 	case "backspace", "ctrl+h":
 		// Plan 9's keyboard sends 0x08 for backspace which bubbletea
 		// maps to "ctrl+h" (unix terminals send 0x7f → "backspace").
@@ -1665,26 +2618,32 @@ func (m pi9Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input = append(m.input[:m.inputCursor-1], m.input[m.inputCursor:]...)
 			m.inputCursor--
 		}
+		m.refreshCompletions()
 		return m, nil
 	case "left":
 		if m.inputCursor > 0 {
 			m.inputCursor--
 		}
+		m.refreshCompletions()
 		return m, nil
 	case "right":
 		if m.inputCursor < len(m.input) {
 			m.inputCursor++
 		}
+		m.refreshCompletions()
 		return m, nil
 	case "home", "ctrl+a":
 		m.inputCursor = 0
+		m.refreshCompletions()
 		return m, nil
 	case "end", "ctrl+e":
 		m.inputCursor = len(m.input)
+		m.refreshCompletions()
 		return m, nil
 	case "ctrl+u":
 		m.input = m.input[:0]
 		m.inputCursor = 0
+		m.clearCompletions()
 		return m, nil
 
 	// ----- Scrollback navigation -----
@@ -1712,7 +2671,16 @@ func (m pi9Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scrollOffset = 0
 		}
 		return m, nil
-	case "shift+up", "alt+up":
+	case "alt+up":
+		// Alt+Up DEQUEUES the most recently queued (not-yet-sent) message
+		// back into the editor for editing. When nothing is queued it falls
+		// back to scrolling the scrollback one row (its prior behavior).
+		if m.dequeueToEditor() {
+			return m, nil
+		}
+		m.scrollOffset++
+		return m, nil
+	case "shift+up":
 		m.scrollOffset++
 		return m, nil
 	case "shift+down", "alt+down":
@@ -1725,6 +2693,28 @@ func (m pi9Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Jump to live tail.
 		m.scrollOffset = 0
 		return m, nil
+
+	// ----- Thinking level -----
+	// Shift+Tab cycles the requested thinking level; Ctrl+T toggles
+	// whether streamed reasoning is shown. Neither sends a message —
+	// the new level applies to the next request.
+	case "shift+tab":
+		old := m.thinkingLevel
+		m.thinkingLevel = nextThinkingLevel(m.thinkingLevel)
+		if m.tree != nil && m.thinkingLevel != old {
+			m.tree.AppendThinkingChange(m.thinkingLevel)
+			m.saveSession()
+		}
+		m.statusMsg = "thinking: " + m.thinkingLevel
+		return m, nil
+	case "ctrl+t":
+		m.hideThinking = !m.hideThinking
+		if m.hideThinking {
+			m.statusMsg = "thinking hidden"
+		} else {
+			m.statusMsg = "thinking shown"
+		}
+		return m, nil
 	}
 	for _, r := range msg.Runes {
 		if r < 0x20 {
@@ -1733,6 +2723,8 @@ func (m pi9Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.input = append(m.input[:m.inputCursor], append([]rune{r}, m.input[m.inputCursor:]...)...)
 		m.inputCursor++
 	}
+	// Task 2.3: re-evaluate the autocomplete dropdown after typing.
+	m.refreshCompletions()
 	return m, nil
 }
 
@@ -2087,15 +3079,30 @@ func (m pi9Model) View() string {
 	if label != "" {
 		header += statusStyle.Render(fmt.Sprintf("  %s  ", label))
 	}
+	// Task 1: context-usage indicator ("NN% ctx · 12.3k tok"). Always
+	// visible in the header so the user can see how full the window is.
+	if ctx := m.contextStatus(); ctx != "" {
+		header += statusStyle.Render("  " + ctx + "  ")
+	}
 	header = fitRow(header, usableW)
 
 	// ----- Scrollback -----
 	const headerH, inputH, statusH = 1, 3, 1
-	scrollH := m.height - headerH - inputH - statusH
+	// Task 2.3: when the autocomplete dropdown is open it sits between the
+	// scrollback and the input box, so reserve its rows from the
+	// scrollback height (the total layout stays exactly m.height tall).
+	dropdownH := 0
+	if m.completionsOpen() {
+		dropdownH = len(m.completeList)
+		if dropdownH > 8 {
+			dropdownH = 8
+		}
+	}
+	scrollH := m.height - headerH - inputH - statusH - dropdownH
 	if scrollH < 1 {
 		scrollH = 1
 	}
-	scrollback := chat.Render(&m.history, usableW-2)
+	scrollback := chat.Render(&m.history, usableW-2, m.hideThinking)
 	scrollback = fitBlockOffset(scrollback, scrollH, usableW, m.scrollOffset)
 
 	// Phase 12: model picker replaces the scrollback area entirely.
@@ -2112,11 +3119,78 @@ func (m pi9Model) View() string {
 		if m.statusMsg != "" {
 			status = statusStyle.Render(" " + m.statusMsg)
 		} else {
-			status = statusStyle.Render(" /model · enter to select · esc to cancel")
+			status = statusStyle.Render(" /model - enter to select - esc to cancel")
 		}
 		status = fitRow(status, usableW)
 
 		return header + "\n" + picker + "\n" + status
+	}
+
+	// Task 2.4: /scoped-models overlay replaces the scrollback area,
+	// same as the model picker.
+	if m.scopedModelsOpen {
+		overlayH := m.height - headerH - statusH
+		if overlayH < 5 {
+			overlayH = 5
+		}
+		overlay := m.renderScopedModels(usableW, overlayH)
+		var status string
+		if m.statusMsg != "" {
+			status = statusStyle.Render(" " + m.statusMsg)
+		} else {
+			status = statusStyle.Render(" /scoped-models - space to toggle - esc to close")
+		}
+		status = fitRow(status, usableW)
+		return header + "\n" + overlay + "\n" + status
+	}
+
+	// Task 5: settings overlay replaces the scrollback area, same as
+	// the model picker.
+	if m.settingsOpen {
+		overlayH := m.height - headerH - statusH
+		if overlayH < 5 {
+			overlayH = 5
+		}
+		overlay := m.renderSettings(usableW, overlayH)
+
+		var status string
+		if m.statusMsg != "" {
+			status = statusStyle.Render(" " + m.statusMsg)
+		} else {
+			status = statusStyle.Render(" /settings - enter to change - esc to close")
+		}
+		status = fitRow(status, usableW)
+
+		return header + "\n" + overlay + "\n" + status
+	}
+
+	// Task 2.1: tree-session overlays (/resume, /fork, /tree) replace the
+	// scrollback area exactly like the model picker.
+	if m.resumeOpen || m.forkOpen || m.treeOpen {
+		overlayH := m.height - headerH - statusH
+		if overlayH < 5 {
+			overlayH = 5
+		}
+		var overlay, hint string
+		switch {
+		case m.resumeOpen:
+			overlay = m.renderResume(usableW, overlayH)
+			hint = " /resume - enter to load - esc to cancel"
+		case m.forkOpen:
+			overlay = m.renderFork(usableW, overlayH)
+			hint = " /fork - enter to fork - esc to cancel"
+		case m.treeOpen:
+			overlay = m.renderTree(usableW, overlayH)
+			hint = " /tree - enter to jump - esc to cancel"
+		}
+		var status string
+		if m.statusMsg != "" {
+			status = statusStyle.Render(" " + m.statusMsg)
+		} else {
+			status = statusStyle.Render(hint)
+		}
+		status = fitRow(status, usableW)
+		return header + "\n" + overlay + "\n" + status
 	}
 
 	// ----- Input box -----
@@ -2132,16 +3206,33 @@ func (m pi9Model) View() string {
 
 	// ----- Status bar -----
 	var status string
-	if m.statusMsg != "" {
+	if qs := m.queueStatus(); qs != "" && m.statusMsg == "" {
+		status = statusStyle.Render(" " + qs)
+	} else if m.statusMsg != "" {
 		status = statusStyle.Render(" " + m.statusMsg)
 	} else if m.scrollOffset > 0 {
 		status = statusStyle.Render(fmt.Sprintf(" scrolled %d rows up - pgdn/ctrl+end to return", m.scrollOffset))
 	} else {
-		status = statusStyle.Render(" enter to send · /help · ctrl-c to quit")
+		think := m.thinkingLevel
+		if think == "" {
+			think = "off"
+		}
+		hidden := ""
+		if m.hideThinking {
+			hidden = " (hidden)"
+		}
+		status = statusStyle.Render(fmt.Sprintf(" enter to send - /help - think:%s%s (shift+tab) - ctrl-c to quit", think, hidden))
 	}
 	status = fitRow(status, usableW)
 
-	out := header + "\n" + scrollback + "\n" + input + "\n" + status
+	// Task 2.3: the autocomplete dropdown (when open) renders between the
+	// scrollback and the input box. dropdownH rows were already reserved
+	// from the scrollback height above.
+	out := header + "\n" + scrollback + "\n"
+	if dropdownH > 0 {
+		out += m.renderCompletions(usableW, dropdownH) + "\n"
+	}
+	out += input + "\n" + status
 
 	return out
 }
@@ -2152,17 +3243,74 @@ func (m pi9Model) View() string {
 
 // ---------- system prompt assembly ----------
 
-// buildSystemPrompt assembles the system prompt from three sources:
+// CLI system-prompt overrides, set once from --system-prompt /
+// --append-system-prompt in main() (and mirrored into the headless
+// dispatch). They are process-global because the override applies for the
+// whole run, including system-prompt rebuilds triggered by /trust and
+// /reload — matching pi, where the CLI flag replaces/extends the base
+// prompt persistently rather than for a single message.
 //
-//	1. baseSystemPrompt (the always-on instructions)
-//	2. memory.md (declarative facts about user + environment)
-//	3. an index of skills (name + description per line; full body is
-//	   loaded by the model via read_skill)
+//	cliSystemPrompt       — when non-empty, REPLACES the base prompt
+//	                        (and any SYSTEM.md override) entirely.
+//	cliAppendSystemPrompt — when non-empty, appended after the base prompt
+//	                        and the on-disk APPEND_SYSTEM.md text.
+var (
+	cliSystemPrompt       string
+	cliAppendSystemPrompt string
+)
+
+// buildSystemPrompt assembles the system prompt, mirroring pi's
+// resource-loader layering:
 //
-// Sources 2 and 3 are optional; missing or empty just gets omitted.
+//  1. Base: --system-prompt (CLI override) when set, else
+//     store.SystemOverride(cwd,trusted) (SYSTEM.md) when present,
+//     else baseSystemPrompt (the always-on instructions).
+//  2. + store.AppendSystem(cwd,trusted) (APPEND_SYSTEM.md text) and the
+//     --append-system-prompt CLI text.
+//  3. + store.LoadContextFiles(cwd,trusted) (AGENTS.md/CLAUDE.md, already
+//     wrapped in <project_context> blocks).
+//  4. + memory.md (declarative facts about user + environment).
+//  5. + store.FormatSkillsXML(store.ListSkillsFor(cwd,trusted)) (the
+//     model-facing <available_skills> index; full body via read_skill).
+//  6. + the current date (ISO yyyy-mm-dd) and working directory.
+//
+// Project-local resources (SYSTEM.md, skills, AGENTS.md under cwd) are
+// honored only when the project directory is trusted; global resources
+// (under store.Home()) always apply. Missing/empty sources are omitted.
 func buildSystemPrompt() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+	trusted := store.IsTrusted(cwd)
+
 	var b strings.Builder
-	b.WriteString(baseSystemPrompt)
+	switch {
+	case cliSystemPrompt != "":
+		// CLI override wins over SYSTEM.md and the built-in base.
+		b.WriteString(cliSystemPrompt)
+	default:
+		if override, ok := store.SystemOverride(cwd, trusted); ok {
+			b.WriteString(override)
+		} else {
+			b.WriteString(baseSystemPrompt)
+		}
+	}
+
+	if app := strings.TrimSpace(store.AppendSystem(cwd, trusted)); app != "" {
+		b.WriteString("\n\n")
+		b.WriteString(app)
+	}
+
+	if app := strings.TrimSpace(cliAppendSystemPrompt); app != "" {
+		b.WriteString("\n\n")
+		b.WriteString(app)
+	}
+
+	if ctx := strings.TrimSpace(store.LoadContextFiles(cwd, trusted)); ctx != "" {
+		b.WriteString("\n\n")
+		b.WriteString(ctx)
+	}
 
 	mem, _ := store.LoadMemory()
 	mem = strings.TrimSpace(mem)
@@ -2171,21 +3319,78 @@ func buildSystemPrompt() string {
 		b.WriteString(mem)
 	}
 
-	skills, _ := store.ListSkills()
-	if len(skills) > 0 {
+	if skillsXML := store.FormatSkillsXML(store.ListSkillsFor(cwd, trusted)); skillsXML != "" {
 		b.WriteString("\n\n══ Skills (call read_skill(name) to load) ══\n")
-		for _, s := range skills {
-			b.WriteString("- ")
-			b.WriteString(s.Name)
-			if s.Description != "" {
-				b.WriteString(" — ")
-				b.WriteString(s.Description)
-			}
-			b.WriteString("\n")
-		}
+		b.WriteString(skillsXML)
 	}
 
+	b.WriteString("\n\n")
+	b.WriteString(fmt.Sprintf("Today's date is %s.\n", time.Now().Format("2006-01-02")))
+	b.WriteString(fmt.Sprintf("Current working directory: %s\n", cwd))
+
 	return b.String()
+}
+
+// ---------- CLI flag helpers (Task 3.3) ----------
+
+// applyModelProviderOverride resolves the effective model id (and an
+// optional thinking level) from the --model and --provider flags.
+// Precedence:
+//
+//   - modelFlag, when set, replaces the configured default model.
+//   - A trailing ":LEVEL" on the (effective) model id, where LEVEL is a
+//     recognized thinking level (off/minimal/low/medium/high/xhigh), is
+//     parsed off and returned as level; the id keeps the part before it.
+//     Any other suffix (e.g. OpenRouter's ":exacto") is left intact.
+//   - providerFlag, when set, scopes the model to that provider. If the
+//     (effective) model already carries a "provider/" prefix it is left
+//     alone; otherwise the provider is prepended as "provider/model" so
+//     provider.ProviderForModel routes it correctly. A bare --provider
+//     with no model leaves the model untouched (the configured default's
+//     own provider still applies).
+//
+// Pure: no I/O, easy to test. base is the already-resolved default model.
+// level is "" when no valid thinking-level suffix was present.
+func applyModelProviderOverride(base, modelFlag, providerFlag string) (model, level string) {
+	model = base
+	if m := strings.TrimSpace(modelFlag); m != "" {
+		model = m
+	}
+	// Split on the LAST colon so OpenRouter provider/model qualifiers and
+	// suffixes survive; only strip the suffix when it names a thinking
+	// level (preserve e.g. "model:exacto").
+	if i := strings.LastIndex(model, ":"); i >= 0 {
+		if suffix := model[i+1:]; isThinkingLevel(suffix) {
+			level = suffix
+			model = model[:i]
+		}
+	}
+	prov := strings.TrimSpace(providerFlag)
+	if prov == "" {
+		return model, level
+	}
+	// Already provider-qualified? Leave it. We treat any "/" as a
+	// vendor/model qualifier (the OpenRouter convention pi shares).
+	if strings.Contains(model, "/") {
+		return model, level
+	}
+	if model == "" {
+		return model, level
+	}
+	return prov + "/" + model, level
+}
+
+// mostRecentSession returns the newest session id for -c/--continue, or
+// "" when there are no saved sessions. store.ListSessions already returns
+// ids newest-first by mtime, so this is just the head — factored out as a
+// named helper so the precedence is obvious and unit-testable via the
+// injected lister.
+func mostRecentSession(list func() ([]string, error)) string {
+	ids, err := list()
+	if err != nil || len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
 }
 
 // ---------- main ----------
@@ -2198,10 +3403,102 @@ func main() {
 	lipgloss.SetColorProfile(termenv.ANSI256)
 
 	var (
-		flagNew     = flag.Bool("new", false, "start a fresh session (do not resume)")
-		flagSession = flag.String("session", "", "load a specific session by id")
+		flagNew       = flag.Bool("new", false, "start a fresh session (do not resume)")
+		flagSession   = flag.String("session", "", "load a specific session by id")
+		flagThinking  = flag.String("thinking", "off", "thinking level: off, minimal, low, medium, high, xhigh")
+		flagApprove   = flag.Bool("approve", false, "trust this project directory for this run (load project-local .pi/ resources)")
+		flagNoApprove = flag.Bool("no-approve", false, "do not trust this project directory for this run (override a stored 'always')")
+		flagModels    = flag.String("models", "", "comma-separated model patterns to seed the Ctrl+P cycle set (/scoped-models)")
+		// Task 3.2 headless modes. -p/--print prints the answer and exits;
+		// --mode json streams JSONL events; both skip the TUI entirely.
+		flagPrint     = flag.Bool("p", false, "print mode: run the prompt non-interactively and exit (also -print)")
+		flagPrintLong = flag.Bool("print", false, "alias for -p")
+		flagMode      = flag.String("mode", "", "headless output mode: json (JSONL events) or rpc (not implemented)")
+		flagNoSession = flag.Bool("no-session", false, "ephemeral run: do not persist the session")
+		// Task 3.3 model/provider overrides.
+		flagModel    = flag.String("model", "", "override the default model (pattern or provider/id)")
+		flagProvider = flag.String("provider", "", "override the provider (anthropic, openai, openrouter, ...)")
+		// Task 3.3 session selection. -c continues the most recent session;
+		// -r opens the /resume picker at startup. Both have long aliases.
+		flagContinue     = flag.Bool("c", false, "continue the most recent session (also -continue)")
+		flagContinueLong = flag.Bool("continue", false, "alias for -c")
+		flagResume       = flag.Bool("r", false, "open the /resume picker at startup (also -resume)")
+		flagResumeLong   = flag.Bool("resume", false, "alias for -r")
+		// Task 3.3 system-prompt overrides.
+		flagSystemPrompt       = flag.String("system-prompt", "", "replace the base system prompt with this text")
+		flagAppendSystemPrompt = flag.String("append-system-prompt", "", "append this text to the base system prompt")
 	)
 	flag.Parse()
+
+	// Task 3.3: wire the system-prompt overrides into buildSystemPrompt
+	// before ANY prompt is assembled (headless dispatch below and the TUI
+	// path both call buildSystemPrompt). Process-global by design — the
+	// override holds for the whole run, including /trust and /reload
+	// rebuilds.
+	cliSystemPrompt = *flagSystemPrompt
+	cliAppendSystemPrompt = *flagAppendSystemPrompt
+
+	// Long-form aliases fold into the canonical bool flags so the rest of
+	// main() only checks one variable each.
+	continueSession := *flagContinue || *flagContinueLong
+	resumeAtStartup := *flagResume || *flagResumeLong
+
+	// Task 3.2: headless dispatch. If a non-interactive mode is requested
+	// (-p/--print or --mode), run it to completion and os.Exit BEFORE any
+	// TUI / vts raw-mode setup. Config/auth/model resolution below is
+	// shared, so we load just enough here first.
+	if *flagPrint || *flagPrintLong || *flagMode != "" {
+		if err := store.EnsureHome(); err != nil {
+			fmt.Fprintf(os.Stderr, "pi9: ensure home: %v\n", err)
+		}
+		_, _ = store.WriteTemplate()
+		hcfg, err := store.LoadConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pi9: load config: %v\n", err)
+			os.Exit(1)
+		}
+		if hcfg.SSLCertFile != "" && os.Getenv("SSL_CERT_FILE") == "" {
+			_ = os.Setenv("SSL_CERT_FILE", hcfg.SSLCertFile)
+		}
+		if hcfg.APIURL != "" && os.Getenv("OPENROUTER_API_URL") == "" {
+			_ = os.Setenv("OPENROUTER_API_URL", hcfg.APIURL)
+		}
+		hmodel := hcfg.Model
+		if hmodel == "" {
+			hmodel = defaultModel
+		}
+		var hmodelLevel string
+		hmodel, hmodelLevel = applyModelProviderOverride(hmodel, *flagModel, *flagProvider)
+		hthinking := "off"
+		for _, l := range thinkingLevels {
+			if l == *flagThinking {
+				hthinking = l
+				break
+			}
+		}
+		// A ":LEVEL" shorthand on --model wins over a default --thinking, but
+		// an explicit --thinking flag still takes precedence.
+		if hmodelLevel != "" && *flagThinking == "off" {
+			hthinking = hmodelLevel
+		}
+		hcwd, _ := os.Getwd()
+		hsession := *flagSession
+		if hsession == "" {
+			hsession = "ephemeral"
+		}
+		prompt := resolveHeadlessPrompt("", flag.Args(), os.Stdin, stdinIsPipe())
+		os.Exit(dispatchHeadless(context.Background(), headlessOptions{
+			print:     *flagPrint || *flagPrintLong,
+			mode:      *flagMode,
+			prompt:    prompt,
+			model:     hmodel,
+			apiKey:    hcfg.APIKey,
+			thinking:  hthinking,
+			sessionID: hsession,
+			cwd:       hcwd,
+			noSession: *flagNoSession,
+		}))
+	}
 
 	if os.Getenv("vts") != "" {
 		_ = os.MkdirAll("/n/vts", 0755)
@@ -2229,7 +3526,7 @@ func main() {
 	// chat UI before there's even a config path to /login into).
 	if wrote && cfg.APIKey == "" {
 		fmt.Fprintf(os.Stderr,
-			"pi9: first launch — wrote template to %s\n"+
+			"pi9: first launch - wrote template to %s\n"+
 				"     run pi9 again to start the chat.\n"+
 				"     then in pi9: /login sk-or-v1-...\n"+
 				"     get an OpenRouter key at https://openrouter.ai/keys\n",
@@ -2260,52 +3557,118 @@ func main() {
 	if model == "" {
 		model = defaultModel
 	}
+	// Task 3.3: --model / --provider override the configured default.
+	var modelLevel string
+	model, modelLevel = applyModelProviderOverride(model, *flagModel, *flagProvider)
 	apiKey := cfg.APIKey
 
+	// Task 6: trust resolution. -approve / -no-approve persist a trust
+	// decision for the cwd BEFORE the system prompt is assembled (the
+	// prompt only pulls project-local .pi/ resources when trusted).
+	// -no-approve wins if both are passed.
+	cwd, _ := os.Getwd()
+	switch {
+	case *flagNoApprove:
+		_ = store.SetTrust(cwd, store.TrustNever)
+	case *flagApprove:
+		_ = store.SetTrust(cwd, store.TrustAlways)
+	}
+	trusted := store.IsTrusted(cwd)
+
 	// Decide which session to use.
+	//
+	// Precedence (highest first): --session <id> wins; then -c/--continue
+	// selects the newest saved session; then -new forces a brand-new one
+	// (handled below); otherwise we resume the last "current" session.
+	// --no-session makes the run ephemeral: an in-memory session that is
+	// never persisted (saveSession becomes a no-op for it).
 	sessionID := *flagSession
+	if sessionID == "" && continueSession {
+		sessionID = mostRecentSession(store.ListSessions)
+	}
 	if sessionID == "" && !*flagNew {
 		sessionID = store.CurrentSessionID()
 	}
 
 	// Build a fresh history with the assembled system prompt.
 	systemPrompt := buildSystemPrompt()
-	history := chat.History{System: systemPrompt}
 
-	// Attempt to load if we have an id.
+	// Load (or create) the session TREE for this id. loadSessionTree
+	// prefers the new .jsonl format, migrates a legacy .json on the fly,
+	// and falls back to an empty tree when nothing is on disk.
+	var tree *chat.SessionTree
 	if sessionID != "" {
-		if data, err := store.LoadSession(sessionID); err == nil {
-			var loaded chat.History
-			if err := json.Unmarshal(data, &loaded); err == nil {
-				loaded.RestoreErrs()
-				// Always update system prompt from current sources;
-				// memory/skills may have changed since last save.
-				loaded.System = systemPrompt
-				history = loaded
-			}
-		} else if !os.IsNotExist(err) {
-			// Non-not-exist errors are unexpected but not fatal.
-			fmt.Fprintf(os.Stderr, "pi9: load session %s: %v\n", sessionID, err)
-		}
+		tree = loadSessionTree(sessionID, cwd, systemPrompt)
 	}
 
 	// If we don't have a session id yet (either -new, no prior, or
 	// load failed), allocate one and persist as current.
 	if sessionID == "" || *flagNew {
 		sessionID = store.NewSessionID()
+		tree = nil
 	}
-	_ = store.SetCurrentSession(sessionID)
+	if tree == nil {
+		tree = chat.NewSessionTree(sessionID, cwd, systemPrompt)
+	}
+	tree.ID = sessionID
+	tree.System = systemPrompt
+
+	// Materialize the active branch into the flat History the UI uses.
+	history := *tree.Materialize()
+	history.System = systemPrompt
+
+	// --no-session: ephemeral run, so don't mark this id as the current
+	// session on disk (nothing about this run should persist).
+	if !*flagNoSession {
+		_ = store.SetCurrentSession(sessionID)
+	}
+
+	// Validate the requested thinking level; fall back to "off" on a
+	// bad value so a typo doesn't silently send something unexpected.
+	thinking := "off"
+	for _, l := range thinkingLevels {
+		if l == *flagThinking {
+			thinking = l
+			break
+		}
+	}
+	// A ":LEVEL" shorthand on --model (e.g. "sonnet:high") sets the initial
+	// thinking level, unless an explicit --thinking flag overrides it.
+	if modelLevel != "" && *flagThinking == "off" {
+		thinking = modelLevel
+	}
 
 	m := pi9Model{
-		inVts:     os.Getenv("vts"),
-		apiKey:    apiKey,
-		model:     model,
-		tools:     tools.Schemas(),
-		history:   history,
-		sessionID: sessionID,
+		inVts:         os.Getenv("vts"),
+		apiKey:        apiKey,
+		model:         model,
+		tools:         tools.Schemas(),
+		history:       history,
+		tree:          tree,
+		sessionID:     sessionID,
+		thinkingLevel: thinking,
+		trusted:       trusted,
+		noSession:     *flagNoSession,
+		startupResume: resumeAtStartup,
+		// Positional args in interactive mode become the initial prompt
+		// ("pi @file.md ... [prompt]"). submitInput() @file-expands it, so
+		// we stash the RAW joined args (mentions intact) here.
+		startupPrompt:    strings.TrimSpace(strings.Join(flag.Args(), " ")),
+		autoCompact:      true, // on by default, matching pi
+		reserveTokens:    defaultReserveTokens,
+		keepRecentTokens: defaultKeepRecentTokens,
+		// Task 2.4: seed the Ctrl+P cycle set from --models. The curated
+		// catalog backs both seeding and the /scoped-models overlay; the
+		// live OpenRouter list merges in when the overlay is opened.
+		modelList:     provider.CuratedModels(),
+		enabledModels: seedEnabledModels(*flagModels, provider.CuratedModels()),
 	}
 	if noKeyYet {
 		m.statusMsg = "no API key set - run /login <key> to set one"
+	} else if !trusted && store.HasProjectResources(cwd) {
+		// Task 6: one-line hint when untrusted project-local .pi/
+		// resources exist but aren't loaded.
+		m.statusMsg = "untrusted project .pi/ resources found - run /trust to load them"
 	}
 
 	p := tea.NewProgram(
@@ -2335,14 +3698,20 @@ func main() {
 	_, _ = os.Stdout.WriteString("\x1b[?7l")
 	defer os.Stdout.WriteString("\x1b[?7h")
 
-	if _, err := p.Run(); err != nil {
+	final, err := p.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "pi9: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Final save on clean exit (the in-Update saves cover most cases,
-	// but cancellation during a stream could otherwise lose state).
-	_ = store.SaveAny(sessionID, history)
+	// Final save on clean exit (the in-Update saves cover most cases, but
+	// cancellation during a stream could otherwise lose state). Persist the
+	// FINAL model — m.tree / m.sessionID / m.history may have changed during
+	// the session (/resume, /new, /tree, /fork), so the startup locals are
+	// stale; saving them would resurrect an old branch or move the leaf.
+	if fm, ok := final.(pi9Model); ok {
+		fm.saveSession()
+	}
 }
 
 // setVtsRaw toggles raw mode + line-editor on the vts session this

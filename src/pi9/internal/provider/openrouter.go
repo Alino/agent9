@@ -130,6 +130,22 @@ type requestBody struct {
 	MaxTokens int           `json:"max_tokens,omitempty"`
 	Stream    bool          `json:"stream"`
 	Tools     []toolWrapper `json:"tools,omitempty"`
+
+	// ReasoningEffort asks reasoning-capable models how hard to think.
+	// Mapped from Config.ThinkingLevel via levelToReasoningEffort.
+	// Omitted (empty) when thinking is off; models that don't support
+	// it ignore the field.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+
+	// StreamOptions opts into usage accounting on the final SSE chunk.
+	StreamOptions *streamOptions `json:"stream_options,omitempty"`
+}
+
+// streamOptions enables include_usage so the provider appends a final
+// chunk carrying token usage. Supported by OpenAI + most compatible
+// backends; ignored by the rest.
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type toolWrapper struct {
@@ -176,6 +192,14 @@ func streamOpenAICompat(ctx context.Context, cfg Config, messages []Message) (<-
 			Messages:  messages,
 			MaxTokens: cfg.MaxTokens,
 			Stream:    true,
+			// Ask for usage on the terminal chunk. Tolerated by
+			// providers that don't support it.
+			StreamOptions: &streamOptions{IncludeUsage: true},
+		}
+		if thinkingEnabled(cfg.ThinkingLevel) {
+			// Map level -> reasoning_effort; xhigh collapses to high.
+			// Empty result means we leave the field omitted.
+			body.ReasoningEffort = levelToReasoningEffort(cfg.ThinkingLevel)
 		}
 		for _, t := range cfg.Tools {
 			body.Tools = append(body.Tools, toolWrapper{Type: "function", Function: t})
@@ -185,7 +209,16 @@ func streamOpenAICompat(ctx context.Context, cfg Config, messages []Message) (<-
 			errs <- fmt.Errorf("marshal: %w", err)
 			return
 		}
-		req, err := http.NewRequestWithContext(ctx, "POST", endpointURL(), bytes.NewReader(buf))
+		// Use the caller-provided per-provider endpoint, NOT endpointURL()
+		// (which is always OpenRouter). openaiCompat.Stream sets cfg.APIURL
+		// via providerEndpoint; legacy StreamRequest sets it to endpointURL().
+		// Hardcoding endpointURL() here sent every non-OpenRouter provider's
+		// request — and its API key in the Bearer header — to OpenRouter.
+		reqURL := cfg.APIURL
+		if reqURL == "" {
+			reqURL = endpointURL()
+		}
+		req, err := http.NewRequestWithContext(ctx, "POST", reqURL, bytes.NewReader(buf))
 		if err != nil {
 			errs <- fmt.Errorf("new request: %w", err)
 			return
@@ -249,13 +282,50 @@ type sseEvent struct {
 		Delta struct {
 			Content   string         `json:"content"`
 			ToolCalls []sseToolDelta `json:"tool_calls"`
+			// Reasoning is the thinking trace some reasoning models
+			// stream alongside content. OpenRouter uses "reasoning";
+			// a few backends use "reasoning_content". Both parsed.
+			Reasoning        string `json:"reasoning,omitempty"`
+			ReasoningContent string `json:"reasoning_content,omitempty"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	// Usage appears on the final chunk when stream_options.include_usage
+	// was requested. nil on every other chunk.
+	Usage *sseUsage `json:"usage,omitempty"`
 	Error *struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error,omitempty"`
+}
+
+// sseUsage is the OpenAI-compatible usage block on the terminal chunk.
+type sseUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// parseOpenAIUsage converts a wire usage block into the neutral Usage.
+// Returns nil if the block is nil or reports no tokens — pure +
+// testable. TotalTokens is filled from the provider's value, or
+// computed from prompt+completion if the provider omitted it.
+func parseOpenAIUsage(u *sseUsage) *Usage {
+	if u == nil {
+		return nil
+	}
+	if u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	total := u.TotalTokens
+	if total == 0 {
+		total = u.PromptTokens + u.CompletionTokens
+	}
+	return &Usage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      total,
+	}
 }
 
 // readSSE parses the response body as Server-Sent Events and writes
@@ -268,6 +338,13 @@ func readSSE(r io.Reader, out chan<- Chunk) error {
 	// In-flight tool calls indexed by their delta index. OpenAI
 	// streaming guarantees a stable index for each call.
 	toolCalls := map[int]*ToolCall{}
+
+	// Final token usage, if the provider sends it (include_usage). With
+	// stream_options, OpenAI emits a trailing chunk that has empty
+	// choices and a usage block AFTER the finish_reason chunk — so we
+	// stash usage and attach it to the terminal Done chunk rather than
+	// returning early on finish_reason.
+	var usage *Usage
 
 	// flushTools emits the assembled tool calls in index order.
 	flushTools := func() []ToolCall {
@@ -296,7 +373,7 @@ func readSSE(r io.Reader, out chan<- Chunk) error {
 		line, err := br.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				out <- Chunk{Done: true, ToolCalls: flushTools()}
+				out <- Chunk{Done: true, ToolCalls: flushTools(), Usage: usage}
 				return nil
 			}
 			return fmt.Errorf("read: %w", err)
@@ -314,7 +391,7 @@ func readSSE(r io.Reader, out chan<- Chunk) error {
 		}
 		payload := strings.TrimPrefix(line, "data: ")
 		if payload == "[DONE]" {
-			out <- Chunk{Done: true, ToolCalls: flushTools()}
+			out <- Chunk{Done: true, ToolCalls: flushTools(), Usage: usage}
 			return nil
 		}
 		var ev sseEvent
@@ -326,9 +403,21 @@ func readSSE(r io.Reader, out chan<- Chunk) error {
 		if ev.Error != nil {
 			return fmt.Errorf("provider: %s — %s", ev.Error.Type, ev.Error.Message)
 		}
+		// Usage may arrive on a trailing choices-less chunk; capture it
+		// whenever present. Last non-nil value wins.
+		if u := parseOpenAIUsage(ev.Usage); u != nil {
+			usage = u
+		}
 		for _, c := range ev.Choices {
 			if c.Delta.Content != "" {
 				out <- Chunk{Delta: c.Delta.Content}
+			}
+			// Reasoning trace deltas (reasoning models). Prefer
+			// "reasoning"; fall back to "reasoning_content".
+			if r := c.Delta.Reasoning; r != "" {
+				out <- Chunk{Reasoning: r}
+			} else if r := c.Delta.ReasoningContent; r != "" {
+				out <- Chunk{Reasoning: r}
 			}
 			for _, td := range c.Delta.ToolCalls {
 				tc, ok := toolCalls[td.Index]
@@ -349,9 +438,16 @@ func readSSE(r io.Reader, out chan<- Chunk) error {
 					tc.Function.Arguments += td.Function.Arguments
 				}
 			}
+			// finish_reason marks the end of generation, but usage may
+			// still arrive in a following choices-less chunk (OpenAI
+			// include_usage). Only finalize on [DONE]/EOF unless there
+			// are no usage stream-options expectations. We always wait
+			// for [DONE]/EOF so usage isn't dropped.
 			if c.FinishReason != "" {
-				out <- Chunk{Done: true, ToolCalls: flushTools()}
-				return nil
+				// Remember we hit a finish; continue reading for a
+				// possible trailing usage chunk. The stream ends with
+				// [DONE] or EOF which emits the terminal Done chunk.
+				continue
 			}
 		}
 	}

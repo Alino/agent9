@@ -31,9 +31,9 @@ import (
 )
 
 const (
-	anthropicClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	anthropicClientID     = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	anthropicAuthorizeURL = "https://claude.ai/oauth/authorize"
-	anthropicTokenURL    = "https://console.anthropic.com/v1/oauth/token"
+	anthropicTokenURL     = "https://console.anthropic.com/v1/oauth/token"
 	anthropicCallbackPort = 53692
 	anthropicCallbackPath = "/callback"
 	// Scopes ported from pi.dev. user:inference is what we need for
@@ -50,7 +50,7 @@ func anthropicCallbackURL() string {
 // anthropicOAuth implements OAuthProvider for Claude Pro/Max.
 type anthropicOAuth struct{}
 
-func (anthropicOAuth) ID() ProviderID     { return ProviderAnthropic }
+func (anthropicOAuth) ID() ProviderID       { return ProviderAnthropic }
 func (anthropicOAuth) DisplayLabel() string { return "Anthropic (Claude Pro/Max)" }
 
 // Login runs the full Anthropic OAuth flow. Steps mirror pi.dev's:
