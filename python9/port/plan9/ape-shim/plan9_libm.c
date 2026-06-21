@@ -93,7 +93,9 @@ exp(double x)
 	return ldexp(y, k);
 }
 
-#if 0  /* plan9: fdlibm log -- subnormal path NaNs under kencc; keep APE log for now */
+#if 1  /* plan9: vendored fdlibm log (subnormal path fixed via scale-up); APE's
+          log is a few ulp off, which shows up as 24-32 ulp errors in the
+          Lanczos lgamma/tgamma (test_math test_mtestfile). */
 static const double
   ln2_hi = 6.93147180369123816490e-01,
   ln2_lo = 1.90821492927058770002e-10,
@@ -178,7 +180,266 @@ log(double x)
 		return dk * ln2_hi - ((s * (f - R) - dk * ln2_lo) - f);
 	}
 }
+
+/* APE bundles log and log10 in one object, so overriding log requires defining
+   log10 here too (else the bundled object pulls a duplicate log). fdlibm log10
+   built on the accurate log above. */
+double
+log10(double x)
+{
+	static const double
+	  ivln10    = 4.34294481903251816668e-01,
+	  log10_2hi = 3.01029995663611771306e-01,
+	  log10_2lo = 3.69423907715893078616e-13;
+	union { double d; unsigned long long u; } ux;
+	double y, z;
+	int i, k, hx;
+	unsigned int lx;
+
+	ux.d = x;
+	hx = (int)(ux.u >> 32);
+	lx = (unsigned int)(ux.u & 0xffffffff);
+
+	k = 0;
+	if (hx < 0x00100000) {			/* x < 2^-1022 */
+		if (((hx & 0x7fffffff) | lx) == 0) {
+			errno = ERANGE;
+			return -_libm_inf();	/* log10(+-0) = -inf */
+		}
+		if (hx < 0) {
+			errno = EDOM;
+			return _libm_nan();	/* log10(-#) = NaN */
+		}
+		k -= 54;
+		x *= two54;			/* subnormal -> normal */
+		ux.d = x;
+		hx = (int)(ux.u >> 32);
+	}
+	if (hx >= 0x7ff00000)
+		return x + x;			/* inf or nan */
+	k += (hx >> 20) - 1023;
+	i = ((unsigned int)k & 0x80000000) >> 31;
+	hx = (hx & 0x000fffff) | ((0x3ff - i) << 20);
+	y = (double)(k + i);
+	ux.u = (ux.u & 0xffffffffULL) | ((unsigned long long)(unsigned int)hx << 32);
+	x = ux.d;				/* x reduced to [1,2)/[0.5,1) */
+	z = y * log10_2lo + ivln10 * log(x);
+	return z + y * log10_2hi;
+}
 #endif
+
+/* fdlibm __ieee754_pow. APE's pow is a few ulp off, which the Lanczos tgamma
+   amplifies into 30+ ulp errors (test_math test_mtestfile gamma cases). This is
+   the standard correctly-rounded-to-<1ulp implementation, reworked onto 64-bit
+   bit access. Must be kept exact: pow underlies the ** operator everywhere. */
+double
+pow(double x, double y)
+{
+	static const double
+	  bp[] = {1.0, 1.5},
+	  dp_h[] = {0.0, 5.84962487220764160156e-01},
+	  dp_l[] = {0.0, 1.35003920212974897128e-08},
+	  zero = 0.0, one = 1.0, two = 2.0, two53 = 9007199254740992.0,
+	  hugev = 1.0e300, tinyv = 1.0e-300,
+	  L1 = 5.99999999999994648725e-01, L2 = 4.28571428578550184252e-01,
+	  L3 = 3.33333329818377432918e-01, L4 = 2.72728123808534006489e-01,
+	  L5 = 2.30660745775561366331e-01, L6 = 2.06975017800338417784e-01,
+	  P1 = 1.66666666666666019037e-01, P2 = -2.77777777770155933842e-03,
+	  P3 = 6.61375632143793436117e-05, P4 = -1.65339022054652515390e-06,
+	  P5 = 4.13813679705723846039e-08,
+	  lg2 = 6.93147180559945286227e-01, lg2_h = 6.93147182464599609375e-01,
+	  lg2_l = -1.90465429995776804525e-09,
+	  ovt = 8.0085662595372944372e-017,
+	  cp = 9.61796693925975554329e-01, cp_h = 9.61796700954437255859e-01,
+	  cp_l = -7.02846165095275826516e-09,
+	  ivln2 = 1.44269504088896338700e+00, ivln2_h = 1.44269502162933349609e+00,
+	  ivln2_l = 1.92596299112661746887e-08;
+	double z, ax, z_h, z_l, p_h, p_l;
+	double y1, t1, t2, r, s, t, u, v, w;
+	double ss, s2, s_h, s_l, t_h, t_l;
+	int i, j, k, yisint, n;
+	int hx, hy, ix, iy;
+	unsigned int lx, ly;
+	union { double d; unsigned long long u; } uw;
+
+	uw.d = x; hx = (int)(uw.u >> 32); lx = (unsigned int)(uw.u & 0xffffffff);
+	uw.d = y; hy = (int)(uw.u >> 32); ly = (unsigned int)(uw.u & 0xffffffff);
+	ix = hx & 0x7fffffff;
+	iy = hy & 0x7fffffff;
+
+	if ((iy | ly) == 0)
+		return one;				/* x**0 = 1 */
+	if (ix > 0x7ff00000 || ((ix == 0x7ff00000) && (lx != 0)) ||
+	    iy > 0x7ff00000 || ((iy == 0x7ff00000) && (ly != 0)))
+		return x + y;				/* +-NaN */
+
+	yisint = 0;
+	if (hx < 0) {
+		if (iy >= 0x43400000)
+			yisint = 2;			/* even integer y */
+		else if (iy >= 0x3ff00000) {
+			k = (iy >> 20) - 0x3ff;
+			if (k > 20) {
+				j = (int)(ly >> (52 - k));
+				if (((unsigned int)j << (52 - k)) == ly)
+					yisint = 2 - (j & 1);
+			} else if (ly == 0) {
+				j = iy >> (20 - k);
+				if ((j << (20 - k)) == iy)
+					yisint = 2 - (j & 1);
+			}
+		}
+	}
+
+	if (ly == 0) {
+		if (iy == 0x7ff00000) {			/* y is +-inf */
+			if (((ix - 0x3ff00000) | lx) == 0)
+				return one;		/* (-1)**+-inf */
+			else if (ix >= 0x3ff00000)
+				return (hy >= 0) ? y : zero;
+			else
+				return (hy < 0) ? -y : zero;
+		}
+		if (iy == 0x3ff00000) {
+			if (hy < 0) return one / x;
+			else return x;			/* y is +-1 */
+		}
+		if (hy == 0x40000000) return x * x;	/* y is 2 */
+		if (hy == 0x3fe00000) {			/* y is 0.5 */
+			if (hx >= 0) return sqrt(x);
+		}
+	}
+
+	ax = fabs(x);
+	if (lx == 0) {
+		if (ix == 0x7ff00000 || ix == 0 || ix == 0x3ff00000) {
+			z = ax;				/* x is +-0,+-inf,+-1 */
+			if (hy < 0) z = one / z;
+			if (hx < 0) {
+				if (((ix - 0x3ff00000) | yisint) == 0)
+					z = (z - z) / (z - z);	/* (-1)**non-int = NaN */
+				else if (yisint == 1)
+					z = -z;
+			}
+			return z;
+		}
+	}
+
+	n = (hx >> 31) + 1;
+	if ((n | yisint) == 0)
+		return (x - x) / (x - x);		/* (-ve)**(non-int) = NaN */
+
+	s = one;
+	if ((n | (yisint - 1)) == 0) s = -one;	/* (-ve)**(odd int) */
+
+	if (iy > 0x41e00000) {				/* |y| > 2^31 */
+		if (iy > 0x43f00000) {			/* |y| > 2^64 */
+			if (ix <= 0x3fefffff) return (hy < 0) ? hugev * hugev : tinyv * tinyv;
+			if (ix >= 0x3ff00000) return (hy > 0) ? hugev * hugev : tinyv * tinyv;
+		}
+		if (ix < 0x3fefffff) return (hy < 0) ? s * hugev * hugev : s * tinyv * tinyv;
+		if (ix > 0x3ff00000) return (hy > 0) ? s * hugev * hugev : s * tinyv * tinyv;
+		t = ax - one;
+		w = (t * t) * (0.5 - t * (0.3333333333333333333333 - t * 0.25));
+		u = ivln2_h * t;
+		v = t * ivln2_l - w * ivln2;
+		t1 = u + v;
+		uw.d = t1; uw.u &= 0xffffffff00000000ULL; t1 = uw.d;
+		t2 = v - (t1 - u);
+	} else {
+		n = 0;
+		if (ix < 0x00100000) {			/* subnormal x */
+			ax *= two53; n -= 53;
+			uw.d = ax; ix = (int)(uw.u >> 32);
+		}
+		n += ((ix) >> 20) - 0x3ff;
+		j = ix & 0x000fffff;
+		ix = j | 0x3ff00000;
+		if (j <= 0x3988E) k = 0;
+		else if (j < 0xBB67A) k = 1;
+		else { k = 0; n += 1; ix -= 0x00100000; }
+		uw.d = ax; uw.u = (uw.u & 0xffffffffULL) |
+		         ((unsigned long long)(unsigned int)ix << 32); ax = uw.d;
+		u = ax - bp[k];
+		v = one / (ax + bp[k]);
+		ss = u * v;
+		s_h = ss;
+		uw.d = s_h; uw.u &= 0xffffffff00000000ULL; s_h = uw.d;
+		t_h = zero;
+		uw.d = t_h; uw.u = ((unsigned long long)(unsigned int)
+		         (((ix >> 1) | 0x20000000) + 0x00080000 + (k << 18)) << 32); t_h = uw.d;
+		t_l = ax - (t_h - bp[k]);
+		s_l = v * ((u - s_h * t_h) - s_h * t_l);
+		s2 = ss * ss;
+		r = s2 * s2 * (L1 + s2 * (L2 + s2 * (L3 + s2 * (L4 + s2 * (L5 + s2 * L6)))));
+		r += s_l * (s_h + ss);
+		s2 = s_h * s_h;
+		t_h = 3.0 + s2 + r;
+		uw.d = t_h; uw.u &= 0xffffffff00000000ULL; t_h = uw.d;
+		t_l = r - ((t_h - 3.0) - s2);
+		u = s_h * t_h;
+		v = s_l * t_h + t_l * ss;
+		p_h = u + v;
+		uw.d = p_h; uw.u &= 0xffffffff00000000ULL; p_h = uw.d;
+		p_l = v - (p_h - u);
+		z_h = cp_h * p_h;
+		z_l = cp_l * p_h + p_l * cp + dp_l[k];
+		t = (double)n;
+		t1 = (((z_h + z_l) + dp_h[k]) + t);
+		uw.d = t1; uw.u &= 0xffffffff00000000ULL; t1 = uw.d;
+		t2 = z_l - (((t1 - t) - dp_h[k]) - z_h);
+	}
+
+	y1 = y;
+	uw.d = y1; uw.u &= 0xffffffff00000000ULL; y1 = uw.d;
+	p_l = (y - y1) * t1 + y * t2;
+	p_h = y1 * t1;
+	z = p_l + p_h;
+	uw.d = z; j = (int)(uw.u >> 32); i = (int)(unsigned int)(uw.u & 0xffffffff);
+	if (j >= 0x40900000) {				/* z >= 1024 */
+		if (((j - 0x40900000) | i) != 0)
+			return s * hugev * hugev;	/* overflow */
+		if (p_l + ovt > z - p_h)
+			return s * hugev * hugev;	/* overflow */
+	} else if ((j & 0x7fffffff) >= 0x4090cc00) {	/* z <= -1075 */
+		if (((j - (int)0xc090cc00) | i) != 0)
+			return s * tinyv * tinyv;	/* underflow */
+		if (p_l <= z - p_h)
+			return s * tinyv * tinyv;	/* underflow */
+	}
+	i = j & 0x7fffffff;
+	k = (i >> 20) - 0x3ff;
+	n = 0;
+	if (i > 0x3fe00000) {				/* |z| > 0.5 -> n=[z+0.5] */
+		n = j + (0x00100000 >> (k + 1));
+		k = ((n & 0x7fffffff) >> 20) - 0x3ff;
+		t = zero;
+		uw.d = t; uw.u = (uw.u & 0xffffffffULL) |
+		         ((unsigned long long)(unsigned int)(n & ~(0x000fffff >> k)) << 32); t = uw.d;
+		n = ((n & 0x000fffff) | 0x00100000) >> (20 - k);
+		if (j < 0) n = -n;
+		p_h -= t;
+	}
+	t = p_l + p_h;
+	uw.d = t; uw.u &= 0xffffffff00000000ULL; t = uw.d;
+	u = t * lg2_h;
+	v = (p_l - (t - p_h)) * lg2 + t * lg2_l;
+	z = u + v;
+	w = v - (z - u);
+	t = z * z;
+	t1 = z - t * (P1 + t * (P2 + t * (P3 + t * (P4 + t * P5))));
+	r = (z * t1) / (t1 - two) - (w + z * w);
+	z = one - (r - z);
+	uw.d = z; j = (int)(uw.u >> 32);
+	j += (n << 20);
+	if ((j >> 20) <= 0)
+		z = ldexp(z, n);			/* subnormal output */
+	else {
+		uw.d = z; uw.u = (uw.u & 0xffffffffULL) |
+		         ((unsigned long long)(unsigned int)j << 32); z = uw.d;
+	}
+	return s * z;
+}
 
 /* sinh/cosh/tanh built on the accurate exp() above (APE's are imprecise). */
 double
