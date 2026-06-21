@@ -9,6 +9,8 @@
 package chat
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -17,6 +19,19 @@ import (
 
 	"github.com/alino/plan9-winxp/pi9/internal/provider"
 )
+
+// newTurnID returns a fresh, stable per-turn identifier. It is assigned
+// once when a turn is created (AppendUser/AppendLocal) and never changes as
+// the turn's content streams in, which is what lets SessionTree.SyncFromHistory
+// match a growing in-flight turn to its existing entry (and update it in
+// place) instead of appending a duplicate every save.
+func newTurnID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("t%x", time.Now().UnixNano())
+	}
+	return "t" + hex.EncodeToString(b[:])
+}
 
 // ToolInvocation is one tool call + its result, rendered inline in
 // the assistant turn.
@@ -40,14 +55,17 @@ type ToolInvocation struct {
 // rendered like any other turn, but excluded from ToProviderMessages
 // — the LLM doesn't see them.
 type Turn struct {
+	ID        string           `json:"id,omitempty"` // stable identity (see newTurnID); set at creation
 	User      string           `json:"user"`
 	Assistant string           `json:"assistant"`
+	Reasoning string           `json:"reasoning,omitempty"` // streamed thinking text, if any
 	Calls     []ToolInvocation `json:"calls,omitempty"`
 	Started   time.Time        `json:"started"`
 	Finished  time.Time        `json:"finished"`
 	Err       error            `json:"-"`
 	ErrText   string           `json:"err,omitempty"`
 	Local     bool             `json:"local,omitempty"`
+	Synthetic bool             `json:"synthetic,omitempty"` // injected by Materialize (compaction/branch summary); skipped by SyncFromHistory
 }
 
 // History is the ordered list of turns plus the system prompt.
@@ -60,7 +78,7 @@ type History struct {
 // AppendUser begins a new turn from a user message. The assistant
 // portion starts empty and is filled by stream chunks.
 func (h *History) AppendUser(msg string) {
-	h.Turns = append(h.Turns, Turn{User: msg, Started: time.Now()})
+	h.Turns = append(h.Turns, Turn{ID: newTurnID(), User: msg, Started: time.Now()})
 }
 
 // AppendLocal begins a local (slash-command) turn. The user line
@@ -69,6 +87,7 @@ func (h *History) AppendUser(msg string) {
 func (h *History) AppendLocal(user, response string) {
 	now := time.Now()
 	h.Turns = append(h.Turns, Turn{
+		ID:        newTurnID(),
 		User:      user,
 		Assistant: response,
 		Local:     true,
@@ -84,6 +103,17 @@ func (h *History) AppendDelta(delta string) {
 		return
 	}
 	h.Turns[len(h.Turns)-1].Assistant += delta
+}
+
+// AppendReasoning appends streamed thinking/reasoning bytes to the
+// current (last) turn. Rendered (dimmed) before the assistant message;
+// the caller decides whether to display it. Must be called only after
+// AppendUser.
+func (h *History) AppendReasoning(delta string) {
+	if len(h.Turns) == 0 {
+		return
+	}
+	h.Turns[len(h.Turns)-1].Reasoning += delta
 }
 
 // BeginCall registers a tool invocation as in-flight. Returns the
@@ -242,6 +272,12 @@ var (
 			Foreground(lipgloss.Color("8")). // dim
 			Italic(true)
 
+	// thinkingStyle renders streamed reasoning text — dimmed + italic so
+	// it reads as secondary to the assistant's actual reply.
+	thinkingStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("8")). // dim
+			Italic(true)
+
 	// Local turns (slash commands) use magenta to visually distinguish
 	// them from model exchanges.
 	localUserStyle = lipgloss.NewStyle().
@@ -294,8 +330,9 @@ func compactArgs(args string) string {
 }
 
 // RenderTurn formats one turn as a multi-line string for the
-// scrollback viewport. Width is the wrap width.
-func RenderTurn(t Turn, width int) string {
+// scrollback viewport. Width is the wrap width. When hideThinking is
+// true, any streamed reasoning text is omitted from the render.
+func RenderTurn(t Turn, width int, hideThinking bool) string {
 	if t.Local {
 		return renderLocalTurn(t, width)
 	}
@@ -304,6 +341,15 @@ func RenderTurn(t Turn, width int) string {
 	b.WriteString(userStyle.Render("you: "))
 	b.WriteString(wrap(t.User, width-5))
 	b.WriteString("\n\n")
+
+	// Streamed reasoning renders before the reply, dimmed + labelled.
+	if !hideThinking {
+		if reasoning := strings.TrimSpace(t.Reasoning); reasoning != "" {
+			b.WriteString(thinkingStyle.Render("thinking: "))
+			b.WriteString(thinkingStyle.Render(wrap(reasoning, width-10)))
+			b.WriteString("\n\n")
+		}
+	}
 
 	b.WriteString(asstLabel.Render("pi9: "))
 	if t.Err != nil {
@@ -384,11 +430,12 @@ func wrapLine(line string, width int) string {
 	return out.String()
 }
 
-// Render is the full scrollback as one string.
-func Render(h *History, width int) string {
+// Render is the full scrollback as one string. When hideThinking is
+// true, streamed reasoning text is omitted from every turn.
+func Render(h *History, width int, hideThinking bool) string {
 	var b strings.Builder
 	for _, t := range h.Turns {
-		b.WriteString(RenderTurn(t, width))
+		b.WriteString(RenderTurn(t, width, hideThinking))
 		b.WriteString("\n")
 	}
 	return b.String()

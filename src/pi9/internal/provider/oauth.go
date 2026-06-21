@@ -7,17 +7,17 @@
 //
 // Design ported from pi.dev (earendil-works/pi:
 // packages/ai/src/utils/oauth/anthropic.ts). Pi.dev's flow:
-//   1. Generate PKCE verifier + challenge
-//   2. Start local HTTP server on a fixed port (53692 for Anthropic)
-//      to catch the OAuth redirect
-//   3. Build authorize URL with PKCE challenge + scopes + state
-//   4. Open URL in user's browser (plumber on plan9, xdg-open/open on
-//      unix). If no browser available, show URL for user to paste.
-//   5. User authenticates in browser; redirect comes back to our
-//      local server with `code` and `state` query params
-//   6. Verify state matches (CSRF protection)
-//   7. POST code+verifier to token endpoint, get access+refresh tokens
-//   8. Persist to auth.json with expires timestamp
+//  1. Generate PKCE verifier + challenge
+//  2. Start local HTTP server on a fixed port (53692 for Anthropic)
+//     to catch the OAuth redirect
+//  3. Build authorize URL with PKCE challenge + scopes + state
+//  4. Open URL in user's browser (plumber on plan9, xdg-open/open on
+//     unix). If no browser available, show URL for user to paste.
+//  5. User authenticates in browser; redirect comes back to our
+//     local server with `code` and `state` query params
+//  6. Verify state matches (CSRF protection)
+//  7. POST code+verifier to token endpoint, get access+refresh tokens
+//  8. Persist to auth.json with expires timestamp
 //
 // Plan 9 specifics:
 //   - Browser launch: `plumb -d web <url>` (uses default web handler
@@ -437,8 +437,9 @@ func postOAuthJSON(ctx context.Context, url string, body map[string]interface{})
 //
 // Session 2: Anthropic (Claude Pro/Max).
 // Session 3: + OpenAI Codex (ChatGPT Plus/Pro) — auth-only, see
-//            oauth_openai_codex.go for the Responses-API caveat.
-//            + GitHub Copilot — device flow, fully wired.
+//
+//	oauth_openai_codex.go for the Responses-API caveat.
+//	+ GitHub Copilot — device flow, fully wired.
 func OAuthProviders() []OAuthProvider {
 	return []OAuthProvider{
 		anthropicOAuth{},

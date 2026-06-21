@@ -121,10 +121,22 @@ func AppendMemory(content string) error {
 
 // Skill is one available skill: name, short description, and its
 // file path. The full body is loaded on demand via ReadSkillBody.
+//
+// The extra frontmatter fields mirror the Agent Skills spec (see
+// docs/skills.md): License, Compatibility, AllowedTools (the
+// space-delimited `allowed-tools` list), and DisableModelInvocation
+// (the `disable-model-invocation` flag). Disabled skills are excluded
+// from the model-facing index (FormatSkillsXML) but remain loadable by
+// name via ReadSkillBody.
 type Skill struct {
 	Name        string
 	Description string
 	Path        string
+
+	License                string
+	Compatibility          string
+	AllowedTools           []string
+	DisableModelInvocation bool
 }
 
 // SkillsDir returns the skills directory path.
@@ -153,24 +165,150 @@ func ListSkills() ([]Skill, error) {
 			continue
 		}
 		p := filepath.Join(dir, e.Name())
-		name, desc, _, err := parseSkillFile(p)
+		s, _, err := parseSkill(p)
 		if err != nil {
 			continue
 		}
-		if name == "" {
+		if s.Name == "" {
 			// Fall back to filename without extension.
-			name = strings.TrimSuffix(e.Name(), ".md")
+			s.Name = strings.TrimSuffix(e.Name(), ".md")
 		}
-		skills = append(skills, Skill{
-			Name:        name,
-			Description: desc,
-			Path:        p,
-		})
+		skills = append(skills, s)
 	}
 	sort.Slice(skills, func(i, j int) bool {
 		return skills[i].Name < skills[j].Name
 	})
 	return skills, nil
+}
+
+// ListSkillsFor returns the union of global skills (Home()/skills) and, when
+// trusted, project skills discovered by walking from cwd UP to the git (or
+// filesystem) root looking for ./.pi/skills and ./.agents/skills directories.
+//
+// Direct *.md files in each skills directory are loaded as individual skills.
+// Skills are deduped by name (first found wins; global skills are added first
+// so they take precedence) and the result is sorted by name. A skill with
+// DisableModelInvocation set is still returned here — callers decide whether
+// to hide it (FormatSkillsXML does).
+func ListSkillsFor(cwd string, trusted bool) []Skill {
+	seen := make(map[string]bool)
+	var out []Skill
+
+	add := func(s Skill) {
+		if s.Name == "" || seen[s.Name] {
+			return
+		}
+		seen[s.Name] = true
+		out = append(out, s)
+	}
+
+	// Global skills first (highest precedence on name collisions).
+	if global, err := ListSkills(); err == nil {
+		for _, s := range global {
+			add(s)
+		}
+	}
+
+	if trusted {
+		if abs, err := filepath.Abs(cwd); err == nil {
+			root := gitOrFSRoot(abs)
+			dir := abs
+			for {
+				add2 := func(skillsDir string) {
+					for _, s := range loadSkillsFromDir(skillsDir) {
+						add(s)
+					}
+				}
+				add2(filepath.Join(dir, configDirName, "skills"))
+				add2(filepath.Join(dir, ".agents", "skills"))
+				if dir == root {
+					break
+				}
+				parent := filepath.Dir(dir)
+				if parent == dir {
+					break
+				}
+				dir = parent
+			}
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// loadSkillsFromDir loads direct *.md files in dir as individual skills.
+// A missing directory yields no skills. The name falls back to the file
+// stem when frontmatter has no name.
+func loadSkillsFromDir(dir string) []Skill {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []Skill
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		s, _, err := parseSkill(p)
+		if err != nil {
+			continue
+		}
+		if s.Name == "" {
+			s.Name = strings.TrimSuffix(e.Name(), ".md")
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// FormatSkillsXML renders skills as the model-facing index:
+//
+//	<available_skills>
+//	  <skill>
+//	    <name>...</name>
+//	    <description>...</description>
+//	    <location>...</location>
+//	  </skill>
+//	  ...
+//	</available_skills>
+//
+// Skills with DisableModelInvocation set are omitted. Returns "" when no
+// visible skills remain. XML-significant characters are escaped.
+func FormatSkillsXML(skills []Skill) string {
+	var visible []Skill
+	for _, s := range skills {
+		if !s.DisableModelInvocation {
+			visible = append(visible, s)
+		}
+	}
+	if len(visible) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("<available_skills>\n")
+	for _, s := range visible {
+		b.WriteString("  <skill>\n")
+		b.WriteString("    <name>" + escapeXML(s.Name) + "</name>\n")
+		b.WriteString("    <description>" + escapeXML(s.Description) + "</description>\n")
+		b.WriteString("    <location>" + escapeXML(s.Path) + "</location>\n")
+		b.WriteString("  </skill>\n")
+	}
+	b.WriteString("</available_skills>")
+	return b.String()
+}
+
+// escapeXML escapes the five XML predefined entities.
+func escapeXML(s string) string {
+	r := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&apos;",
+	)
+	return r.Replace(s)
 }
 
 // ReadSkillBody returns the full markdown body of the named skill
@@ -205,55 +343,98 @@ func ReadSkillBody(name string) (string, error) {
 // parseSkillFile reads a skill markdown file and returns name,
 // description (from frontmatter) and body (everything else).
 //
-// Frontmatter format:
-//
-//	---
-//	name: foo
-//	description: ...
-//	---
-//	<body...>
-//
-// Frontmatter lines are key:value. We only care about name + description;
-// other fields are silently ignored.
+// It is a thin wrapper over parseSkill that keeps the original
+// three-value shape used by ReadSkillBody and ListSkills.
 func parseSkillFile(path string) (name, desc, body string, err error) {
-	b, err := os.ReadFile(path)
+	s, body, err := parseSkill(path)
 	if err != nil {
 		return "", "", "", err
 	}
-	text := string(b)
+	return s.Name, s.Description, body, nil
+}
 
-	// Detect frontmatter.
-	const marker = "---\n"
-	if !strings.HasPrefix(text, marker) {
-		// No frontmatter; entire file is body.
-		return "", "", text, nil
+// parseSkill reads a skill markdown file and returns the parsed Skill
+// (with Path set) plus the body (frontmatter stripped). Frontmatter
+// keys recognized: name, description, license, compatibility,
+// allowed-tools, disable-model-invocation. Unknown keys are ignored.
+func parseSkill(path string) (Skill, string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return Skill{}, "", err
 	}
-	rest := text[len(marker):]
-	end := strings.Index(rest, "\n"+marker)
-	if end < 0 {
-		// Malformed: no closing marker.
-		return "", "", text, nil
+	front, body := splitFrontmatter(string(b))
+	s := Skill{
+		Name:                   front["name"],
+		Description:            front["description"],
+		Path:                   path,
+		License:                front["license"],
+		Compatibility:          front["compatibility"],
+		DisableModelInvocation: parseBoolFrontmatter(front["disable-model-invocation"]),
 	}
-	front := rest[:end]
-	body = rest[end+len("\n"+marker):]
-	for _, line := range strings.Split(front, "\n") {
+	if at := strings.TrimSpace(front["allowed-tools"]); at != "" {
+		s.AllowedTools = strings.Fields(at)
+	}
+	return s, body, nil
+}
+
+// splitFrontmatter splits leading YAML-ish frontmatter (delimited by ---
+// lines) from the body. Returns a key->value map (values quote-trimmed)
+// and the remaining body with leading newlines stripped. When no
+// frontmatter is present the map is empty and the whole text is the body.
+//
+// The parser is intentionally minimal (line-based key:value) — no yaml
+// dependency. It tolerates "---\n" or "---\r\n" delimiters.
+func splitFrontmatter(text string) (map[string]string, string) {
+	front := map[string]string{}
+
+	// Normalize the opening delimiter detection without rewriting CRLFs
+	// throughout the body.
+	trimmed := strings.TrimPrefix(text, "\ufeff") // strip UTF-8 BOM if present
+	if !strings.HasPrefix(trimmed, "---\n") && !strings.HasPrefix(trimmed, "---\r\n") {
+		return front, trimmed
+	}
+	// Position just past the opening "---" line.
+	nl := strings.IndexByte(trimmed, '\n')
+	rest := trimmed[nl+1:]
+
+	// Find the closing delimiter line.
+	var frontText, body string
+	if i := strings.Index(rest, "\n---\n"); i >= 0 {
+		frontText = rest[:i]
+		body = rest[i+len("\n---\n"):]
+	} else if i := strings.Index(rest, "\n---\r\n"); i >= 0 {
+		frontText = rest[:i]
+		body = rest[i+len("\n---\r\n"):]
+	} else if strings.HasPrefix(rest, "---\n") || strings.HasPrefix(rest, "---\r\n") {
+		// Empty frontmatter block: opening immediately followed by closing.
+		frontText = ""
+		body = rest[strings.IndexByte(rest, '\n')+1:]
+	} else {
+		// No closing delimiter; treat the whole thing as body.
+		return front, trimmed
+	}
+
+	for _, line := range strings.Split(frontText, "\n") {
+		line = strings.TrimRight(line, "\r")
 		colon := strings.Index(line, ":")
 		if colon < 0 {
 			continue
 		}
 		k := strings.TrimSpace(line[:colon])
 		v := strings.TrimSpace(line[colon+1:])
-		// Trim surrounding quotes if present.
 		v = strings.Trim(v, `"'`)
-		switch k {
-		case "name":
-			name = v
-		case "description":
-			desc = v
+		if k != "" {
+			front[k] = v
 		}
 	}
 	body = strings.TrimLeft(body, "\n")
-	return name, desc, body, nil
+	return front, body
+}
+
+// parseBoolFrontmatter interprets a frontmatter scalar as a boolean.
+// Only an explicit "true" (case-insensitive) is true.
+func parseBoolFrontmatter(v string) bool {
+	return strings.EqualFold(strings.TrimSpace(v), "true")
 }
 
 // ---------- Config ----------
@@ -429,9 +610,17 @@ func CurrentPath() string {
 	return filepath.Join(SessionsDir(), "current")
 }
 
-// SessionPath returns the path to a specific session's JSON file.
+// SessionPath returns the path to a specific session's legacy JSON file.
+//
+// New sessions are written as JSONL (see SessionTreePath); SessionPath is
+// retained for migration + the legacy chat.History save path.
 func SessionPath(id string) string {
 	return filepath.Join(SessionsDir(), id+".json")
+}
+
+// SessionTreePath returns the path to a session's tree-format JSONL file.
+func SessionTreePath(id string) string {
+	return filepath.Join(SessionsDir(), id+".jsonl")
 }
 
 // NewSessionID returns a fresh session identifier based on the
@@ -495,8 +684,65 @@ func SaveAny(id string, v any) error {
 	return SaveSession(id, data)
 }
 
-// ListSessions returns all session ids (filename without .json), newest
-// first by mtime.
+// SaveSessionTree writes the tree-format JSONL bytes to
+// sessions/<id>.jsonl. Atomic via write-to-tmp + rename, same as
+// SaveSession. The caller marshals the tree (chat.SessionTree.MarshalJSONL).
+func SaveSessionTree(id string, jsonl []byte) error {
+	if err := EnsureHome(); err != nil {
+		return err
+	}
+	final := SessionTreePath(id)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, jsonl, 0644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// LoadSessionTree reads the JSONL bytes for a session. Callers parse them
+// via chat.UnmarshalJSONL. Returns os.ErrNotExist if absent.
+func LoadSessionTree(id string) ([]byte, error) {
+	return os.ReadFile(SessionTreePath(id))
+}
+
+// HasSessionTree reports whether a JSONL session file exists for id.
+func HasSessionTree(id string) bool {
+	_, err := os.Stat(SessionTreePath(id))
+	return err == nil
+}
+
+// ImportSessionTree copies an external JSONL session file at path into the
+// store under id (deriving id from the file's stem when id is ""). Returns
+// the id used. The bytes are written verbatim; callers should validate
+// parseability with chat.UnmarshalJSONL first.
+func ImportSessionTree(id, path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	if id == "" {
+		base := filepath.Base(path)
+		base = strings.TrimSuffix(base, ".jsonl")
+		base = strings.TrimSuffix(base, ".json")
+		id = base
+	}
+	if id == "" {
+		return "", fmt.Errorf("could not derive session id from %q", path)
+	}
+	if err := SaveSessionTree(id, data); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// ListSessions returns all session ids, newest first by mtime, merging
+// both the new tree format (sessions/<id>.jsonl) and legacy snapshots
+// (sessions/<id>.json). When an id has both files, the newer mtime wins
+// for ordering and the id appears once (the loader prefers .jsonl).
 func ListSessions() ([]string, error) {
 	dir := SessionsDir()
 	entries, err := os.ReadDir(dir)
@@ -506,29 +752,45 @@ func ListSessions() ([]string, error) {
 		}
 		return nil, err
 	}
-	type entry struct {
-		id    string
-		mtime time.Time
-	}
-	var list []entry
+	// id -> newest mtime seen across .json / .jsonl.
+	best := map[string]time.Time{}
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasSuffix(name, ".json") {
+		var id string
+		switch {
+		case strings.HasSuffix(name, ".jsonl"):
+			id = strings.TrimSuffix(name, ".jsonl")
+		case strings.HasSuffix(name, ".json"):
+			id = strings.TrimSuffix(name, ".json")
+		default:
+			continue
+		}
+		if id == "" || id == "current" {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		list = append(list, entry{
-			id:    strings.TrimSuffix(name, ".json"),
-			mtime: info.ModTime(),
-		})
+		if prev, ok := best[id]; !ok || info.ModTime().After(prev) {
+			best[id] = info.ModTime()
+		}
+	}
+	type entry struct {
+		id    string
+		mtime time.Time
+	}
+	list := make([]entry, 0, len(best))
+	for id, mt := range best {
+		list = append(list, entry{id: id, mtime: mt})
 	}
 	sort.Slice(list, func(i, j int) bool {
+		if list[i].mtime.Equal(list[j].mtime) {
+			return list[i].id > list[j].id
+		}
 		return list[i].mtime.After(list[j].mtime)
 	})
 	out := make([]string, len(list))

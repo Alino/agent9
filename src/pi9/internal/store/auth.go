@@ -8,11 +8,11 @@
 // File layout (per-user, plan9 path $home/lib/pi9/auth.json,
 // mode 0600):
 //
-//   {
-//     "anthropic":  { "type": "api_key", "key": "sk-ant-..." },
-//     "openrouter": { "type": "api_key", "key": "sk-or-v1-..." },
-//     "openai":     { "type": "api_key", "key": "sk-..." }
-//   }
+//	{
+//	  "anthropic":  { "type": "api_key", "key": "sk-ant-..." },
+//	  "openrouter": { "type": "api_key", "key": "sk-or-v1-..." },
+//	  "openai":     { "type": "api_key", "key": "sk-..." }
+//	}
 //
 // Future shapes (Session 2/3): OAuth tokens with type="oauth", with
 // access_token/refresh_token/expires_at fields. Code paths already
@@ -185,7 +185,7 @@ func ClearProvider(provider string) error {
 //
 // In normal pi9 use, main.go wraps this:
 //
-//   provider.LookupAPIKeyWithRefresh(string(providerID))
+//	provider.LookupAPIKeyWithRefresh(string(providerID))
 //
 // which threads the refresh callback for us.
 func LookupAPIKey(provider string) string {

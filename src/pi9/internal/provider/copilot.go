@@ -52,18 +52,26 @@ func (copilotProvider) Stream(ctx context.Context, cfg Config, messages []Messag
 		}
 
 		// Build OpenAI-format body (reuse openrouter.go helpers).
+		// Mirror streamOpenAICompat: opt into usage accounting on the
+		// terminal chunk and honor the thinking level. Without these,
+		// Copilot turns always report Usage=nil and ignore the thinking
+		// level. readSSE parses both fields.
 		body := requestBody{
-			Model:    modelName,
-			Messages: messages,
-			Stream:   true,
+			Model:         modelName,
+			Messages:      messages,
+			Stream:        true,
+			StreamOptions: &streamOptions{IncludeUsage: true},
 		}
 		if cfg.MaxTokens > 0 {
 			body.MaxTokens = cfg.MaxTokens
 		}
+		if thinkingEnabled(cfg.ThinkingLevel) {
+			body.ReasoningEffort = levelToReasoningEffort(cfg.ThinkingLevel)
+		}
 		if len(cfg.Tools) > 0 {
 			for _, t := range cfg.Tools {
 				body.Tools = append(body.Tools, toolWrapper{
-					Type: "function",
+					Type:     "function",
 					Function: t,
 				})
 			}

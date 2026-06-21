@@ -1,43 +1,52 @@
 // Package provider: OpenAI Codex (ChatGPT Plus/Pro) Responses API implementation.
 //
-// Phase 10 Session 4 (MINIMUM VIABLE):
+// Phase 10 (Task 3.1) — TOOL CALLS:
 //
-//   This file ports JUST ENOUGH of pi.dev's openai-codex-responses.ts
-//   to let a user log in with ChatGPT Plus/Pro and actually send a
-//   message. Specifically what works:
+//	This file ports pi.dev's openai-codex-responses.ts (plus the shared
+//	openai-responses-shared.ts stream helper) so a user can /login with
+//	ChatGPT Plus/Pro and run the full agent loop, including tool calls.
+//	What works:
 //
-//     - Single-turn text streaming
-//     - Multi-turn text WITHIN a session (no previous_response_id —
-//       we send the full history each turn, like Anthropic/OpenAI Chat
-//       Completions)
-//     - Basic SSE event handling: response.output_text.delta,
-//       response.completed, response.failed, error
+//	  - Single-turn text streaming
+//	  - Multi-turn text WITHIN a session (no previous_response_id —
+//	    we send the full history each turn, like Anthropic/OpenAI Chat
+//	    Completions; see "previous_response_id" note below)
+//	  - TOOL CALLS. The Responses API emits function_call items in the
+//	    output stream rather than Chat-Completions-style tool_calls
+//	    deltas. We parse response.output_item.added (function_call),
+//	    accumulate arguments via response.function_call_arguments.delta,
+//	    finalize on response.function_call_arguments.done /
+//	    response.output_item.done, and surface them as provider.ToolCall
+//	    entries on the terminal (Done) Chunk — exactly like
+//	    openrouter.go / anthropic.go. The agent loop in main.go then
+//	    executes them and feeds the results back. Tool history (prior
+//	    function_call + function_call_output items) is round-tripped in
+//	    the input array using the call_id|item_id encoding so multi-turn
+//	    tool conversations work.
+//	  - Token usage parsed into Chunk.Usage from response.completed.
+//	  - Reasoning deltas parsed into Chunk.Reasoning from
+//	    response.reasoning_text.delta and
+//	    response.reasoning_summary_text.delta.
+//	  - SSE event handling: response.output_text.delta, function_call
+//	    events, response.completed/done/incomplete, response.failed,
+//	    and bare error events.
 //
-//   What does NOT work (deferred):
+//	What does NOT work (deferred):
 //
-//     - Tool calls. The Responses API has a different tool_call shape
-//       than Chat Completions (function_call items in output, |-separated
-//       call_id|item_id encoding with fc_ prefix requirement). Pi9 will
-//       send tools in the request but the assembly logic for streaming
-//       tool deltas isn't here. If the model emits a tool call, pi9
-//       drops it on the floor and returns whatever text came before.
-//     - Reasoning blocks (response.reasoning_*). The model's chain-of-
-//       thought is silently dropped. Final text answers come through fine.
-//     - Refusal blocks (response.refusal.delta). Refusals look like
-//       streaming errors to the user.
-//     - previous_response_id for conversation continuity. Pi.dev uses
-//       this to let the server keep the context. We send full history
-//       every turn — slightly more bandwidth but no state to manage.
-//
-//   The minimum-viable framing here means: a user can /login Codex
-//   then "hello" → get a streamed text response. Anything fancier
-//   probably fails ungracefully.
+//	  - Refusal blocks (response.refusal.delta). Refusals look like
+//	    streaming errors to the user.
+//	  - Image inputs / image tool results. Text only.
+//	  - previous_response_id for server-side conversation continuity.
+//	    Pi.dev only uses this on its WebSocket continuation path; the
+//	    streaming HTTP path (which is what we port) sends full history
+//	    every turn. We do the same: slightly more bandwidth, but no
+//	    server state to manage and tool round-trips stay self-contained.
 //
 // References ported from pi.dev:
 //   - packages/ai/src/providers/openai-codex-responses.ts (request body
-//     shape, URL routing, headers)
+//     shape, URL routing, headers, mapCodexEvents)
 //   - packages/ai/src/providers/openai-responses-shared.ts (message
-//     conversion, SSE event types)
+//     conversion, tool conversion, processResponsesStream event types)
 package provider
 
 import (
@@ -97,24 +106,33 @@ func (codexResponsesProvider) Stream(ctx context.Context, cfg Config, messages [
 
 		// Build the Responses-format input array. Codex expects
 		// `{type: "message", role: ..., content: [{type: "input_text"|"output_text", text: ...}]}`
-		// for plain text turns. We keep it simple — no tool history,
-		// no reasoning items.
+		// for plain text turns, plus function_call / function_call_output
+		// items for tool round-trips.
 		input := convertToResponsesInput(userMessages)
 
 		body := map[string]interface{}{
-			"model":                cfg.Model,
-			"instructions":         systemPrompt,
-			"input":                input,
-			"store":                false,
-			"stream":               true,
-			"tool_choice":          "auto",
-			"parallel_tool_calls":  true,
-			"text":                 map[string]interface{}{"verbosity": "low"},
+			"model":               cfg.Model,
+			"instructions":        systemPrompt,
+			"input":               input,
+			"store":               false,
+			"stream":              true,
+			"tool_choice":         "auto",
+			"parallel_tool_calls": true,
+			"text":                map[string]interface{}{"verbosity": "low"},
 		}
 
-		// Tools are advertised in the request but we don't parse
-		// streamed tool calls. The model might call them anyway and
-		// we'll just lose those calls. Documented limitation.
+		// Honor the thinking level (matches upstream buildRequestBody's
+		// reasoning block). Codex/gpt-5 accepts "xhigh" directly, so we use
+		// the Codex-aware mapping that passes it through (the generic Chat
+		// Completions mapping collapses xhigh->high). Returns "" for off, in
+		// which case we omit the field so non-reasoning use is unaffected.
+		if eff := levelToCodexReasoningEffort(cfg.ThinkingLevel); eff != "" {
+			body["reasoning"] = map[string]interface{}{"effort": eff, "summary": "auto"}
+		}
+
+		// Advertise tools so the model can call them. parallel_tool_calls
+		// stays true (matches upstream buildRequestBody) — the agent loop
+		// in main.go executes the assembled calls and feeds results back.
 		if len(cfg.Tools) > 0 {
 			body["tools"] = convertToolsForResponses(cfg.Tools)
 		}
@@ -204,16 +222,27 @@ func stripSystemMessages(messages []Message) []Message {
 	return out
 }
 
+// splitCodexToolCallID splits pi9's stored tool-call ID into the
+// Responses API's (call_id, item_id) pair. We encode assembled calls
+// as "call_id|item_id" (see assembleResponsesEvent); on the way back
+// out we split them so function_call / function_call_output items use
+// the right field. If there's no "|", the whole string is the call_id
+// and the item_id is empty (the API tolerates an omitted item id).
+func splitCodexToolCallID(id string) (callID, itemID string) {
+	if i := strings.IndexByte(id, '|'); i >= 0 {
+		return id[:i], id[i+1:]
+	}
+	return id, ""
+}
+
 // convertToResponsesInput translates pi9's neutral messages to the
-// Responses API's input array shape. Tool calls and tool results
-// are SKIPPED — we don't handle them in the MVP, and including them
-// with wrong IDs would cause server errors.
+// Responses API's input array shape. Tool calls and tool results ARE
+// round-tripped now (Task 3.1) so multi-turn tool conversations work:
 //
-// Each message becomes one item:
-//
-//   user      → {type: "message", role: "user", content: [{type: "input_text", text}]}
-//   assistant → {type: "message", role: "assistant", content: [{type: "output_text", text, annotations: []}]}
-//   tool      → skipped
+//	user      → {type: "message", role: "user", content: [{type: "input_text", text}]}
+//	assistant → {type: "message", role: "assistant", content: [{type: "output_text", text, annotations: []}]}
+//	            plus one {type: "function_call", call_id, id, name, arguments} per tool call
+//	tool      → {type: "function_call_output", call_id, output}
 func convertToResponsesInput(messages []Message) []map[string]interface{} {
 	input := make([]map[string]interface{}, 0, len(messages))
 	for _, m := range messages {
@@ -230,26 +259,47 @@ func convertToResponsesInput(messages []Message) []map[string]interface{} {
 				},
 			})
 		case RoleAssistant:
-			if m.Content == "" {
-				// Skip empty assistant messages (could be turns
-				// that only had tool calls — we don't preserve those).
-				continue
+			// Text first (if any), then the function_call items. The
+			// Responses API wants assistant text and tool calls as
+			// separate output items, in order.
+			if m.Content != "" {
+				input = append(input, map[string]interface{}{
+					"type": "message",
+					"role": "assistant",
+					"content": []map[string]interface{}{
+						{"type": "output_text", "text": m.Content, "annotations": []interface{}{}},
+					},
+					"status": "completed",
+				})
 			}
-			input = append(input, map[string]interface{}{
-				"type": "message",
-				"role": "assistant",
-				"content": []map[string]interface{}{
-					{"type": "output_text", "text": m.Content, "annotations": []interface{}{}},
-				},
-				"status": "completed",
-			})
+			for _, tc := range m.ToolCalls {
+				callID, itemID := splitCodexToolCallID(tc.ID)
+				args := tc.Function.Arguments
+				if args == "" {
+					args = "{}"
+				}
+				item := map[string]interface{}{
+					"type":      "function_call",
+					"call_id":   callID,
+					"name":      tc.Function.Name,
+					"arguments": args,
+				}
+				// The Responses API requires the item id to start with
+				// "fc_"; only include it when we have one (assembled
+				// calls always do). Omitting it is allowed and avoids
+				// pairing-validation errors for foreign IDs.
+				if itemID != "" {
+					item["id"] = itemID
+				}
+				input = append(input, item)
+			}
 		case RoleTool:
-			// MVP limitation: tool history skipped. If the model
-			// previously called a tool and we round-tripped the
-			// result, sending the tool message back would require
-			// proper function_call/function_call_output items with
-			// matching call_id encoding. Documented as known break.
-			continue
+			callID, _ := splitCodexToolCallID(m.ToolCallID)
+			input = append(input, map[string]interface{}{
+				"type":    "function_call_output",
+				"call_id": callID,
+				"output":  m.Content,
+			})
 		}
 	}
 	return input
@@ -273,25 +323,264 @@ func convertToolsForResponses(tools []Tool) []map[string]interface{} {
 	return out
 }
 
+// ---------- streaming SSE parsing ----------
+
+// responsesEvent is the union of Responses-API stream event fields we
+// care about. The API sends many event types; this struct models just
+// the ones assembleResponsesEvent acts on. Unmodeled fields are
+// ignored by encoding/json.
+type responsesEvent struct {
+	Type string `json:"type"`
+
+	// response.output_text.delta / response.reasoning_text.delta /
+	// response.reasoning_summary_text.delta / function_call_arguments.delta
+	Delta string `json:"delta,omitempty"`
+
+	// response.function_call_arguments.done carries the full arguments.
+	Arguments string `json:"arguments,omitempty"`
+
+	// response.output_item.added / .done. ItemID/CallID tie the event
+	// to a specific in-flight tool call; OutputIndex orders items.
+	ItemID      string             `json:"item_id,omitempty"`
+	OutputIndex int                `json:"output_index,omitempty"`
+	Item        *responsesOutItem  `json:"item,omitempty"`
+	Response    *responsesResponse `json:"response,omitempty"`
+
+	// bare "error" event
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// responsesOutItem is the `item` payload on output_item.added/.done.
+type responsesOutItem struct {
+	Type      string `json:"type"` // "message" | "function_call" | "reasoning"
+	ID        string `json:"id,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
+// responsesResponse is the `response` payload on response.completed /
+// response.failed.
+type responsesResponse struct {
+	ID     string          `json:"id,omitempty"`
+	Status string          `json:"status,omitempty"`
+	Usage  *responsesUsage `json:"usage,omitempty"`
+	Error  *struct {
+		Code    string `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	} `json:"error,omitempty"`
+}
+
+// responsesUsage is the Responses-API usage block. cached_tokens are
+// INCLUDED in input_tokens, so we subtract to report non-cached input
+// (matches processResponsesStream).
+type responsesUsage struct {
+	InputTokens        int `json:"input_tokens,omitempty"`
+	OutputTokens       int `json:"output_tokens,omitempty"`
+	TotalTokens        int `json:"total_tokens,omitempty"`
+	InputTokensDetails struct {
+		CachedTokens int `json:"cached_tokens,omitempty"`
+	} `json:"input_tokens_details,omitempty"`
+}
+
+// parseResponsesUsage maps a Responses-API usage block to the neutral
+// Usage. Returns nil when the block is nil or reports no tokens. Pure +
+// testable. PromptTokens reports non-cached input; cached tokens are
+// folded into the total via the provider's own total_tokens.
+func parseResponsesUsage(u *responsesUsage) *Usage {
+	if u == nil {
+		return nil
+	}
+	if u.InputTokens == 0 && u.OutputTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	cached := u.InputTokensDetails.CachedTokens
+	prompt := u.InputTokens - cached
+	if prompt < 0 {
+		prompt = u.InputTokens
+	}
+	total := u.TotalTokens
+	if total == 0 {
+		total = u.InputTokens + u.OutputTokens
+	}
+	return &Usage{
+		PromptTokens:     prompt,
+		CompletionTokens: u.OutputTokens,
+		TotalTokens:      total,
+	}
+}
+
+// responsesAssembler holds the running state while parsing one
+// Responses-API stream: text/reasoning are emitted as deltas, while
+// tool calls are accumulated and surfaced only on the terminal chunk
+// (matching openrouter.go / anthropic.go and what the agent loop
+// expects).
+type responsesAssembler struct {
+	// toolCalls in encounter order, keyed by output_index so deltas
+	// can find the right in-flight call. The Responses API streams one
+	// function_call's argument deltas contiguously, but we key by index
+	// to be robust against interleaving.
+	toolCalls map[int]*ToolCall
+	order     []int
+	usage     *Usage
+}
+
+func newResponsesAssembler() *responsesAssembler {
+	return &responsesAssembler{toolCalls: map[int]*ToolCall{}}
+}
+
+// toolCallAt fetches (creating if needed) the in-flight ToolCall for an
+// output index, preserving first-seen order.
+func (a *responsesAssembler) toolCallAt(idx int) *ToolCall {
+	tc, ok := a.toolCalls[idx]
+	if !ok {
+		tc = &ToolCall{Type: "function"}
+		a.toolCalls[idx] = tc
+		a.order = append(a.order, idx)
+	}
+	return tc
+}
+
+// flushTools returns the assembled tool calls in encounter order.
+func (a *responsesAssembler) flushTools() []ToolCall {
+	if len(a.order) == 0 {
+		return nil
+	}
+	out := make([]ToolCall, 0, len(a.order))
+	for _, idx := range a.order {
+		out = append(out, *a.toolCalls[idx])
+	}
+	return out
+}
+
+// assembleResponsesEvent applies one parsed Responses-API event to the
+// assembler and returns the streaming Chunks it produces (text or
+// reasoning deltas — never tool calls; those land on the terminal
+// chunk). `done` is true when the event terminates the stream;
+// `termErr` is set if it terminated with an error.
+//
+// This is the pure, testable core of the SSE loop: no IO, no channels.
+func (a *responsesAssembler) assembleResponsesEvent(ev *responsesEvent) (out []Chunk, done bool, termErr error) {
+	switch ev.Type {
+	case "response.output_text.delta":
+		if ev.Delta != "" {
+			out = append(out, Chunk{Delta: ev.Delta})
+		}
+
+	case "response.reasoning_text.delta", "response.reasoning_summary_text.delta":
+		if ev.Delta != "" {
+			out = append(out, Chunk{Reasoning: ev.Delta})
+		}
+
+	case "response.output_item.added":
+		// A new output item begins. For function_call items, seed the
+		// in-flight tool call with its ids/name and any initial args.
+		if ev.Item != nil && ev.Item.Type == "function_call" {
+			tc := a.toolCallAt(ev.OutputIndex)
+			tc.ID = encodeCodexToolCallID(ev.Item.CallID, ev.Item.ID)
+			if ev.Item.Name != "" {
+				tc.Function.Name = ev.Item.Name
+			}
+			if ev.Item.Arguments != "" {
+				tc.Function.Arguments = ev.Item.Arguments
+			}
+		}
+
+	case "response.function_call_arguments.delta":
+		if ev.Delta != "" {
+			tc := a.toolCallAt(ev.OutputIndex)
+			tc.Function.Arguments += ev.Delta
+		}
+
+	case "response.function_call_arguments.done":
+		// The full arguments string. Authoritative — replace whatever
+		// the deltas accumulated (they should match, but the .done
+		// value is canonical, matching processResponsesStream).
+		if ev.Arguments != "" {
+			tc := a.toolCallAt(ev.OutputIndex)
+			tc.Function.Arguments = ev.Arguments
+		}
+
+	case "response.output_item.done":
+		// Finalize a function_call item: make sure ids/name/args are
+		// set even if we missed the .added/.delta events.
+		if ev.Item != nil && ev.Item.Type == "function_call" {
+			tc := a.toolCallAt(ev.OutputIndex)
+			if tc.ID == "" {
+				tc.ID = encodeCodexToolCallID(ev.Item.CallID, ev.Item.ID)
+			}
+			if tc.Function.Name == "" {
+				tc.Function.Name = ev.Item.Name
+			}
+			if tc.Function.Arguments == "" && ev.Item.Arguments != "" {
+				tc.Function.Arguments = ev.Item.Arguments
+			}
+		}
+
+	case "response.completed", "response.done", "response.incomplete":
+		if ev.Response != nil {
+			if u := parseResponsesUsage(ev.Response.Usage); u != nil {
+				a.usage = u
+			}
+		}
+		done = true
+
+	case "response.failed":
+		msg := "response.failed (no detail)"
+		if ev.Response != nil && ev.Response.Error != nil && ev.Response.Error.Message != "" {
+			msg = ev.Response.Error.Message
+		}
+		done = true
+		termErr = fmt.Errorf("codex: response.failed: %s", msg)
+
+	case "error":
+		msg := ev.Message
+		if msg == "" {
+			msg = ev.Code
+		}
+		if msg == "" {
+			msg = "error event (no detail)"
+		}
+		done = true
+		termErr = fmt.Errorf("codex: %s", msg)
+	}
+	return out, done, termErr
+}
+
+// encodeCodexToolCallID joins the Responses-API (call_id, item_id) pair
+// into pi9's single ToolCall.ID, using "|" as the separator. The item
+// id is needed when round-tripping the call back to the API (it must
+// start with "fc_"); the call id is what function_call_output pairs on.
+// When item_id is empty we just use the call_id alone.
+func encodeCodexToolCallID(callID, itemID string) string {
+	if itemID == "" {
+		return callID
+	}
+	return callID + "|" + itemID
+}
+
 // readResponsesSSE consumes the Responses-API event stream and emits
-// Chunks. Handled event types:
+// Chunks. Text/reasoning deltas stream as they arrive; assembled tool
+// calls and final usage ride on the terminal Done chunk (like
+// openrouter.go / anthropic.go), so the agent loop can execute the
+// calls and feed results back.
 //
-//   response.output_text.delta   → text chunk (the main one)
-//   response.completed           → terminal success
-//   response.failed              → terminal error
-//   error                        → terminal error
-//
-// Ignored: response.created, response.output_item.added,
-// response.content_part.added, response.reasoning_*, function_call_*
-// (we lose tool calls in MVP), refusal_*.
+// The per-event logic lives in assembleResponsesEvent (pure +
+// unit-tested); this function only does line framing and channel IO.
 func readResponsesSSE(r io.Reader, out chan<- Chunk) error {
 	br := bufio.NewReaderSize(r, 64*1024)
+	asm := newResponsesAssembler()
+
+	emit := func(termErr error) {
+		out <- Chunk{Done: true, ToolCalls: asm.flushTools(), Usage: asm.usage, Err: termErr}
+	}
 
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
 			if err == io.EOF {
-				out <- Chunk{Done: true}
+				emit(nil)
 				return nil
 			}
 			return err
@@ -305,54 +594,33 @@ func readResponsesSSE(r io.Reader, out chan<- Chunk) error {
 			continue
 		}
 		if data == "[DONE]" {
-			out <- Chunk{Done: true}
+			emit(nil)
 			return nil
 		}
 
-		// Parse event type + payload.
-		var ev struct {
-			Type string `json:"type"`
-			// response.output_text.delta:
-			Delta string `json:"delta,omitempty"`
-			// response.failed / error:
-			Response struct {
-				Status string `json:"status,omitempty"`
-				Error  struct {
-					Message string `json:"message,omitempty"`
-				} `json:"error,omitempty"`
-			} `json:"response,omitempty"`
-			Message string `json:"message,omitempty"`
-		}
+		var ev responsesEvent
 		if err := json.Unmarshal([]byte(data), &ev); err != nil {
 			// Skip unparseable — Responses API occasionally has events
 			// with shapes we don't model.
 			continue
 		}
 
-		switch ev.Type {
-		case "response.output_text.delta":
-			if ev.Delta != "" {
-				out <- Chunk{Delta: ev.Delta}
+		chunks, done, termErr := asm.assembleResponsesEvent(&ev)
+		for _, c := range chunks {
+			out <- c
+		}
+		if done {
+			if termErr != nil {
+				// Surface stream-level failures via the RETURN value so
+				// Stream forwards them on the errs channel — matching
+				// anthropic.go / openrouter.go. Consumers (runStream,
+				// streamOnce, headless) read errs, not Chunk.Err, so a
+				// Done chunk here would look like an empty successful turn
+				// and the error (e.g. a ChatGPT usage limit) would vanish.
+				return termErr
 			}
-		case "response.completed":
-			out <- Chunk{Done: true}
-			return nil
-		case "response.failed":
-			msg := ev.Response.Error.Message
-			if msg == "" {
-				msg = "response.failed (no detail)"
-			}
-			out <- Chunk{Done: true, Err: fmt.Errorf("codex: response.failed: %s", msg)}
-			return nil
-		case "error":
-			msg := ev.Message
-			if msg == "" {
-				msg = "error event (no detail)"
-			}
-			out <- Chunk{Done: true, Err: fmt.Errorf("codex: %s", msg)}
+			emit(nil)
 			return nil
 		}
-		// All other event types ignored. The MVP doesn't render
-		// reasoning, tool calls, or refusals.
 	}
 }

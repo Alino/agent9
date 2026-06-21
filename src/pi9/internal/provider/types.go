@@ -31,7 +31,7 @@ const (
 type Message struct {
 	Role       Role       `json:"role"`
 	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`  // assistant emitted these
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // assistant emitted these
 	ToolCallID string     `json:"tool_call_id,omitempty"` // tool result is for this id
 	Name       string     `json:"name,omitempty"`         // tool's name (for tool results)
 }
@@ -60,12 +60,24 @@ type ToolCallFn struct {
 
 // Chunk is one streaming event from a provider. Most chunks are
 // content deltas. The terminal chunk has Done=true and may carry
-// assembled ToolCalls if the model requested any.
+// assembled ToolCalls if the model requested any, plus final token
+// Usage.
 type Chunk struct {
 	Delta     string
+	Reasoning string // thinking/reasoning delta text; empty unless the model streams reasoning
 	Done      bool
 	ToolCalls []ToolCall
-	Err       error // set only on the terminal chunk if streaming failed
+	Usage     *Usage // set only on the terminal (Done) chunk when the provider reports usage
+	Err       error  // set only on the terminal chunk if streaming failed
+}
+
+// Usage reports token accounting for one assistant turn. Populated on
+// the terminal (Done) Chunk from the provider's final SSE usage block.
+// Fields are 0 when the provider doesn't report that count.
+type Usage struct {
+	PromptTokens     int // input/prompt tokens
+	CompletionTokens int // output/completion tokens
+	TotalTokens      int // prompt + completion (or provider-reported total)
 }
 
 // Config is the per-request configuration. APIKey + Model are
@@ -77,6 +89,18 @@ type Config struct {
 	APIURL    string // optional override (used for mock testing)
 	MaxTokens int
 	Tools     []Tool
+
+	// ThinkingLevel requests extended thinking / reasoning effort from
+	// models that support it. Valid values: "off", "minimal", "low",
+	// "medium", "high", "xhigh". Empty string or "off" disables it.
+	//
+	// Each provider maps this differently:
+	//   - Anthropic: enables extended thinking with a budget_tokens value
+	//     derived from the level (see levelToBudget).
+	//   - OpenAI-compatible: sends reasoning_effort (see
+	//     levelToReasoningEffort); xhigh collapses to "high".
+	// Providers/models that don't support reasoning ignore it.
+	ThinkingLevel string
 }
 
 // ---------- Provider abstraction (Phase 10) ----------
@@ -227,8 +251,8 @@ func RequiresOAuth(p ProviderID) bool {
 //
 // Rules:
 //   - "copilot/*"                   → GitHub Copilot (explicit prefix
-//                                     required because Copilot models
-//                                     overlap with other providers)
+//     required because Copilot models
+//     overlap with other providers)
 //   - "claude-*" or "claude/*"      → Anthropic
 //   - "gpt-*", "o1-*", "o3-*", "o4-*"   → OpenAI
 //   - "grok-*"                      → xAI

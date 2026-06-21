@@ -28,11 +28,11 @@ import (
 // "claude-sonnet-4" for direct Anthropic). Label is the user-facing
 // display name. Recent is set by the caller for ranking.
 type ModelInfo struct {
-	Provider ProviderID
-	ID       string
-	Label    string
+	Provider      ProviderID
+	ID            string
+	Label         string
 	ContextWindow int // tokens, 0 if unknown
-	Recent   bool
+	Recent        bool
 }
 
 // CuratedModels returns a hardcoded list of popular models across
@@ -105,6 +105,39 @@ func CuratedModels() []ModelInfo {
 		{ProviderCopilot, "copilot/gemini-2.5-pro", "Gemini 2.5 Pro (Copilot)", 1000000, false},
 		{ProviderCopilot, "copilot/grok-code-fast-1", "Grok Code Fast 1 (Copilot)", 256000, false},
 	}
+}
+
+// ContextWindowFor returns the context window (in tokens) for a model
+// id, consulting the curated list first and then a few prefix-based
+// fallbacks. Returns 0 when unknown — callers should treat 0 as "don't
+// show a percentage" rather than dividing by it.
+//
+// The curated list carries explicit windows; live OpenRouter/Copilot
+// entries aren't consulted here (this is a cheap, offline lookup used
+// every render). For models the curated list doesn't name, we fall back
+// to family defaults that match the common case.
+func ContextWindowFor(model string) int {
+	for _, mi := range CuratedModels() {
+		if mi.ID == model {
+			return mi.ContextWindow
+		}
+	}
+	m := strings.ToLower(model)
+	switch {
+	case strings.Contains(m, "gemini-2.5-pro"):
+		return 2000000
+	case strings.Contains(m, "gemini"):
+		return 1000000
+	case strings.Contains(m, "claude"):
+		return 200000
+	case strings.Contains(m, "gpt-5"), strings.Contains(m, "o3"), strings.Contains(m, "o4"):
+		return 200000
+	case strings.Contains(m, "grok"):
+		return 256000
+	case strings.Contains(m, "kimi"):
+		return 200000
+	}
+	return 0
 }
 
 // FetchOpenRouterModels pulls the live model list from OpenRouter's
@@ -218,9 +251,9 @@ func FetchCopilotModels(ctx context.Context, accessToken, baseURL string) ([]Mod
 
 	var raw struct {
 		Data []struct {
-			ID           string `json:"id"`
-			Name         string `json:"name"`
-			ModelPicker  *struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			ModelPicker *struct {
 				Enabled bool `json:"enabled"`
 			} `json:"model_picker_enabled,omitempty"`
 			Capabilities struct {
