@@ -22,6 +22,7 @@ is running pi9 — the cyan title bar reads `pi9— moonshotai/kimi-k2.5`.
 | **vtwin**   | libdraw frontend for vts. Reads cell diffs, paints into a rio window. | C / libdraw |
 | **pi9**     | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, sessions/skills/memory, OAuth to Anthropic Pro and GitHub Copilot. | Go |
 | **NetSurf** | Web browser (from [netsurf-plan9](https://github.com/netsurf-plan9)). | C |
+| **python9** | CPython 3.11.14 ported to 9front (kencc/APE), validated at **100% parity** against CPython's own regression suite. Source + parity harness under `python9/`. | C |
 
 ![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
 
@@ -65,6 +66,16 @@ rough edges:
   recompile. A config-file rewrite is planned.
 - File manager (`xfiles`) is a stub. Use acme or rc for now.
 - The xfiles entry in the Start menu doesn't do anything yet.
+
+The **python9** CPython port is validated but lives outside the v0.1.0 desktop
+image — it's a hand-authored kencc/APE build that boots an interpreter and
+scores 100.00% (6120/6120, 0 regressions) on the core regression batch against
+the host 3.11.14 reference. It's a prerequisite for richer Plan 9 tooling, not
+a finished app yet (and porting it does **not** by itself run hermes-agent,
+whose Rust-backed deps can't build on Plan 9). See
+[`python9/README.md`](python9/README.md) for the parity contract and
+[`python9/port/plan9/README.md`](python9/port/plan9/README.md) for the build +
+bug-class archaeology.
 
 ## Why
 
