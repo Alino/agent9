@@ -95,9 +95,29 @@ copysign(double x, double y)
 double
 round(double x)
 {
-	if (x >= 0.0)
-		return floor(x + 0.5);
-	return ceil(x - 0.5);
+	double t;
+
+	/* C99 round(): round half away from zero. The naive floor(x+0.5) is
+	   wrong for large integral x -- e.g. x = 4999999999999999.0 has no
+	   fractional bits, but x+0.5 rounds up to 5e15. Values with magnitude
+	   >= 2^52 are already integral, so return them unchanged; also preserve
+	   the sign of zero. */
+	if (isnan(x) || isinf(x) || x == 0.0)
+		return x;
+	if (x >= 0.0) {
+		if (x >= 4503599627370496.0)		/* 2^52 */
+			return x;
+		t = floor(x + 0.5);
+		if (t - x > 0.5)			/* x+0.5 rounded up past x */
+			t -= 1.0;
+		return t;
+	}
+	if (x <= -4503599627370496.0)
+		return x;
+	t = ceil(x - 0.5);
+	if (x - t > 0.5)
+		t += 1.0;
+	return t;
 }
 
 /* C99 math functions APE lacks (it has erf/erfc/log2/hypot but not these).

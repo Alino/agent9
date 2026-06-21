@@ -898,7 +898,20 @@
          errno = 0;
      } else if (z.real == 1. && ay < CM_SQRT_DBL_MIN) {
          /* C99 standard says:  atanh(1+/-0.) should be inf +/- 0i */
-@@ -1200,7 +1212,11 @@
+@@ -452,7 +464,11 @@
+         }
+     } else {
+         r.real = m_log1p(4.*z.real/((1-z.real)*(1-z.real) + ay*ay))/4.;
+-        r.imag = -atan2(-2.*z.imag, (1-z.real)*(1+z.real) - ay*ay)/2.;
++        /* plan9: the outer unary `-` on atan2's result loses the sign of a
++           zero (kencc compiles -x as 0.0-x), breaking atanh's signed-zero
++           branch-cut continuity (and atan's, which is -i*atanh(iz)). Negate
++           via the sign bit instead. */
++        r.imag = _plan9_dneg(atan2(-2.*z.imag, (1-z.real)*(1+z.real) - ay*ay))/2.;
+         errno = 0;
+     }
+     return r;
+@@ -1200,7 +1216,11 @@
          return -1;
      }
  
@@ -996,6 +1009,18 @@
          r = float_format;
      }
      else {
+@@ -2080,7 +2108,10 @@
+     unsigned short bits;
+     int incr = 1;
+ 
+-    if (x == 0.0) {
++    /* plan9: kencc compiles `x == 0.0` as true when x is NaN (IEEE-unordered
++       compare bug), which would pack a NaN as +0.0. Exclude NaN here so it
++       reaches the Py_IS_NAN branch below. */
++    if (x == 0.0 && !Py_IS_NAN(x)) {
+         sign = (copysign(1.0, x) == -1.0);
+         e = 0;
+         bits = 0;
 --- a/Python/dtoa.c
 +++ b/Python/dtoa.c
 @@ -2126,7 +2126,16 @@
