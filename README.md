@@ -11,6 +11,14 @@ The Start menu shows the launcher's app list (Pi9, Rc Shell, Stats,
 Acme, Faces, Files, Clock, Reboot, Halt). The vtwin window behind it
 is running pi9 — the cyan title bar reads `pi9— moonshotai/kimi-k2.5`.
 
+## Built with AI
+
+Most of agent9 — pi9, the python9 port, the desktop plumbing — was written
+with heavy AI assistance (Claude, with some Hermes), and the commit history
+reflects that. The work and the results are real: pi9 is dogfooded daily, and
+python9 scores 100% parity on CPython's own core regression batch. I'd rather
+say so up front than leave it to the log.
+
 ## What's in the box
 
 | Component   | Role | Lang |
