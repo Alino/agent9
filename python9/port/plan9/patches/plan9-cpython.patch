@@ -943,7 +943,68 @@
      case Py_EQ:
          r = i == j;
          break;
-@@ -761,7 +769,10 @@
+@@ -636,7 +644,9 @@
+     double a,b;
+     CONVERT_TO_DOUBLE(v, a);
+     CONVERT_TO_DOUBLE(w, b);
+-    if (b == 0.0) {
++    /* plan9: kencc compiles `b == 0.0` as true when b is NaN, which would make
++       x / nan raise ZeroDivisionError instead of returning nan. Exclude NaN. */
++    if (b == 0.0 && !Py_IS_NAN(b)) {
+         PyErr_SetString(PyExc_ZeroDivisionError,
+                         "float division by zero");
+         return NULL;
+@@ -652,10 +662,16 @@
+     double mod;
+     CONVERT_TO_DOUBLE(v, vx);
+     CONVERT_TO_DOUBLE(w, wx);
+-    if (wx == 0.0) {
++    if (wx == 0.0 && !Py_IS_NAN(wx)) {  /* plan9: kencc nan==0.0 is true */
+         PyErr_SetString(PyExc_ZeroDivisionError,
+                         "float modulo");
+         return NULL;
++    }
++    /* plan9: with a NaN operand the result is NaN, but the `if (mod)` test
++       below is kencc-broken (nan != 0 evaluates false), so it would fall into
++       the signed-zero branch and return 0. Handle NaN up front. */
++    if (Py_IS_NAN(vx) || Py_IS_NAN(wx)) {
++        return PyFloat_FromDouble(Py_NAN);
+     }
+     mod = fmod(vx, wx);
+     if (mod) {
+@@ -677,6 +693,13 @@
+ _float_div_mod(double vx, double wx, double *floordiv, double *mod)
+ {
+     double div;
++    /* plan9: NaN operands must yield NaN, but the `if (*mod)`/`if (div)` tests
++       below misfire under kencc (nan != 0 is false), zeroing the result. */
++    if (Py_IS_NAN(vx) || Py_IS_NAN(wx)) {
++        *mod = Py_NAN;
++        *floordiv = Py_NAN;
++        return;
++    }
+     *mod = fmod(vx, wx);
+     /* fmod is typically exact, so vx-mod is *mathematically* an
+        exact multiple of wx.  But this is fp arithmetic, and fp
+@@ -718,7 +741,7 @@
+     double mod, floordiv;
+     CONVERT_TO_DOUBLE(v, vx);
+     CONVERT_TO_DOUBLE(w, wx);
+-    if (wx == 0.0) {
++    if (wx == 0.0 && !Py_IS_NAN(wx)) {  /* plan9: kencc nan==0.0 is true */
+         PyErr_SetString(PyExc_ZeroDivisionError, "float divmod()");
+         return NULL;
+     }
+@@ -733,7 +756,7 @@
+     double mod, floordiv;
+     CONVERT_TO_DOUBLE(v, vx);
+     CONVERT_TO_DOUBLE(w, wx);
+-    if (wx == 0.0) {
++    if (wx == 0.0 && !Py_IS_NAN(wx)) {  /* plan9: kencc nan==0.0 is true */
+         PyErr_SetString(PyExc_ZeroDivisionError, "float floor division by zero");
+         return NULL;
+     }
+@@ -761,7 +784,10 @@
      CONVERT_TO_DOUBLE(w, iw);
  
      /* Sort out special cases here instead of relying on pow() */
@@ -955,7 +1016,25 @@
          return PyFloat_FromDouble(1.0);
      }
      if (Py_IS_NAN(iv)) {        /* nan**w = nan, unless w == 0 */
-@@ -870,7 +881,14 @@
+@@ -851,8 +877,15 @@
+     errno = 0;
+     ix = pow(iv, iw);
+     _Py_ADJUST_ERANGE1(ix);
+-    if (negate_result)
+-        ix = -ix;
++    if (negate_result) {
++        /* plan9: kencc compiles unary `-ix` as 0.0-ix, which loses the sign
++           of a zero result (e.g. pow(-2., -2001.) underflows to 0 and must be
++           -0.0). Flip the sign bit directly. */
++        union { double d; unsigned long long u; } nx;
++        nx.d = ix;
++        nx.u ^= 0x8000000000000000ULL;
++        ix = nx.d;
++    }
+ 
+     if (errno != 0) {
+         /* We don't expect any errno value other than ERANGE, but
+@@ -870,7 +903,14 @@
  static PyObject *
  float_neg(PyFloatObject *v)
  {
@@ -971,7 +1050,7 @@
  }
  
  static PyObject *
-@@ -1530,7 +1548,15 @@
+@@ -1530,7 +1570,15 @@
          s++;
      if (s != s_end)
          goto parse_error;
@@ -988,7 +1067,7 @@
      if (type != &PyFloat_Type && result != NULL) {
          Py_SETREF(result, PyObject_CallOneArg((PyObject *)type, result));
      }
-@@ -1754,15 +1780,17 @@
+@@ -1754,15 +1802,17 @@
  [clinic start generated code]*/
  
  static PyObject *
@@ -1009,7 +1088,7 @@
          r = float_format;
      }
      else {
-@@ -2080,7 +2108,10 @@
+@@ -2080,7 +2130,10 @@
      unsigned short bits;
      int incr = 1;
  
