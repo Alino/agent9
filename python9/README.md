@@ -1,37 +1,28 @@
 # python9 — CPython 3.11 for 9front
 
-A **test-suite-validated** CPython 3.11.14 port for 9front/amd64, the Plan 9 way
-(libsec/`tls(3)` for SSL, `dial(2)` for sockets, `threads(2)`/`alt` where a POSIX
-port would reach for pthreads/`select`).
+CPython 3.11.14, built for 9front/amd64 with the native toolchain: kencc (6c/6l) driven by APE's pcc, no autoconf. It boots, runs the REPL and the standard library, and passes CPython's own regression suite at 100% parity on the core batch (6120/6120, 0 regressions against the host 3.11.14 reference). Build notes and the bug-class write-up live in [`port/plan9/README.md`](port/plan9/README.md).
 
-**Status: the interpreter builds, boots, and scores 100.00% parity (6120/6120,
-0 regressions) against the host 3.11.14 reference on the 39-module core batch.**
-Build details and the bug-class archaeology are in
-[`port/plan9/README.md`](port/plan9/README.md).
+## How it was built (disclosure)
 
-Why 3.11: it is the lowest version the target workload (hermes-agent) allows
-(`requires-python >=3.11,<3.14`), so it minimizes the interpreter delta while
-staying in range. The host reference is pinned to **3.11.14** to match exactly.
+This port was done with heavy AI assistance: I used Claude (and Hermes) to drive the patch / compile / test loop and to track down the kencc and APE bugs. The engineering is real and it's documented, but the commit history reflects that workflow, and I'd rather say so up front than have you find it in the log.
 
-> Reality check: porting the interpreter does **not** make hermes-agent run.
-> Its dependency tree includes Rust-backed extensions (`pydantic-core`, `jiter`,
-> `cryptography`, `rpds-py`, `tokenizers`, `watchfiles`) that cannot be compiled
-> on Plan 9 (no rustc target), plus OS-locked C extensions (`uvloop`, `psutil`,
-> `httptools`). A working interpreter is a prerequisite, not the finish line.
-> See the wiki concept page for the full analysis.
+## What works, and what doesn't
+
+Works: the interpreter, the pure-Python standard library, and the modules covered by the core/numeric parity batch.
+
+Not yet: it's single-threaded. CPython's pthread stub, not a native `threads(2)` backend, which is the next piece of work. There's no `ssl` module yet. `_socket` compiles via APE but networking isn't part of the parity claim. Anything that needs a C or Rust toolchain, or OS primitives Plan 9 doesn't have, won't build: numpy, cryptography, pydantic-core and friends are out.
+
+Why 3.11: it's the lowest version the original target workload (hermes-agent) allows (`requires-python >=3.11,<3.14`), which keeps the interpreter delta small. The host reference is pinned to 3.11.14 to match exactly.
+
+> Reality check: a working interpreter does not make hermes-agent run. Its dependency tree pulls in Rust-backed extensions (`pydantic-core`, `jiter`, `cryptography`, `rpds-py`, `tokenizers`, `watchfiles`) with no rustc target on Plan 9, plus OS-locked C extensions (`uvloop`, `psutil`, `httptools`). The interpreter is a prerequisite, not the finish line.
 
 ## Parity is the contract
 
-The bar is **not** "100% of the suite" — no CPython port reaches that on any
-platform. The measurable bar is:
+"100% of the suite" is the wrong bar. No CPython port hits that on any platform. Here's the bar that actually means something:
 
-> Of every testcase that passes on the reference 3.11.14 build and is not on the
-> justified skip-list, what fraction passes on the 9front port?
+> Of every testcase that passes on the reference 3.11.14 build and isn't on the justified skip-list, what fraction passes on the 9front port?
 
-The oracle is CPython's own regression suite (`Lib/test`, `python -m test`) — the
-same suite core devs gate releases on. Both the host reference and the VM port
-run **the same vendored `Lib/test` tree** via the same `run_suite.py`, so any
-difference is the platform, not version skew.
+The oracle is CPython's own regression suite (`Lib/test`, `python -m test`), the same suite the core team gates releases on. The host reference and the 9front port run the same vendored `Lib/test` tree through the same `run_suite.py`, so any difference is the platform, not version skew.
 
 ## Layout
 
