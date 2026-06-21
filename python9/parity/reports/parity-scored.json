@@ -139,7 +139,7 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9996732026143791,
+ "parity": 1.0,
  "port_bad_modules": {
   "test_builtin": "failed",
   "test_datetime": "failed",
@@ -147,20 +147,9 @@
   "test_functools": "failed",
   "test_itertools": "failed",
   "test_json": "failed",
-  "test_math": "failed",
-  "test_random": "failed",
   "test_struct": "failed",
   "test_weakref": "failed"
  },
- "port_passing": 6118,
- "regressions": [
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.test_mtestfile"
-  },
-  {
-   "port_status": "error",
-   "test": "?::test.test_random.TestDistributions.test_gammavariate_alpha_between_zero_and_one"
-  }
- ]
+ "port_passing": 6120,
+ "regressions": []
 }
