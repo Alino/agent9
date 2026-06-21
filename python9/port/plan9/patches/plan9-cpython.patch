@@ -690,7 +690,43 @@
  
 --- a/Modules/mathmodule.c
 +++ b/Modules/mathmodule.c
-@@ -790,6 +790,11 @@
+@@ -651,8 +651,14 @@
+             return Py_NAN;
+         }
+ 
+-        absx = fabs(x);
+-        absy = fabs(y);
++        /* plan9/kencc: fabs(-0.0) does not clear the sign bit, so absx would
++           keep a spurious -0.0 and corrupt the signed-zero result below. Clear
++           the sign bit directly. */
++        {
++            union { double d; unsigned long long u; } ax, ay;
++            ax.d = x; ax.u &= 0x7fffffffffffffffULL; absx = ax.d;
++            ay.d = y; ay.u &= 0x7fffffffffffffffULL; absy = ay.d;
++        }
+         m = fmod(absx, absy);
+ 
+         /*
+@@ -713,7 +719,17 @@
+             assert(m == c);
+             r = m - 2.0 * fmod(0.5 * (absx - m), absy);
+         }
+-        return copysign(1.0, x) * r;
++        /* plan9/kencc: `copysign(1.0, x) * r` computes -1.0 * 0.0 as +0.0,
++           losing the signed zero that remainder(-0.0, y) must return. Apply
++           the sign of x to r by flipping r's sign bit directly. */
++        {
++            union { double d; unsigned long long u; } xv, rv;
++            xv.d = x;
++            rv.d = r;
++            if (xv.u >> 63)
++                rv.u ^= 0x8000000000000000ULL;
++            return rv.d;
++        }
+     }
+ 
+     /* Special values. */
+@@ -790,6 +806,11 @@
  #else
          double m;
          int e;
@@ -702,7 +738,7 @@
          m = frexp(x, &e);
          /* We want log2(m * 2**e) == log(m) / log(2) + e.  Care is needed when
           * x is just greater than 1.0: in that case e is 1, log(m) is negative,
-@@ -1153,6 +1158,24 @@
+@@ -1153,6 +1174,24 @@
          return PyFloat_FromDouble(r);
  }
  
@@ -727,7 +763,7 @@
  #define FUNC1(funcname, func, can_overflow, docstring)                  \
      static PyObject * math_##funcname(PyObject *self, PyObject *args) { \
          return math_1(args, func, can_overflow);                            \
-@@ -1171,7 +1194,7 @@
+@@ -1171,7 +1210,7 @@
      }\
      PyDoc_STRVAR(math_##funcname##_doc, docstring);
  
@@ -736,7 +772,7 @@
        "acos($module, x, /)\n--\n\n"
        "Return the arc cosine (measured in radians) of x.\n\n"
        "The result is between 0 and pi.")
-@@ -1487,7 +1510,9 @@
+@@ -1487,7 +1526,9 @@
          }
  
          n = i;                              /* ps[i:] = [x] */
@@ -747,7 +783,7 @@
              if (! Py_IS_FINITE(x)) {
                  /* a nonfinite x could arise either as
                     a result of intermediate overflow, or
-@@ -1511,7 +1536,9 @@
+@@ -1511,7 +1552,9 @@
          }
      }
  
@@ -758,7 +794,7 @@
          if (Py_IS_NAN(inf_sum))
              PyErr_SetString(PyExc_ValueError,
                              "-inf + inf in fsum");
-@@ -2720,7 +2747,10 @@
+@@ -2720,7 +2763,10 @@
          x = fabs(px - qx);
          diffs[i] = x;
          found_nan |= Py_IS_NAN(x);
@@ -770,7 +806,7 @@
              max = x;
          }
      }
-@@ -2773,7 +2803,10 @@
+@@ -2773,7 +2819,10 @@
          x = fabs(x);
          coordinates[i] = x;
          found_nan |= Py_IS_NAN(x);
@@ -782,11 +818,10 @@
              max = x;
          }
      }
-@@ -2860,6 +2893,15 @@
-             else
+@@ -2861,6 +2910,15 @@
                  r = 0.;
          }
-+    }
+     }
 +    else if (x == 0.0 && y < 0.0) {
 +        /* plan9: C99 pow(+-0, y<0) is a divide-by-zero -> +-inf, which CPython
 +           maps to ValueError. APE's pow instead returns DBL_MAX and sets
@@ -795,10 +830,11 @@
 +        int odd_y = (fmod(fabs(y), 2.0) == 1.0);
 +        errno = EDOM;
 +        r = odd_y ? copysign(Py_HUGE_VAL, x) : Py_HUGE_VAL;
-     }
++    }
      else {
          /* let libm handle finite**finite */
-@@ -3019,7 +3061,10 @@
+         errno = 0;
+@@ -3019,7 +3077,10 @@
          return -1;
      }
  
@@ -877,7 +913,24 @@
          */
 --- a/Objects/floatobject.c
 +++ b/Objects/floatobject.c
-@@ -769,7 +769,10 @@
+@@ -568,7 +568,15 @@
+         goto Unimplemented;
+ 
+  Compare:
+-    switch (op) {
++    /* plan9: kencc's float comparison codegen mishandles IEEE unordered (NaN)
++       operands -- `nan == nan` compiles to true, `nan != nan` to false, and
++       `nan < x` to true. Per IEEE-754, every comparison involving a NaN is
++       false except !=. Handle that explicitly so float (and thus dict/set/
++       sort) semantics are correct. */
++    if (Py_IS_NAN(i) || Py_IS_NAN(j)) {
++        r = (op == Py_NE);
++    }
++    else switch (op) {
+     case Py_EQ:
+         r = i == j;
+         break;
+@@ -761,7 +769,10 @@
      CONVERT_TO_DOUBLE(w, iw);
  
      /* Sort out special cases here instead of relying on pow() */
@@ -889,7 +942,7 @@
          return PyFloat_FromDouble(1.0);
      }
      if (Py_IS_NAN(iv)) {        /* nan**w = nan, unless w == 0 */
-@@ -878,7 +881,14 @@
+@@ -870,7 +881,14 @@
  static PyObject *
  float_neg(PyFloatObject *v)
  {
@@ -905,7 +958,7 @@
  }
  
  static PyObject *
-@@ -1538,7 +1548,15 @@
+@@ -1530,7 +1548,15 @@
          s++;
      if (s != s_end)
          goto parse_error;
@@ -922,6 +975,27 @@
      if (type != &PyFloat_Type && result != NULL) {
          Py_SETREF(result, PyObject_CallOneArg((PyObject *)type, result));
      }
+@@ -1754,15 +1780,17 @@
+ [clinic start generated code]*/
+ 
+ static PyObject *
+-float___getformat___impl(PyTypeObject *type, const char *typestr)
++float___getformat___impl(PyTypeObject *type, const char *typestr_)
+ /*[clinic end generated code: output=2bfb987228cc9628 input=d5a52600f835ad67]*/
+ {
+     float_format_type r;
++    /* plan9: kencc rejects the bare token `typestr` in a declarator, so the
++     * param is typestr_ and we use it directly (no `typestr` alias). */
+ 
+-    if (strcmp(typestr, "double") == 0) {
++    if (strcmp(typestr_, "double") == 0) {
+         r = double_format;
+     }
+-    else if (strcmp(typestr, "float") == 0) {
++    else if (strcmp(typestr_, "float") == 0) {
+         r = float_format;
+     }
+     else {
 --- a/Python/dtoa.c
 +++ b/Python/dtoa.c
 @@ -2126,7 +2126,16 @@

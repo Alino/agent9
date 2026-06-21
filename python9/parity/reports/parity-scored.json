@@ -138,9 +138,23 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9972226760333279,
- "port_bad_modules": {},
- "port_passing": 6104,
+ "parity": 0.9978761640254861,
+ "port_bad_modules": {
+  "test_builtin": "failed",
+  "test_cmath": "failed",
+  "test_datetime": "failed",
+  "test_enum": "failed",
+  "test_float": "failed",
+  "test_functools": "failed",
+  "test_itertools": "failed",
+  "test_json": "failed",
+  "test_math": "failed",
+  "test_random": "failed",
+  "test_statistics": "failed",
+  "test_struct": "failed",
+  "test_weakref": "failed"
+ },
+ "port_passing": 6108,
  "regressions": [
   {
    "port_status": "fail",
@@ -172,19 +186,7 @@
   },
   {
    "port_status": "fail",
-   "test": "?::test.test_float.HexFloatTestCase.test_from_hex"
-  },
-  {
-   "port_status": "fail",
    "test": "?::test.test_json.test_tool.TestTool.test_broken_pipe_error"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.testLdexp"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.testTan"
   },
   {
    "port_status": "fail",
@@ -201,10 +203,6 @@
   {
    "port_status": "fail",
    "test": "?::test.test_statistics.TestHarmonicMean.test_nan"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_statistics.TestMean.test_regression_25177"
   },
   {
    "port_status": "fail",

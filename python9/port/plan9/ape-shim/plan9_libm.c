@@ -473,3 +473,193 @@ atan2(double y, double x)
 	default: return z - _pi();		/* atan(-,-) */
 	}
 }
+
+/* tan via fdlibm __kernel_tan + the sin/cos range reduction. */
+static const double _T[13] = {
+	3.33333333333334091986e-01, 1.33333333333201242699e-01,
+	5.39682539762260521377e-02, 2.18694882948595424599e-02,
+	8.86323982359930005737e-03, 3.59207910759131235356e-03,
+	1.45620945432529025516e-03, 5.88041240820264096874e-04,
+	2.46463134818469906812e-04, 7.81794442939557092300e-05,
+	7.14072491382608190305e-05, -1.85586374855275456654e-05,
+	2.59073051863633712884e-05,
+};
+static const double _Tpio4 = 7.85398163397448278999e-01,
+	_Tpio4lo = 3.06161699786838301793e-17;
+
+static double
+_hiword(double x)	/* x with its low 32 mantissa bits cleared */
+{
+	union { double d; unsigned long long u; } v;
+	v.d = x;
+	v.u &= 0xffffffff00000000ULL;
+	return v.d;
+}
+
+static double
+k_tan(double x, double y, int iy)
+{
+	double z, r, v, w, s, a, t;
+	int big, sign = 0;
+	union { double d; unsigned long long u; } ux;
+	unsigned int ix;
+
+	ux.d = x;
+	ix = (unsigned int)(ux.u >> 32) & 0x7fffffff;
+	big = (ix >= 0x3FE59428);		/* |x| >= 0.6744 */
+	if (big) {
+		if ((int)(ux.u >> 63)) {
+			x = -x;
+			y = -y;
+		}
+		z = _Tpio4 - x;
+		w = _Tpio4lo - y;
+		x = z + w;
+		y = 0.0;
+	}
+	z = x * x;
+	w = z * z;
+	r = _T[1] + w * (_T[3] + w * (_T[5] + w * (_T[7] + w * (_T[9] + w * _T[11]))));
+	v = z * (_T[2] + w * (_T[4] + w * (_T[6] + w * (_T[8] + w * (_T[10] + w * _T[12])))));
+	s = z * x;
+	r = y + z * (s * (r + v) + y);
+	r += _T[0] * s;
+	w = x + r;
+	if (big) {
+		v = (double)iy;
+		sign = (int)(ux.u >> 63) ? -1 : 1;
+		return (double)sign * (v - 2.0 * (x - (w * w / (w + v) - r)));
+	}
+	if (iy == 1)
+		return w;
+	/* compute -1.0/(x+r) accurately */
+	z = _hiword(w);
+	v = r - (z - x);			/* z + v = r + x = w */
+	a = t = -1.0 / w;
+	t = _hiword(t);
+	s = 1.0 + t * z;
+	return t + a * (s + t * v);
+}
+
+double
+tan(double x)
+{
+	double y[2];
+	int n;
+	if (isnan(x) || isinf(x))
+		return x - x;
+	if (x == 0.0)
+		return x;			/* tan(+-0) = +-0 (preserve sign) */
+	if (fabs(x) <= _pio4)
+		return k_tan(x, 0.0, 1);
+	n = rem_pio2(x, y);
+	return k_tan(y[0], y[1], 1 - ((n & 1) << 1));
+}
+
+/*
+ * ldexp / frexp / modf -- APE bundles these three in one libc object whose
+ * ldexp/frexp flush or mangle subnormals: ldexp(1,-1074) -> 0 (so
+ * float.fromhex('1p-1074') and math.remainder on subnormals broke), and frexp
+ * mishandles subnormal mantissas. Because they share one object, overriding one
+ * pulls a duplicate-symbol conflict, so we must define all three here to keep
+ * APE's object out of the link entirely. These are the fdlibm scalbn/frexp/modf
+ * algorithms reworked onto 64-bit bit-manipulation, correct across the full
+ * subnormal range.
+ */
+#define _TWO54   18014398509481984.0		/* 2^54  */
+#define _TWOM54  5.5511151231257827e-17		/* 2^-54 */
+
+double
+ldexp(double x, int n)
+{
+	union { double d; unsigned long long u; } v;
+	int k;
+
+	v.d = x;
+	k = (int)((v.u >> 52) & 0x7ff);			/* extract exponent */
+	if (k == 0) {					/* 0 or subnormal */
+		if ((v.u & 0x7fffffffffffffffULL) == 0)
+			return x;			/* +-0 */
+		v.d = x * _TWO54;			/* normalize subnormal */
+		k = (int)((v.u >> 52) & 0x7ff) - 54;
+		if (n < -50000) {			/* underflow */
+			errno = ERANGE;
+			return _signbit(x) ? -0.0 : 0.0;
+		}
+	}
+	if (k == 0x7ff)
+		return x + x;				/* NaN or Inf */
+	k += n;
+	if (k > 0x7fe) {				/* overflow */
+		errno = ERANGE;
+		return _signbit(x) ? -_libm_inf() : _libm_inf();
+	}
+	if (k > 0) {					/* normal result */
+		v.u = (v.u & 0x800fffffffffffffULL) |
+		      ((unsigned long long)k << 52);
+		return v.d;
+	}
+	if (k <= -54) {
+		errno = ERANGE;
+		if (n > 50000)				/* int overflow in k+n: really overflow */
+			return _signbit(x) ? -_libm_inf() : _libm_inf();
+		return _signbit(x) ? -0.0 : 0.0;	/* underflow to 0 */
+	}
+	k += 54;					/* subnormal result */
+	v.u = (v.u & 0x800fffffffffffffULL) |
+	      ((unsigned long long)k << 52);
+	return v.d * _TWOM54;
+}
+
+double
+frexp(double x, int *eptr)
+{
+	union { double d; unsigned long long u; } v;
+	int k;
+
+	v.d = x;
+	k = (int)((v.u >> 52) & 0x7ff);
+	if (k == 0x7ff || (v.u & 0x7fffffffffffffffULL) == 0) {
+		*eptr = 0;				/* 0, inf, nan */
+		return x;
+	}
+	if (k == 0) {					/* subnormal */
+		v.d = x * _TWO54;
+		k = (int)((v.u >> 52) & 0x7ff) - 54;
+	}
+	*eptr = k - 1022;
+	v.u = (v.u & 0x800fffffffffffffULL) | (0x3feULL << 52);	/* [0.5,1) */
+	return v.d;
+}
+
+double
+modf(double x, double *iptr)
+{
+	union { double d; unsigned long long u; } v, iv;
+	int e;
+	unsigned long long mask;
+
+	v.d = x;
+	e = (int)((v.u >> 52) & 0x7ff) - 1023;		/* unbiased exponent */
+	if (e < 0) {					/* |x| < 1 */
+		iv.u = v.u & 0x8000000000000000ULL;	/* +-0 integer part */
+		*iptr = iv.d;
+		return x;
+	}
+	if (e >= 52) {					/* no fractional part */
+		*iptr = x;
+		if (isnan(x))
+			return x;
+		iv.u = v.u & 0x8000000000000000ULL;	/* +-0 */
+		return iv.d;
+	}
+	mask = 0x000fffffffffffffULL >> e;
+	if ((v.u & mask) == 0) {			/* x is integral */
+		*iptr = x;
+		iv.u = v.u & 0x8000000000000000ULL;
+		return iv.d;
+	}
+	iv.u = v.u & ~mask;				/* truncate to integer */
+	*iptr = iv.d;
+	return x - iv.d;
+}
