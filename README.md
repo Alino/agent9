@@ -67,8 +67,10 @@ rough edges:
 - File manager (`xfiles`) is a stub. Use acme or rc for now.
 - The xfiles entry in the Start menu doesn't do anything yet.
 
-The **python9** CPython port is validated but lives outside the v0.1.0 desktop
-image — it's a hand-authored kencc/APE build that boots an interpreter and
+The **python9** CPython port lives in the repo under `python9/` (as a patch +
+APE shims + build scripts + parity harness — the pristine CPython tree is
+fetched, not vendored), but it is **not baked into the v0.1.0 qcow2 release
+image**. It's a hand-authored kencc/APE build that boots an interpreter and
 scores 100.00% (6120/6120, 0 regressions) on the core regression batch against
 the host 3.11.14 reference. It's a prerequisite for richer Plan 9 tooling, not
 a finished app yet (and porting it does **not** by itself run hermes-agent,
