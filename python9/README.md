@@ -1,8 +1,13 @@
-# python9 — CPython 3.11 for 9front (in progress)
+# python9 — CPython 3.11 for 9front
 
-Goal: a **test-suite-validated** CPython 3.11 port for 9front/amd64, the Plan 9
-way (libsec/`tls(3)` for SSL, `dial(2)` for sockets, `threads(2)`/`alt` where a
-POSIX port would reach for pthreads/`select`).
+A **test-suite-validated** CPython 3.11.14 port for 9front/amd64, the Plan 9 way
+(libsec/`tls(3)` for SSL, `dial(2)` for sockets, `threads(2)`/`alt` where a POSIX
+port would reach for pthreads/`select`).
+
+**Status: the interpreter builds, boots, and scores 100.00% parity (6120/6120,
+0 regressions) against the host 3.11.14 reference on the 39-module core batch.**
+Build details and the bug-class archaeology are in
+[`port/plan9/README.md`](port/plan9/README.md).
 
 Why 3.11: it is the lowest version the target workload (hermes-agent) allows
 (`requires-python >=3.11,<3.14`), so it minimizes the interpreter delta while

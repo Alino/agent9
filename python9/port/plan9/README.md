@@ -1,5 +1,10 @@
 # Plan 9 / APE build for CPython 3.11
 
+**Status: complete — the interpreter builds, boots, runs the stdlib, and scores
+100.00% parity (6120/6120, 0 regressions) against the host CPython 3.11.14
+reference on the 39-module core batch.** See [Parity result](#parity-result-100)
+at the bottom for the final scoreboard and the bug classes that had to be fixed.
+
 Hand-authored build (no autoconf — `configure` is a dead end on APE, see the
 wiki). Compiler is `pcc` (APE C driver → `6c`/`6l`); APE supplies the POSIX
 headers CPython needs, native `6c` does not.
@@ -161,7 +166,69 @@ importlib bootstrap**, and executes Python. Crash cascade fixed in order:
    wchar_t) -> truncated "posix" to "p". Plan 9 is UTF-8, so define
    _Py_FORCE_UTF8_LOCALE to use CPython's own UTF-8 decoder.
 
-Now reaches **<frozen getpath>:463** -- a Python-level `ValueError: embedded
-null character` building a `._pth` path from `library`/`executable` (one carries
-a trailing NUL). The C interpreter + bytecode VM + frozen bootstrap all work;
-only path config + stdlib install remain before a REPL.
+Reached **<frozen getpath>:463** -- a Python-level `ValueError: embedded null
+character` building a `._pth` path from `library`/`executable` (one carries a
+trailing NUL). The C interpreter + bytecode VM + frozen bootstrap all work; that
+was the last path-config crash before the REPL.
+
+After it: fix getpath's trailing-NUL, install the stdlib under `/sys/lib/python`,
+and the **REPL boots and runs arbitrary Python**.
+
+## Parity result (100%)
+
+The port is validated against CPython's own regression suite: the same vendored
+`Lib/test` tree runs on the host (reference oracle) and in the VM, scored by
+`parity/score.py`. On the 39-module numeric/core batch:
+
+```
+applicable testcases : 6120
+port passing          : 6120
+regressions           : 0
+PARITY SCORE          : 100.00%  (6120 / 6120)
+```
+
+i.e. **every testcase that passes on the reference 3.11.14 build (and is not a
+justified platform skip) passes on the 9front port.** Modules still listed as
+"failed" fail only on skip-listed cases (threads, `_testcapi`, 4-byte
+`Py_ssize_t` sizeof checks, Plan 9 notes-vs-POSIX-signals) — not regressions.
+Manifest: `parity/manifests/9front-port.json`; skips: `parity/skiplist.txt`.
+
+### Bug classes that had to be fixed to get there
+
+Almost every parity failure was a **kencc codegen** or **APE libm** bug, not a
+CPython logic bug. The recurring families (see `patches/plan9-cpython.patch` and
+`ape-shim/`):
+
+- **Data model (not LP64).** `long`/`size_t`/`time_t` = 4 bytes but pointers =
+  8. `Py_ssize_t` is 4 while pointers are 8, so any `ptrA - ptrB` stored in a
+  `Py_ssize_t` truncates (GP-faulted Timsort key sorts). `%zd`/`%zu` read 8
+  bytes for `%z` -> `%l`+`(long)` casts.
+- **kencc NaN comparisons.** `nan == x` is true / `nan != x` is false (IEEE
+  unordered handled wrong), and operand commutation makes `x > max` -> `max < x`
+  true for NaN. Bit us in `float_richcompare`, float `/ % divmod //` (divide-by-
+  NaN raised ZeroDivisionError), `PyFloat_Pack2` (NaN packed as +0.0), `m_fsum`,
+  `isclose`, `hypot`/`dist`. Guard with `Py_IS_NAN`.
+- **kencc signed-zero loss.** Unary `-x` compiles as `0.0 - x` (loses -0.0), and
+  the literal `-0.` constant-folds to +0.0 -- the latter zeroed every `C(-0.,..)`
+  entry in cmath's special-value tables. `x + 0.0`/`x*0` round -0.0 to +0.0 too.
+  Fixed across `float_neg`, `complex_neg`, dtoa, `float_pow`'s negate, cmath
+  acos/asin/asinh/atan/atanh/cos/sin/tan branch cuts, `sin`/`tan(+-0)`, and the
+  `NZ` runtime -0.0 for the tables.
+- **APE libm violates C99 / is imprecise.** `HUGE_VAL` is finite (so `Py_NAN`
+  was 0.0 interpreter-wide); `fabs(-0.0)` keeps the sign bit; `fmod` loops on
+  NaN; `frexp`/`ldexp`/`modf` flush/mangle subnormals (and are bundled in one
+  object, so all three must be overridden together); `pow`/`log` are a few ulp
+  off (Lanczos `tgamma` amplifies to 30+ ulp); trig/`atan2` drop signed zeros;
+  `sin`/`cos`/`tan` ~10 ulp for large args. Fixed with bit-pattern `inf`/`nan`,
+  a correct `fabs`/`fmod`/`round`/`ldexp`/`frexp`/`modf`, and **vendored fdlibm**
+  `exp`/`log`/`log10`/`pow`/`sin`/`cos`/`tan`/`sinh`/`cosh`/`tanh`/`atan`/`atan2`
+  in `ape-shim/plan9_libm.c` (+ `hwsqrt.s` for `SQRTSD`). Small-arg cancellation
+  in the hyperbolics / `atanh` uses the `expm1` / `|x|` forms.
+- **Environment + misc.** `setenv` must update `environ[]` (APE `execve` rebuilds
+  the child env from it); `NDEBUG` set (live asserts tripped on APE imprecision);
+  stale `.pyc` trap (`PYTHONPYCACHEPREFIX` persists folded -0.0 constants).
+
+The build/test loop runs over `listen1` into a 9front VM (single-line commands,
+`hget` to push files, `pybuild.rc` to compile one file server-side, sequential
+`-m test --junit-xml`). See the memory note `python9-plan9-datamodel.md` and
+`docs/wiki/concepts/python3-on-plan9.md` for the full archaeology.
