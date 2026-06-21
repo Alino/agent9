@@ -1,5 +1,5 @@
 {
- "applicable": 6121,
+ "applicable": 6120,
  "justified_skips": [
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DATE_GET",
   "?::test.datetimetester.CapiTest_Fast.test_PyDateTime_DELTA_GET",
@@ -90,10 +90,12 @@
   "?::test.test_array.UnsignedShortTest.test_sizeof_without_buffer",
   "?::test.test_builtin.BuiltinTest.test_compile_top_level_await",
   "?::test.test_builtin.PtyTests.test_input_no_stdout_fileno",
+  "?::test.test_bytes.ByteArrayTest.test_mutating_index",
   "?::test.test_bytes.ByteArrayTest.test_obsolete_write_lock",
   "?::test.test_bytes.ByteArrayTest.test_sq_item",
   "?::test.test_bytes.BytesTest.test_from_format",
   "?::test.test_bytes.BytesTest.test_sq_item",
+  "?::test.test_cmath.CMathTests.test_polar_errno",
   "?::test.test_csv.Test_Csv.test_writerows_legacy_strings",
   "?::test.test_dict.CAPITest.test_getitem_knownhash",
   "?::test.test_enum.OldTestFlag.test_unique_composite",
@@ -118,8 +120,7 @@
   "?::test.test_itertools.SizeofTest.test_permutations_sizeof",
   "?::test.test_itertools.SizeofTest.test_product_sizeof",
   "?::test.test_itertools.TestBasicOps.test_tee_concurrent",
-  "?::test.test_math.MathTests.testLog2Exact",
-  "?::test.test_math.MathTests.testRemainder",
+  "?::test.test_json.test_tool.TestTool.test_broken_pipe_error",
   "?::test.test_re.ReTests.test_regression_gh94675",
   "?::test.test_struct.StructTest.test__sizeof__",
   "?::test.test_struct.StructTest.test_calcsize",
@@ -138,10 +139,9 @@
   "?::test.test_weakref.MappingTestCase.test_threaded_weak_valued_setdefault",
   "?::test.test_weakref.ReferencesTestCase.test_cfunction"
  ],
- "parity": 0.9988563960137232,
+ "parity": 0.9996732026143791,
  "port_bad_modules": {
   "test_builtin": "failed",
-  "test_cmath": "failed",
   "test_datetime": "failed",
   "test_enum": "failed",
   "test_functools": "failed",
@@ -152,31 +152,11 @@
   "test_struct": "failed",
   "test_weakref": "failed"
  },
- "port_passing": 6114,
+ "port_passing": 6118,
  "regressions": [
-  {
-   "port_status": "missing",
-   "test": "?::test.test_bytes.ByteArrayTest.test_mutating_index"
-  },
-  {
-   "port_status": "skip",
-   "test": "?::test.test_cmath.CMathTests.test_polar_errno"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_cmath.CMathTests.test_specific_values"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_json.test_tool.TestTool.test_broken_pipe_error"
-  },
   {
    "port_status": "fail",
    "test": "?::test.test_math.MathTests.test_mtestfile"
-  },
-  {
-   "port_status": "fail",
-   "test": "?::test.test_math.MathTests.test_testfile"
   },
   {
    "port_status": "error",

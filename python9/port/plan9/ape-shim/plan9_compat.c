@@ -211,22 +211,30 @@ asinh(double x)
 double
 atanh(double x)
 {
-	double a;
+	double ax, t;
 
 	if (isnan(x))
 		return x;
-	a = fabs(x);
-	if (a > 1.0) {
+	ax = fabs(x);
+	if (ax > 1.0) {
 		errno = EDOM;
 		return _qnan();
 	}
-	if (a == 1.0) {
+	if (ax == 1.0) {
 		errno = ERANGE;
 		return (x < 0.0) ? -_pinf() : _pinf();
 	}
 	if (x == 0.0)
 		return x;
-	return 0.5 * log1p(2.0 * x / (1.0 - x));
+	/* fdlibm form: work with |x| so that (1-ax) captures the tiny gap near
+	   the +-1 singularity. The earlier `2*x/(1-x)` with signed x made (1-x)
+	   ~ 2 for x near -1, rounding the argument to ~x and losing all the
+	   precision (atanh(-0.9999999999999999) came out -18.37 not -18.71). */
+	if (ax < 0.5)
+		t = 0.5 * log1p(2.0 * ax + 2.0 * ax * ax / (1.0 - ax));
+	else
+		t = 0.5 * log1p((ax + ax) / (1.0 - ax));
+	return (x < 0.0) ? -t : t;
 }
 
 double

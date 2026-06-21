@@ -865,7 +865,52 @@
  static Py_complex cmath_cosh_impl(PyObject *, Py_complex);
  static Py_complex cmath_sinh_impl(PyObject *, Py_complex);
  static Py_complex cmath_sqrt_impl(PyObject *, Py_complex);
-@@ -363,11 +373,13 @@
+@@ -239,11 +249,11 @@
+                                M_LN2*2., z.imag);
+         } else {
+             r.imag = copysign(log(hypot(z.real/2., z.imag/2.)) +
+-                              M_LN2*2., -z.imag);
++                              M_LN2*2., _plan9_dneg(z.imag));  /* kencc -0.0 */
+         }
+     } else {
+         s1.real = 1.-z.real;
+-        s1.imag = -z.imag;
++        s1.imag = _plan9_dneg(z.imag);  /* plan9: kencc -z.imag loses -0.0 */
+         s1 = cmath_sqrt_impl(module, s1);
+         s2.real = 1.+z.real;
+         s2.imag = z.imag;
+@@ -302,11 +312,13 @@
+ {
+     /* asin(z) = -i asinh(iz) */
+     Py_complex s, r;
+-    s.real = -z.imag;
++    /* plan9: kencc's unary `-x` loses the sign of zero, corrupting asin's
++       signed-zero branch cuts. Negate via the sign bit. */
++    s.real = _plan9_dneg(z.imag);
+     s.imag = z.real;
+     s = cmath_asinh_impl(module, s);
+     r.real = s.imag;
+-    r.imag = -s.real;
++    r.imag = _plan9_dneg(s.real);
+     return r;
+ }
+ 
+@@ -333,12 +345,12 @@
+                               M_LN2*2., z.real);
+         } else {
+             r.real = -copysign(log(hypot(z.real/2., z.imag/2.)) +
+-                               M_LN2*2., -z.real);
++                               M_LN2*2., _plan9_dneg(z.real));  /* kencc -0.0 */
+         }
+         r.imag = atan2(z.imag, fabs(z.real));
+     } else {
+         s1.real = 1.+z.imag;
+-        s1.imag = -z.real;
++        s1.imag = _plan9_dneg(z.real);  /* plan9: kencc -z.real loses -0.0 */
+         s1 = cmath_sqrt_impl(module, s1);
+         s2.real = 1.-z.imag;
+         s2.imag = z.real;
+@@ -363,11 +375,13 @@
  {
      /* atan(z) = -i atanh(iz) */
      Py_complex s, r;
@@ -881,7 +926,7 @@
      return r;
  }
  
-@@ -433,11 +445,11 @@
+@@ -433,11 +447,11 @@
          */
          h = hypot(z.real/2., z.imag/2.);  /* safe from overflow */
          r.real = z.real/4./h/h;
@@ -898,7 +943,7 @@
          errno = 0;
      } else if (z.real == 1. && ay < CM_SQRT_DBL_MIN) {
          /* C99 standard says:  atanh(1+/-0.) should be inf +/- 0i */
-@@ -452,7 +464,11 @@
+@@ -452,7 +466,11 @@
          }
      } else {
          r.real = m_log1p(4.*z.real/((1-z.real)*(1-z.real) + ay*ay))/4.;
@@ -911,7 +956,44 @@
          errno = 0;
      }
      return r;
-@@ -1200,7 +1216,11 @@
+@@ -471,7 +489,7 @@
+ {
+     /* cos(z) = cosh(iz) */
+     Py_complex r;
+-    r.real = -z.imag;
++    r.real = _plan9_dneg(z.imag);  /* plan9: kencc -z.imag loses -0.0 */
+     r.imag = z.real;
+     r = cmath_cosh_impl(module, r);
+     return r;
+@@ -706,11 +724,11 @@
+ {
+     /* sin(z) = -i sin(iz) */
+     Py_complex s, r;
+-    s.real = -z.imag;
++    s.real = _plan9_dneg(z.imag);  /* plan9: kencc -x loses -0.0 */
+     s.imag = z.real;
+     s = cmath_sinh_impl(module, s);
+     r.real = s.imag;
+-    r.imag = -s.real;
++    r.imag = _plan9_dneg(s.real);
+     return r;
+ }
+ 
+@@ -864,11 +882,11 @@
+ {
+     /* tan(z) = -i tanh(iz) */
+     Py_complex s, r;
+-    s.real = -z.imag;
++    s.real = _plan9_dneg(z.imag);  /* plan9: kencc -x loses -0.0 */
+     s.imag = z.real;
+     s = cmath_tanh_impl(module, s);
+     r.real = s.imag;
+-    r.imag = -s.real;
++    r.imag = _plan9_dneg(s.real);
+     return r;
+ }
+ 
+@@ -1200,7 +1218,11 @@
          return -1;
      }
  
@@ -924,6 +1006,160 @@
          /* short circuit exact equality -- needed to catch two infinities of
             the same sign. And perhaps speeds things up a bit sometimes.
          */
+@@ -1294,12 +1316,15 @@
+ 
+ #define INIT_SPECIAL_VALUES(NAME, BODY) { Py_complex* p = (Py_complex*)NAME; BODY }
+ #define C(REAL, IMAG) p->real = REAL; p->imag = IMAG; ++p;
++/* plan9: the literal -0. constant-folds to +0.0 under kencc, so every C(NZ,..)
++   special-value table entry stored +0.0. NZ builds a true -0.0 at runtime. */
++#define NZ (_plan9_dneg(0.))
+ 
+     INIT_SPECIAL_VALUES(acos_special_values, {
+       C(P34,INF) C(P,INF)  C(P,INF)  C(P,-INF)  C(P,-INF)  C(P34,-INF) C(N,INF)
+       C(P12,INF) C(U,U)    C(U,U)    C(U,U)     C(U,U)     C(P12,-INF) C(N,N)
+-      C(P12,INF) C(U,U)    C(P12,0.) C(P12,-0.) C(U,U)     C(P12,-INF) C(P12,N)
+-      C(P12,INF) C(U,U)    C(P12,0.) C(P12,-0.) C(U,U)     C(P12,-INF) C(P12,N)
++      C(P12,INF) C(U,U)    C(P12,0.) C(P12,NZ) C(U,U)     C(P12,-INF) C(P12,N)
++      C(P12,INF) C(U,U)    C(P12,0.) C(P12,NZ) C(U,U)     C(P12,-INF) C(P12,N)
+       C(P12,INF) C(U,U)    C(U,U)    C(U,U)     C(U,U)     C(P12,-INF) C(N,N)
+       C(P14,INF) C(0.,INF) C(0.,INF) C(0.,-INF) C(0.,-INF) C(P14,-INF) C(N,INF)
+       C(N,INF)   C(N,N)    C(N,N)    C(N,N)     C(N,N)     C(N,-INF)   C(N,N)
+@@ -1311,97 +1336,97 @@
+       C(INF,-P12) C(U,U)     C(0.,-P12) C(0.,P12) C(U,U)    C(INF,P12) C(N,N)
+       C(INF,-P12) C(U,U)     C(0.,-P12) C(0.,P12) C(U,U)    C(INF,P12) C(N,N)
+       C(INF,-P12) C(U,U)     C(U,U)     C(U,U)    C(U,U)    C(INF,P12) C(N,N)
+-      C(INF,-P14) C(INF,-0.) C(INF,-0.) C(INF,0.) C(INF,0.) C(INF,P14) C(INF,N)
++      C(INF,-P14) C(INF,NZ) C(INF,NZ) C(INF,0.) C(INF,0.) C(INF,P14) C(INF,N)
+       C(INF,N)    C(N,N)     C(N,N)     C(N,N)    C(N,N)    C(INF,N)   C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(asinh_special_values, {
+-      C(-INF,-P14) C(-INF,-0.) C(-INF,-0.) C(-INF,0.) C(-INF,0.) C(-INF,P14) C(-INF,N)
++      C(-INF,-P14) C(-INF,NZ) C(-INF,NZ) C(-INF,0.) C(-INF,0.) C(-INF,P14) C(-INF,N)
+       C(-INF,-P12) C(U,U)      C(U,U)      C(U,U)     C(U,U)     C(-INF,P12) C(N,N)
+-      C(-INF,-P12) C(U,U)      C(-0.,-0.)  C(-0.,0.)  C(U,U)     C(-INF,P12) C(N,N)
+-      C(INF,-P12)  C(U,U)      C(0.,-0.)   C(0.,0.)   C(U,U)     C(INF,P12)  C(N,N)
++      C(-INF,-P12) C(U,U)      C(NZ,NZ)  C(NZ,0.)  C(U,U)     C(-INF,P12) C(N,N)
++      C(INF,-P12)  C(U,U)      C(0.,NZ)   C(0.,0.)   C(U,U)     C(INF,P12)  C(N,N)
+       C(INF,-P12)  C(U,U)      C(U,U)      C(U,U)     C(U,U)     C(INF,P12)  C(N,N)
+-      C(INF,-P14)  C(INF,-0.)  C(INF,-0.)  C(INF,0.)  C(INF,0.)  C(INF,P14)  C(INF,N)
+-      C(INF,N)     C(N,N)      C(N,-0.)    C(N,0.)    C(N,N)     C(INF,N)    C(N,N)
++      C(INF,-P14)  C(INF,NZ)  C(INF,NZ)  C(INF,0.)  C(INF,0.)  C(INF,P14)  C(INF,N)
++      C(INF,N)     C(N,N)      C(N,NZ)    C(N,0.)    C(N,N)     C(INF,N)    C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(atanh_special_values, {
+-      C(-0.,-P12) C(-0.,-P12) C(-0.,-P12) C(-0.,P12) C(-0.,P12) C(-0.,P12) C(-0.,N)
+-      C(-0.,-P12) C(U,U)      C(U,U)      C(U,U)     C(U,U)     C(-0.,P12) C(N,N)
+-      C(-0.,-P12) C(U,U)      C(-0.,-0.)  C(-0.,0.)  C(U,U)     C(-0.,P12) C(-0.,N)
+-      C(0.,-P12)  C(U,U)      C(0.,-0.)   C(0.,0.)   C(U,U)     C(0.,P12)  C(0.,N)
++      C(NZ,-P12) C(NZ,-P12) C(NZ,-P12) C(NZ,P12) C(NZ,P12) C(NZ,P12) C(NZ,N)
++      C(NZ,-P12) C(U,U)      C(U,U)      C(U,U)     C(U,U)     C(NZ,P12) C(N,N)
++      C(NZ,-P12) C(U,U)      C(NZ,NZ)  C(NZ,0.)  C(U,U)     C(NZ,P12) C(NZ,N)
++      C(0.,-P12)  C(U,U)      C(0.,NZ)   C(0.,0.)   C(U,U)     C(0.,P12)  C(0.,N)
+       C(0.,-P12)  C(U,U)      C(U,U)      C(U,U)     C(U,U)     C(0.,P12)  C(N,N)
+       C(0.,-P12)  C(0.,-P12)  C(0.,-P12)  C(0.,P12)  C(0.,P12)  C(0.,P12)  C(0.,N)
+       C(0.,-P12)  C(N,N)      C(N,N)      C(N,N)     C(N,N)     C(0.,P12)  C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(cosh_special_values, {
+-      C(INF,N) C(U,U) C(INF,0.)  C(INF,-0.) C(U,U) C(INF,N) C(INF,N)
++      C(INF,N) C(U,U) C(INF,0.)  C(INF,NZ) C(U,U) C(INF,N) C(INF,N)
+       C(N,N)   C(U,U) C(U,U)     C(U,U)     C(U,U) C(N,N)   C(N,N)
+-      C(N,0.)  C(U,U) C(1.,0.)   C(1.,-0.)  C(U,U) C(N,0.)  C(N,0.)
+-      C(N,0.)  C(U,U) C(1.,-0.)  C(1.,0.)   C(U,U) C(N,0.)  C(N,0.)
++      C(N,0.)  C(U,U) C(1.,0.)   C(1.,NZ)  C(U,U) C(N,0.)  C(N,0.)
++      C(N,0.)  C(U,U) C(1.,NZ)  C(1.,0.)   C(U,U) C(N,0.)  C(N,0.)
+       C(N,N)   C(U,U) C(U,U)     C(U,U)     C(U,U) C(N,N)   C(N,N)
+-      C(INF,N) C(U,U) C(INF,-0.) C(INF,0.)  C(U,U) C(INF,N) C(INF,N)
++      C(INF,N) C(U,U) C(INF,NZ) C(INF,0.)  C(U,U) C(INF,N) C(INF,N)
+       C(N,N)   C(N,N) C(N,0.)    C(N,0.)    C(N,N) C(N,N)   C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(exp_special_values, {
+-      C(0.,0.) C(U,U) C(0.,-0.)  C(0.,0.)  C(U,U) C(0.,0.) C(0.,0.)
++      C(0.,0.) C(U,U) C(0.,NZ)  C(0.,0.)  C(U,U) C(0.,0.) C(0.,0.)
+       C(N,N)   C(U,U) C(U,U)     C(U,U)    C(U,U) C(N,N)   C(N,N)
+-      C(N,N)   C(U,U) C(1.,-0.)  C(1.,0.)  C(U,U) C(N,N)   C(N,N)
+-      C(N,N)   C(U,U) C(1.,-0.)  C(1.,0.)  C(U,U) C(N,N)   C(N,N)
++      C(N,N)   C(U,U) C(1.,NZ)  C(1.,0.)  C(U,U) C(N,N)   C(N,N)
++      C(N,N)   C(U,U) C(1.,NZ)  C(1.,0.)  C(U,U) C(N,N)   C(N,N)
+       C(N,N)   C(U,U) C(U,U)     C(U,U)    C(U,U) C(N,N)   C(N,N)
+-      C(INF,N) C(U,U) C(INF,-0.) C(INF,0.) C(U,U) C(INF,N) C(INF,N)
+-      C(N,N)   C(N,N) C(N,-0.)   C(N,0.)   C(N,N) C(N,N)   C(N,N)
++      C(INF,N) C(U,U) C(INF,NZ) C(INF,0.) C(U,U) C(INF,N) C(INF,N)
++      C(N,N)   C(N,N) C(N,NZ)   C(N,0.)   C(N,N) C(N,N)   C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(log_special_values, {
+       C(INF,-P34) C(INF,-P)  C(INF,-P)   C(INF,P)   C(INF,P)  C(INF,P34)  C(INF,N)
+       C(INF,-P12) C(U,U)     C(U,U)      C(U,U)     C(U,U)    C(INF,P12)  C(N,N)
+       C(INF,-P12) C(U,U)     C(-INF,-P)  C(-INF,P)  C(U,U)    C(INF,P12)  C(N,N)
+-      C(INF,-P12) C(U,U)     C(-INF,-0.) C(-INF,0.) C(U,U)    C(INF,P12)  C(N,N)
++      C(INF,-P12) C(U,U)     C(-INF,NZ) C(-INF,0.) C(U,U)    C(INF,P12)  C(N,N)
+       C(INF,-P12) C(U,U)     C(U,U)      C(U,U)     C(U,U)    C(INF,P12)  C(N,N)
+-      C(INF,-P14) C(INF,-0.) C(INF,-0.)  C(INF,0.)  C(INF,0.) C(INF,P14)  C(INF,N)
++      C(INF,-P14) C(INF,NZ) C(INF,NZ)  C(INF,0.)  C(INF,0.) C(INF,P14)  C(INF,N)
+       C(INF,N)    C(N,N)     C(N,N)      C(N,N)     C(N,N)    C(INF,N)    C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(sinh_special_values, {
+-      C(INF,N) C(U,U) C(-INF,-0.) C(-INF,0.) C(U,U) C(INF,N) C(INF,N)
++      C(INF,N) C(U,U) C(-INF,NZ) C(-INF,0.) C(U,U) C(INF,N) C(INF,N)
+       C(N,N)   C(U,U) C(U,U)      C(U,U)     C(U,U) C(N,N)   C(N,N)
+-      C(0.,N)  C(U,U) C(-0.,-0.)  C(-0.,0.)  C(U,U) C(0.,N)  C(0.,N)
+-      C(0.,N)  C(U,U) C(0.,-0.)   C(0.,0.)   C(U,U) C(0.,N)  C(0.,N)
++      C(0.,N)  C(U,U) C(NZ,NZ)  C(NZ,0.)  C(U,U) C(0.,N)  C(0.,N)
++      C(0.,N)  C(U,U) C(0.,NZ)   C(0.,0.)   C(U,U) C(0.,N)  C(0.,N)
+       C(N,N)   C(U,U) C(U,U)      C(U,U)     C(U,U) C(N,N)   C(N,N)
+-      C(INF,N) C(U,U) C(INF,-0.)  C(INF,0.)  C(U,U) C(INF,N) C(INF,N)
+-      C(N,N)   C(N,N) C(N,-0.)    C(N,0.)    C(N,N) C(N,N)   C(N,N)
++      C(INF,N) C(U,U) C(INF,NZ)  C(INF,0.)  C(U,U) C(INF,N) C(INF,N)
++      C(N,N)   C(N,N) C(N,NZ)    C(N,0.)    C(N,N) C(N,N)   C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(sqrt_special_values, {
+       C(INF,-INF) C(0.,-INF) C(0.,-INF) C(0.,INF) C(0.,INF) C(INF,INF) C(N,INF)
+       C(INF,-INF) C(U,U)     C(U,U)     C(U,U)    C(U,U)    C(INF,INF) C(N,N)
+-      C(INF,-INF) C(U,U)     C(0.,-0.)  C(0.,0.)  C(U,U)    C(INF,INF) C(N,N)
+-      C(INF,-INF) C(U,U)     C(0.,-0.)  C(0.,0.)  C(U,U)    C(INF,INF) C(N,N)
++      C(INF,-INF) C(U,U)     C(0.,NZ)  C(0.,0.)  C(U,U)    C(INF,INF) C(N,N)
++      C(INF,-INF) C(U,U)     C(0.,NZ)  C(0.,0.)  C(U,U)    C(INF,INF) C(N,N)
+       C(INF,-INF) C(U,U)     C(U,U)     C(U,U)    C(U,U)    C(INF,INF) C(N,N)
+-      C(INF,-INF) C(INF,-0.) C(INF,-0.) C(INF,0.) C(INF,0.) C(INF,INF) C(INF,N)
++      C(INF,-INF) C(INF,NZ) C(INF,NZ) C(INF,0.) C(INF,0.) C(INF,INF) C(INF,N)
+       C(INF,-INF) C(N,N)     C(N,N)     C(N,N)    C(N,N)    C(INF,INF) C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(tanh_special_values, {
+-      C(-1.,0.) C(U,U) C(-1.,-0.) C(-1.,0.) C(U,U) C(-1.,0.) C(-1.,0.)
++      C(-1.,0.) C(U,U) C(-1.,NZ) C(-1.,0.) C(U,U) C(-1.,0.) C(-1.,0.)
+       C(N,N)    C(U,U) C(U,U)     C(U,U)    C(U,U) C(N,N)    C(N,N)
+-      C(N,N)    C(U,U) C(-0.,-0.) C(-0.,0.) C(U,U) C(N,N)    C(N,N)
+-      C(N,N)    C(U,U) C(0.,-0.)  C(0.,0.)  C(U,U) C(N,N)    C(N,N)
++      C(N,N)    C(U,U) C(NZ,NZ) C(NZ,0.) C(U,U) C(N,N)    C(N,N)
++      C(N,N)    C(U,U) C(0.,NZ)  C(0.,0.)  C(U,U) C(N,N)    C(N,N)
+       C(N,N)    C(U,U) C(U,U)     C(U,U)    C(U,U) C(N,N)    C(N,N)
+-      C(1.,0.)  C(U,U) C(1.,-0.)  C(1.,0.)  C(U,U) C(1.,0.)  C(1.,0.)
+-      C(N,N)    C(N,N) C(N,-0.)   C(N,0.)   C(N,N) C(N,N)    C(N,N)
++      C(1.,0.)  C(U,U) C(1.,NZ)  C(1.,0.)  C(U,U) C(1.,0.)  C(1.,0.)
++      C(N,N)    C(N,N) C(N,NZ)   C(N,0.)   C(N,N) C(N,N)    C(N,N)
+     })
+ 
+     INIT_SPECIAL_VALUES(rect_special_values, {
+-      C(INF,N) C(U,U) C(-INF,0.) C(-INF,-0.) C(U,U) C(INF,N) C(INF,N)
++      C(INF,N) C(U,U) C(-INF,0.) C(-INF,NZ) C(U,U) C(INF,N) C(INF,N)
+       C(N,N)   C(U,U) C(U,U)     C(U,U)      C(U,U) C(N,N)   C(N,N)
+-      C(0.,0.) C(U,U) C(-0.,0.)  C(-0.,-0.)  C(U,U) C(0.,0.) C(0.,0.)
+-      C(0.,0.) C(U,U) C(0.,-0.)  C(0.,0.)    C(U,U) C(0.,0.) C(0.,0.)
++      C(0.,0.) C(U,U) C(NZ,0.)  C(NZ,NZ)  C(U,U) C(0.,0.) C(0.,0.)
++      C(0.,0.) C(U,U) C(0.,NZ)  C(0.,0.)    C(U,U) C(0.,0.) C(0.,0.)
+       C(N,N)   C(U,U) C(U,U)     C(U,U)      C(U,U) C(N,N)   C(N,N)
+-      C(INF,N) C(U,U) C(INF,-0.) C(INF,0.)   C(U,U) C(INF,N) C(INF,N)
++      C(INF,N) C(U,U) C(INF,NZ) C(INF,0.)   C(U,U) C(INF,N) C(INF,N)
+       C(N,N)   C(N,N) C(N,0.)    C(N,0.)     C(N,N) C(N,N)   C(N,N)
+     })
+     return 0;
 --- a/Objects/floatobject.c
 +++ b/Objects/floatobject.c
 @@ -568,7 +568,15 @@

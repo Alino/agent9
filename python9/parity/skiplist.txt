@@ -174,9 +174,9 @@ test.test_curses                # ncurses not assumed present
 ?::test.test_enum.OldTestFlag.test_unique_composite                     # spawns threads (enum thread-safety) -- needs Plan 9 thread backend
 ?::test.test_enum.OldTestIntFlag.test_unique_composite                  # spawns threads (enum thread-safety) -- needs Plan 9 thread backend
 
-# --- APE subnormal FP limitation (broken frexp/ldexp for subnormals), 2026-06 ---
-?::test.test_math.MathTests.testLog2Exact                              # log2 of subnormals: APE frexp is wrong for subnormals (negative mantissa)
-?::test.test_math.MathTests.testRemainder                             # float.as_integer_ratio() uses frexp -> Fraction(subnormal) breaks on APE
+# (testLog2Exact / testRemainder were skipped here for APE's broken subnormal
+#  frexp/ldexp; removed 2026-06 after vendoring correct ldexp/frexp/modf -- the
+#  port now passes them, so they re-enter the applicable set.)
 
 # --- asyncio self-pipe needs a working socketpair selector (Plan 9), 2026-06 ---
 ?::test.test_builtin.BuiltinTest.test_compile_top_level_await           # runs the coroutine via asyncio; its self-pipe needs socketpair -> "Not a socket" on Plan 9
@@ -186,3 +186,10 @@ test.test_curses                # ncurses not assumed present
 ?::test.test_float.PackTests.test_unpack                                # requires _testcapi
 ?::test.test_float.PackTests.test_roundtrip                             # requires _testcapi
 ?::test.test_float.IEEEFormatTestCase.test_serialized_float_rounding    # requires _testcapi
+
+# --- additional _testcapi-gated cases, 2026-06 ---
+?::test.test_cmath.CMathTests.test_polar_errno                          # requires _testcapi (import_module('_testcapi') -> SkipTest on the port)
+?::test.test_bytes.ByteArrayTest.test_mutating_index                   # tp_as_sequence subtest needs _testcapi.sequence_setitem (the tp_as_mapping half passes)
+
+# --- Plan 9 pipe/note model differs from POSIX SIGPIPE/EPIPE, 2026-06 ---
+?::test.test_json.test_tool.TestTool.test_broken_pipe_error            # write-on-closed-pipe is a Plan 9 note, not a POSIX EPIPE exit code (got 55, test wants errno.EPIPE)

@@ -7,6 +7,23 @@
 #include <math.h>
 #include <errno.h>
 
+/* expm1 lives in plan9_compat.c (APE's <math.h> doesn't declare it); kencc has
+   no implicit declarations, so declare it before tanh uses it. */
+extern double expm1(double);
+
+/* APE's fabs(-0.0) returns -0.0 (it does not clear the sign bit under kencc),
+   which corrupts signed-zero results that route a magnitude through fabs (seen
+   in cmath sqrt/acos/asin branch cuts and math.remainder). Provide a correct
+   bit-clearing fabs that fully replaces APE's. */
+double
+fabs(double x)
+{
+	union { double d; unsigned long long u; } v;
+	v.d = x;
+	v.u &= 0x7fffffffffffffffULL;
+	return v.d;
+}
+
 static double _libm_inf(void){ union{unsigned long long u; double d;} v; v.u=0x7ff0000000000000ULL; return v.d; }
 static double _libm_nan(void){ union{unsigned long long u; double d;} v; v.u=0x7ff8000000000000ULL; return v.d; }
 
@@ -204,13 +221,12 @@ sinh(double x)
 	if (ax > 709.0) {
 		e = exp(ax * 0.5);
 		r = (0.5 * e) * e;
-	} else if (ax >= 0.5) {
-		e = exp(ax);
-		r = 0.5 * (e - 1.0 / e);
 	} else {
-		double x2 = ax * ax;	/* Taylor: x + x^3/6 + x^5/120 + ... */
-		r = ax * (1.0 + x2 * (1.0/6.0 + x2 * (1.0/120.0
-		         + x2 * (1.0/5040.0 + x2 * (1.0/362880.0)))));
+		/* sinh(x) = 0.5*(t + t/(t+1)) with t = expm1(|x|); expm1 avoids the
+		   cancellation of (e - 1/e) and is exact for small x, where the old
+		   degree-9 Taylor truncated at ~x^11/11! (sinh(0.2) was 18 ulps off). */
+		e = expm1(ax);
+		r = 0.5 * (e + e / (e + 1.0));
 	}
 	return (x < 0.0) ? -r : r;
 }
@@ -224,12 +240,17 @@ tanh(double x)
 	ax = fabs(x);
 	if (ax > 22.0)
 		r = 1.0;			/* tanh saturates */
-	else if (ax > 1.0) {
-		t = exp(2.0 * ax);
-		r = 1.0 - 2.0 / (t + 1.0);
+	else if (ax >= 1.0) {
+		t = expm1(2.0 * ax);
+		r = 1.0 - 2.0 / (t + 2.0);
+	} else if (ax >= 1.3877787807814457e-17) {	/* 2^-56 */
+		/* expm1 avoids the catastrophic cancellation that (1-exp(-2x))
+		   suffers for small x -- (1-t) collapses to 2^-53 regardless of
+		   the true tiny value, so tanh(5e-17) came out as 2^-54. */
+		t = expm1(-2.0 * ax);
+		r = -t / (t + 2.0);
 	} else {
-		t = exp(-2.0 * ax);
-		r = (1.0 - t) / (1.0 + t);
+		return x;			/* |x| < 2^-56: tanh(x) = x to rounding */
 	}
 	return (x < 0.0) ? -r : r;
 }
@@ -321,6 +342,8 @@ sin(double x)
 	int n;
 	if (isnan(x) || isinf(x))
 		return x - x;		/* nan */
+	if (x == 0.0)
+		return x;		/* sin(+-0)=+-0; k_sin's x+... makes -0.0+0.0=+0.0 */
 	if (fabs(x) <= _pio4)
 		return k_sin(x, 0.0);
 	n = rem_pio2(x, y);
