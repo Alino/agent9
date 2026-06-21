@@ -2,8 +2,11 @@
 
 You need two things:
 1. **QEMU 7.2+** on your host.
-2. **agent9-v0.1.0.qcow2** — the disk image. Download from the
-   GitHub Releases page (~273 MB).
+2. **agent9-v0.2.0.qcow2** — the disk image. Download from the
+   GitHub Releases page (~524 MB). New in v0.2.0: the python9 CPython
+   3.11 port (`python` on PATH) and pi9 brought to feature parity with
+   upstream pi (tree sessions, steering, headless modes, Codex tool
+   calls, and more).
 
 Drop the qcow2 next to the run script for your OS, then run it.
 
@@ -61,8 +64,13 @@ model=anthropic/claude-sonnet-4.5
 ```
 
 …or run pi9 and use `/login` to start an OAuth flow with Anthropic
-Claude Pro / GitHub Copilot. The OAuth callback runs on host port
-53692, which the run scripts forward into the VM.
+Claude Pro, GitHub Copilot, or OpenAI ChatGPT (Codex). The OAuth
+callbacks run on host ports 53692 (Anthropic/Copilot) and 1455
+(Codex), which the run scripts forward into the VM.
+
+(The image ships without credentials. On first run pi9 writes a
+config template to `/usr/glenda/lib/pi9/config` and tells you to add
+a key or `/login`.)
 
 From the rc terminal:
 
@@ -77,8 +85,8 @@ Or click the **Start** menu and pick **Pi9**.
 Out of the box you get NAT through QEMU's user-mode networking.
 Outbound HTTP/HTTPS works (pi9 hits Anthropic / OpenRouter, mothra
 loads pages). Inbound: ports 22 (ssh), 17010 (listen1 dev shell),
-564 (9P export), 53692 (OAuth callback) are forwarded from host
-ports 2222 / 1717 / 1564 / 53692.
+564 (9P export), 53692 + 1455 (OAuth callbacks) are forwarded from
+host ports 2222 / 1717 / 1564 / 53692 / 1455.
 
 To SSH in: `ssh -p 2222 glenda@localhost` (no password — for dev
 convenience, this image is not hardened).
@@ -90,15 +98,33 @@ convenience, this image is not hardened).
 - launcher (start menu)
 - vts + vtwin (terminal server + libdraw client)
 - pi9 (LLM agent, see source at /sys/src/cmd/... in repo)
+- python9 (CPython 3.11.14, `python` / `python3` on PATH; stdlib at
+  /sys/lib/python)
 - NetSurf 3.x (web browser, Plan 9 port from netsurf-plan9)
 - Plus the standard 9front stack: acme, plumber, mothra, hget, git9,
   9pm, etc.
+
+## Using Python
+
+The python9 port (CPython 3.11.14, the Plan 9 way) is on PATH:
+
+```
+python --version          # Python 3.11.14
+python -c 'print(2+2)'
+python script.py
+```
+
+The standard library lives at `/sys/lib/python/lib/python3.11`. Native
+extensions that need a C/Rust toolchain or OS primitives Plan 9 lacks
+won't import; the pure-Python stdlib works. See
+https://github.com/Alino/agent9 (`python9/`) for the port + parity
+harness, and the README for building it on a stock 9front.
 
 ## Persistence
 
 The qcow2 stores all your state — sessions, downloaded files, edited
 source. Back up the qcow2 file to back up your environment. Snapshot
-with `qemu-img snapshot -c name agent9-v0.1.0.qcow2` between
+with `qemu-img snapshot -c name agent9-v0.2.0.qcow2` between
 experiments.
 
 ## Troubleshooting

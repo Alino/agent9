@@ -20,7 +20,7 @@ is running pi9 — the cyan title bar reads `pi9— moonshotai/kimi-k2.5`.
 | **launcher**| Start menu popup. Plumber-backed app launching. | C |
 | **vts**     | Terminal session server. 9P file server multiplexing VT100 sessions; replaces st+tmux+rc with one fs at `/srv/vts`. | C |
 | **vtwin**   | libdraw frontend for vts. Reads cell diffs, paints into a rio window. | C / libdraw |
-| **pi9**     | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, sessions/skills/memory, OAuth to Anthropic Pro and GitHub Copilot. | Go |
+| **pi9**     | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, tree-structured sessions, skills/memory, steering, headless modes, OAuth to Anthropic Pro / GitHub Copilot / OpenAI ChatGPT. At feature parity with upstream [pi](https://pi.dev). | Go |
 | **NetSurf** | Web browser (from [netsurf-plan9](https://github.com/netsurf-plan9)). | C |
 | **python9** | CPython 3.11.14 ported to 9front (kencc/APE), validated at **100% parity** against CPython's own regression suite. Source + parity harness under `python9/`. | C |
 
@@ -32,7 +32,7 @@ set an API key with `/login`.
 
 ## Try it now
 
-Download `agent9-v0.1.0.qcow2` (273 MB) from the
+Download `agent9-v0.2.0.qcow2` (524 MB) from the
 [Releases page](https://github.com/Alino/agent9/releases),
 drop it next to the runner script for your OS, run.
 
@@ -55,8 +55,13 @@ for details.
 
 ## Status
 
-This is **v0.1.0**. The basics work and are dogfooded daily. Known
-rough edges:
+This is **v0.2.0**. New since v0.1.0: the **python9** CPython 3.11
+port is now baked into the image (`python` / `python3` on PATH), and
+**pi9** is at feature parity with upstream pi (tree-structured
+sessions with `/fork` `/clone` `/tree`, steering/follow-up, `@file` +
+autocomplete, headless `-p` / `--mode json`, Codex tool calls, and
+the AGENTS.md/skills/prompt-template/compaction surface). The basics
+work and are dogfooded daily. Known rough edges:
 
 - Pi9's TUI header occasionally scrolls off-screen after a clear
   (Phase 12 target).
@@ -67,17 +72,60 @@ rough edges:
 - File manager (`xfiles`) is a stub. Use acme or rc for now.
 - The xfiles entry in the Start menu doesn't do anything yet.
 
-The **python9** CPython port lives in the repo under `python9/` (as a patch +
-APE shims + build scripts + parity harness — the pristine CPython tree is
-fetched, not vendored), but it is **not baked into the v0.1.0 qcow2 release
-image**. It's a hand-authored kencc/APE build that boots an interpreter and
+The **python9** CPython 3.11.14 port is **included in the v0.2.0 image** —
+`python` and `python3` are on PATH, with the stdlib at
+`/sys/lib/python/lib/python3.11`. It's a hand-authored kencc/APE build that
 scores 100.00% (6120/6120, 0 regressions) on the core regression batch against
-the host 3.11.14 reference. It's a prerequisite for richer Plan 9 tooling, not
-a finished app yet (and porting it does **not** by itself run hermes-agent,
-whose Rust-backed deps can't build on Plan 9). See
-[`python9/README.md`](python9/README.md) for the parity contract and
-[`python9/port/plan9/README.md`](python9/port/plan9/README.md) for the build +
-bug-class archaeology.
+the host 3.11.14 reference. The source lives under `python9/` (a patch + APE
+shims + build scripts + parity harness; the pristine CPython tree is fetched,
+not vendored). It's a prerequisite for richer Plan 9 tooling, not a finished
+app — porting it does **not** by itself run hermes-agent, whose Rust-backed deps
+can't build on Plan 9. See [`python9/README.md`](python9/README.md) for the
+parity contract and [`python9/port/plan9/README.md`](python9/port/plan9/README.md)
+for the build + bug-class archaeology.
+
+### Installing python9 on a stock 9front (without the agent9 image)
+
+If you run your own 9front and just want the interpreter, build it from the
+port in this repo. You need **APE** installed (the `pcc` C driver). The build
+runs *in the VM* (no hosted Plan 9 toolchain); it's slow under TCG.
+
+```sh
+# On any host, fetch the exact source + apply the Plan 9 patches:
+python9/parity/fetch_cpython.sh                 # -> python9/cpython/src (3.11.14)
+python9/port/plan9/patches/apply.sh             # applies plan9-cpython.patch
+
+# Copy the port files into the source tree, then push the tree into your 9front
+# box (hget / 9P / git9):
+#   - python9/port/plan9/pyconfig.h        -> <src>/pyconfig.h
+#   - python9/port/plan9/ape-shim/         -> on the include path (-I)
+#   - python9/port/plan9/config.c, faulthandler_stub.c  -> built in
+```
+
+Then, in 9front, compile + link with `pcc` using the settled flag set
+(`pybuild.rc` compiles one file; `pylink.rc` compiles all sources and links a
+`python`):
+
+```
+pcc -c -D_POSIX_SOURCE -D_BSD_EXTENSION '-Dclockid_t=int' -DPy_BUILD_CORE \
+    -I<ape-shim> -I<src> -I<src>/Include -I<src>/Include/internal <src>/<file>.c -o <file>.o
+# ... link all objects -> python
+```
+
+Finally install:
+
+```
+# stdlib (from the CPython source Lib/) and the linked binary:
+dircp <src>/Lib /sys/lib/python/lib/python3.11
+cp python /$cputype/bin/python
+{ echo '#!/bin/rc'; echo 'exec /'^$cputype^'/bin/python $*'; } > /$cputype/bin/python3
+chmod +x /$cputype/bin/python3
+python --version            # -> Python 3.11.14
+```
+
+The PREFIX (`/sys/lib/python`) is compiled into the binary, so it self-locates
+the stdlib. Full build narrative, flag rationale, and the kencc/APE bug classes
+are in [`python9/port/plan9/README.md`](python9/port/plan9/README.md).
 
 ## Why
 
