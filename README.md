@@ -135,6 +135,61 @@ The PREFIX (`/sys/lib/python`) is compiled into the binary, so it self-locates
 the stdlib. Full build narrative, flag rationale, and the kencc/APE bug classes
 are in [`python9/port/plan9/README.md`](python9/port/plan9/README.md).
 
+### Installing pi9 on a stock 9front (without the agent9 image)
+
+pi9 needs three pieces: the **pi9** agent itself (Go, cross-compiled on the host
+— Plan 9 has no Go toolchain), plus **vts** and **vtwin** (C, built *in* 9front
+with `mk`). pi9 renders a Bubble Tea TUI through VT100 escapes, so it must run
+inside a vts session painted by vtwin — **not** a bare rio window (running `pi9`
+directly there just garbles).
+
+This works on real hardware too (tested on a bare-metal Shuttle DS57U). The
+transfer below uses a throwaway HTTP server on the host; substitute your host's
+LAN IP for `HOST` (e.g. `192.168.1.10`). 9P or git9 work equally well.
+
+```sh
+# On the host: cross-compile pi9 and serve the bits 9front needs to fetch.
+cd src/pi9 && GOOS=plan9 GOARCH=amd64 go build -o pi9.plan9.amd64 .
+mkdir -p ship/pi9 ship/launcher ship/vts ship/vtwin
+cp pi9.plan9.amd64 cacert.pem ship/pi9/
+cp ../launcher/new-pi9 ship/launcher/
+cp ../vts/*.[ch] ../vts/mkfile ship/vts/
+cp ../vtwin/*.c ../vtwin/mkfile ship/vtwin/
+cd ship && python3 -m http.server 8799        # leave running
+```
+
+```
+# In 9front: build vts + vtwin from source (kencc + mk), install to /$cputype/bin.
+for(d in vts vtwin){
+	mkdir -p /tmp/$d && cd /tmp/$d
+	for(f in `{hget http://HOST:8799/$d/ | sed 's/.*"([^"]+)".*/\1/'}) hget http://HOST:8799/$d/$f > $f
+	mk install
+}
+
+# Install the pi9 binary, the new-pi9 launcher, and the TLS CA bundle.
+# (Go's plan9 TLS stack reads /sys/lib/tls/ca.pem; without it all HTTPS fails.)
+hget http://HOST:8799/pi9/pi9.plan9.amd64 > /$cputype/bin/pi9 && chmod +x /$cputype/bin/pi9
+hget http://HOST:8799/launcher/new-pi9 > /rc/bin/new-pi9 && chmod +x /rc/bin/new-pi9
+mkdir -p /sys/lib/tls && hget http://HOST:8799/pi9/cacert.pem > /sys/lib/tls/ca.pem
+```
+
+vts is a long-running 9P server (`/srv/vts`); start it once per session, and add
+it to `$home/lib/profile` (the `terminal` case, before `rio`) to survive reboots:
+
+```
+vts </dev/null >/dev/null >[2]/dev/null &     # add this line to profile too
+```
+
+Finally, set your OpenRouter key and launch. First `pi9` run writes a config
+template to `$home/lib/pi9/config`; set `api_key=sk-or-v1-...` there (or `/login`
+inside pi9). Then start it from a rio terminal — `new-pi9` spawns a vts session,
+runs pi9 in it, and opens the vtwin window:
+
+```
+pi9                         # once, to write the config template, then edit it
+new-pi9                     # opens pi9 in a vtwin window (or wire into the Start menu)
+```
+
 ## Why
 
 Two reasons.
@@ -175,6 +230,45 @@ to be configurable; it's trying to be a comfortable place to land.
   │ launcher (start menu, plumber-driven app launch)        │
   └─────────────────────────────────────────────────────────┘
 ```
+
+### vts and vtwin: a VT100 terminal, the Plan 9 way
+
+Plan 9's built-in terminal (`rio`'s window) is **not** a VT100/ANSI
+terminal. It's a Plan 9 "cooked" text window with no concept of color
+codes, cursor addressing, or an alternate screen. So modern terminal
+UIs — anything that draws with ANSI escape sequences, like pi9's Bubble
+Tea interface, or vim/htop-style full-screen apps — render as garbage
+in a plain rio window. (That's exactly why running `pi9` directly in a
+terminal fails: it emits escapes nothing there understands.) On Unix
+you'd reach for `st` + `tmux` + a libvterm; Plan 9 ships none of that.
+
+**vts** ("VT session server") supplies the missing terminal logic, as a
+9P file server rather than a library. It starts an `rc` shell in each
+session, reads that shell's output through a full VT100/ANSI parser, and
+maintains the resulting screen as a grid of character **cells**. Each
+session is just a directory it serves under `/srv/vts` (mounted at
+`/n/vts/<session>/`), with a handful of files — the terminal *is* a
+filesystem:
+
+- `cons`  — read program output / **write keystrokes** (what you type)
+- `cells` — the rendered character grid, as a binary **diff stream**
+- `ctl`   — create/kill/redraw sessions (`echo new <name> > /n/vts/ctl`)
+- `scroll`— scrollback
+
+**vtwin** ("VT window") is the graphical half: a small libdraw program
+that opens a window in mxio/rio, **reads** a session's `cells` file and
+paints the grid to the screen, and **writes** your keyboard and mouse
+input back to `cons`. It's a dumb renderer — all the terminal smarts
+live in vts.
+
+Splitting "terminal logic" (vts) from "the window" (vtwin) is the payoff:
+the session and the program inside it are independent of any window. Close
+the vtwin and the rc/pi9 inside keeps running; point a fresh vtwin at the
+same session to reattach — `tmux` detach/attach, but as files. It also
+means anything can drive a session: `new-pi9`, for instance, just does
+`echo new ... > /n/vts/ctl`, writes `pi9` into the session's `cons`, and
+launches a vtwin on it (and that same `cons` write is how a key can be
+typed in programmatically).
 
 Source for each component lives in `src/<name>/` with its own
 `mkfile`. Build inside the VM:
