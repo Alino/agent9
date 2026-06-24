@@ -31,25 +31,80 @@ enum {
 	CD_MAXFRAME = 1024 * 1024,
 };
 
-/* WinXP Luna 16-color palette (same as vts100-parsing.md). */
+/* Contemporary dark 16-color palette (Tokyo Night). Index semantics are
+ * unchanged (0 bg/black .. 15 bright white) so pi9's color choices stay
+ * valid; only the RGB values move off the old WinXP Luna scheme.
+ * Index 0 doubles as the terminal background. */
 static ulong palette_rgb[16] = {
-	0x000000FF,  /* 0  black */
-	0xCD3131FF,  /* 1  red */
-	0x1E9C40FF,  /* 2  green */
-	0xD8A800FF,  /* 3  yellow */
-	0x1F5CB7FF,  /* 4  blue */
-	0xB833A4FF,  /* 5  magenta */
-	0x2CB8B8FF,  /* 6  cyan */
-	0xCCCCCCFF,  /* 7  white */
-	0x5E5E5EFF,  /* 8  bright black */
-	0xF14848FF,  /* 9  bright red */
-	0x2BD84DFF,  /* 10 bright green */
-	0xFFD341FF,  /* 11 bright yellow */
-	0x4283D8FF,  /* 12 bright blue */
-	0xE054CBFF,  /* 13 bright magenta */
-	0x4ADADAFF,  /* 14 bright cyan */
+	0x1A1B26FF,  /* 0  black / background */
+	0xF7768EFF,  /* 1  red */
+	0x9ECE6AFF,  /* 2  green */
+	0xE0AF68FF,  /* 3  yellow */
+	0x7AA2F7FF,  /* 4  blue */
+	0xBB9AF7FF,  /* 5  magenta */
+	0x7DCFFFFF,  /* 6  cyan */
+	0xC0CAF5FF,  /* 7  white (default fg) */
+	0x565F89FF,  /* 8  bright black (muted/dim) */
+	0xFF7A93FF,  /* 9  bright red */
+	0xB9F27CFF,  /* 10 bright green */
+	0xFFC777FF,  /* 11 bright yellow */
+	0x7DA6FFFF,  /* 12 bright blue */
+	0xC0A3FFFF,  /* 13 bright magenta */
+	0xB4F9F8FF,  /* 14 bright cyan */
 	0xFFFFFFFF,  /* 15 bright white */
 };
+
+/* Optionally override the built-in palette from a config file so the
+ * theme is swappable without recompiling. Format: up to 16 lines, each
+ * a hex RGB ("1a1b26", "#1a1b26", or "0x1a1b26"); non-hex lines are
+ * skipped. A missing file leaves the built-in (Tokyo Night) defaults in
+ * place. Path: $vtwinpalette, else $home/lib/vtwin/palette. */
+static void
+load_palette(void)
+{
+	char fpath[256], buf[1024], *home, *env, *p, *e;
+	int fd, n, i;
+	ulong v;
+
+	env = getenv("vtwinpalette");
+	if(env != nil && *env != '\0')
+		snprint(fpath, sizeof fpath, "%s", env);
+	else {
+		home = getenv("home");
+		if(home == nil || *home == '\0')
+			home = "/usr/glenda";
+		snprint(fpath, sizeof fpath, "%s/lib/vtwin/palette", home);
+	}
+	fd = open(fpath, OREAD);
+	if(fd < 0)
+		return;
+	n = read(fd, buf, sizeof buf - 1);
+	close(fd);
+	if(n <= 0)
+		return;
+	buf[n] = 0;
+
+	p = buf;
+	for(i = 0; i < 16 && *p != '\0';){
+		while(*p==' ' || *p=='\t' || *p=='\n' || *p=='\r')
+			p++;
+		if(*p == '\0')
+			break;
+		if(*p == '#')                          /* optional leading # */
+			p++;
+		if(p[0]=='0' && (p[1]=='x' || p[1]=='X'))
+			p += 2;
+		v = strtoul(p, &e, 16);
+		if(e == p){                            /* not hex: skip line */
+			while(*p && *p != '\n')
+				p++;
+			continue;
+		}
+		palette_rgb[i++] = (v << 8) | 0xFF;    /* RRGGBB -> RRGGBBFF */
+		while(*p && *p != '\n')
+			p++;
+	}
+}
 
 Image *colors[16];     /* fg images */
 Image *bgcolors[16];   /* bg images, indexed by palette */
@@ -209,11 +264,17 @@ draw_cell(int row, int col, CellState *c)
 	/* Background */
 	draw(screen, r, bgcolors[bg], nil, ZP);
 
-	/* Foreground rune */
+	/* Foreground rune. Bold (ATTR_BOLD) is rendered by double-striking
+	 * the glyph one pixel to the right: libdraw has no synthetic-bold
+	 * weight, and re-coloring to the bright palette would clobber pi9's
+	 * deliberate color choices. Double-strike adds visible weight while
+	 * keeping the color. */
 	if(ru != ' ' && ru != 0){
 		int n = runetochar(buf, &ru);
 		buf[n] = 0;
 		string(screen, p, colors[fg], ZP, cellfont, buf);
+		if(c->attrs & 1)
+			string(screen, addpt(p, Pt(1, 0)), colors[fg], ZP, cellfont, buf);
 	}
 
 	/* Underline */
@@ -222,20 +283,16 @@ draw_cell(int row, int col, CellState *c)
 		draw(screen, ur, colors[fg], nil, ZP);
 	}
 
-	/* Selection highlight: if this cell is inside [anchor..end],
-	 * draw an inverted rect on top. We invert with display->black
-	 * since the actual cell glyph is already drawn. SoverD blends
-	 * for legibility. */
+	/* Selection highlight: muted blue-grey fill + light glyph. Softer
+	 * than a stark white block, which is jarring on the dark theme. */
 	if(sel_active && cell_in_selection(row, col)){
-		draw(screen, r, display->white, nil, ZP);
+		draw(screen, r, bgcolors[8], nil, ZP);
 		if(ru != ' ' && ru != 0){
 			int sn = runetochar(buf, &ru);
 			buf[sn] = 0;
-			/* Re-draw the glyph in BG color (the cell's original
-			 * background) over the white box. This gives the
-			 * classic "selected text" look without us needing
-			 * separate inverted color tables. */
-			string(screen, p, display->black, ZP, cellfont, buf);
+			string(screen, p, colors[15], ZP, cellfont, buf);
+			if(c->attrs & 1)
+				string(screen, addpt(p, Pt(1, 0)), colors[15], ZP, cellfont, buf);
 		}
 	}
 }
@@ -400,13 +457,31 @@ draw_cursor(void)
 	Point origin = grid_origin();
 	Rectangle r;
 	Point p;
+	CellState *c;
+	Rune ru;
+	char buf[8];
+	int n;
+
 	if(!gridcur_vis) return;
 	if(gridcur_row < 0 || gridcur_row >= gridrows) return;
 	if(gridcur_col < 0 || gridcur_col >= gridcols) return;
 
 	p = addpt(origin, Pt(gridcur_col * cellw, gridcur_row * cellh));
-	r = Rect(p.x, p.y + cellh - 2, p.x + cellw, p.y + cellh);
+	r = Rect(p.x, p.y, p.x + cellw, p.y + cellh);
+
+	/* Block cursor (reverse video): fill the whole cell in the fg color
+	 * and redraw the glyph under it in the background color so the
+	 * character stays legible. Replaces the old 2px underline. */
 	draw(screen, r, colors[7], nil, ZP);
+	if(gridstate != nil){
+		c = &gridstate[gridcur_row * gridcols + gridcur_col];
+		ru = c->rune ? c->rune : ' ';
+		if(ru != ' ' && ru != 0){
+			n = runetochar(buf, &ru);
+			buf[n] = 0;
+			string(screen, p, bgcolors[0], ZP, cellfont, buf);
+		}
+	}
 }
 
 /*
@@ -817,7 +892,8 @@ threadmain(int argc, char **argv)
 	if(cellw < 6) cellw = 8;
 	if(cellh < 10) cellh = 14;
 
-	/* Allocate color images. */
+	/* Allocate color images (after an optional palette override). */
+	load_palette();
 	for(i = 0; i < 16; i++){
 		colors[i] = allocimage(display, Rect(0,0,1,1), screen->chan, 1, palette_rgb[i]);
 		bgcolors[i] = colors[i];
