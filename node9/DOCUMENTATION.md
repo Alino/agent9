@@ -207,7 +207,76 @@ memory-safety hole). All are guarded; a battery of NaN/float tests passes
 
 ---
 
-## 6. Summary table
+## 6. Installing on a stock 9front (without the agent9 image)
+
+node9 is part of the agent9 image, but it also builds and runs on a **plain 9front amd64**
+install. Everything it needs ships with 9front: the **kencc/APE** toolchain (`pcc`), **libsec**
+(crypto/TLS), **libz** (gzip), and `/net`. You also need a Unix host (macOS/Linux) to run the
+patcher and serve files to the 9front box over plain HTTP. `HOST` below is your host's IP as
+seen from 9front.
+
+**1. On the host — produce the patched QuickJS tree + collect the sources.**
+`patch.sh` rewrites pristine QuickJS-ng into a kencc/APE-buildable tree (and applies the
+floating-point/codegen fixes).
+
+```sh
+# from a clone of this repo:
+mkdir -p /tmp/node9probe/src && cd /tmp/node9probe/src
+# fetch the exact QuickJS-ng the patch targets, into ./quickjs-master
+curl -L https://github.com/quickjs-ng/quickjs/archive/refs/heads/master.tar.gz \
+  | tar xz && mv quickjs-* quickjs-master
+bash /path/to/node9/port/plan9/patch.sh            # -> /tmp/node9probe/src/qjs-patched.tar.gz
+# stage the node9-native sources + the runtime stdlib next to the tarball
+cp /path/to/node9/port/plan9/{n9_cli.c,n9_native.c,n9_sec.c,node9_native.h,build-cli.rc} .
+cp /path/to/node9/lib/boot.js node9_boot.js
+# also fetch the real npm tarball so 9front can pull it over plain HTTP
+curl -L -o npm.tgz https://registry.npmjs.org/npm/-/npm-10.9.8.tgz
+python3 -m http.server 8833                        # serve this dir
+```
+
+**2. On the 9front box — build `qjs`** (≈1 min; produces a ~2.5 MB binary):
+
+```rc
+mkdir -p $home/node9 && cd $home/node9
+hget http://HOST:8833/qjs-patched.tar.gz | gunzip | tar x
+for(f in n9_cli.c n9_native.c n9_sec.c node9_native.h build-cli.rc)
+        hget http://HOST:8833/$f > $f
+rc build-cli.rc            # pcc compile + link (-lsec -lz) -> work/qjs
+```
+
+**3. Install the runtime + the `node`/`npm` commands:**
+
+```rc
+cp $home/node9/work/qjs /amd64/bin/qjs
+mkdir -p /amd64/lib/node9
+hget http://HOST:8833/node9_boot.js > /amd64/lib/node9/boot.js
+# real npm 10 tree
+cd /amd64/lib/node9 && hget http://HOST:8833/npm.tgz | gunzip | tar x && mv package npm
+# node + npm wrappers (qjs auto-loads boot.js, so it *is* the node runtime)
+echo '#!/bin/rc'                                              > /amd64/bin/node
+echo 'exec /amd64/bin/qjs $*'                                >> /amd64/bin/node
+echo '#!/bin/rc'                                              > /amd64/bin/npm
+echo 'exec /amd64/bin/qjs /amd64/lib/node9/npm/bin/npm-cli.js $*' >> /amd64/bin/npm
+chmod +x /amd64/bin/node /amd64/bin/npm
+```
+
+**4. Verify:**
+
+```rc
+echo 'console.log("node9", process.version)' > /tmp/v.js && node /tmp/v.js   # -> node9 v20.18.1
+npm --version                                                                # -> 10.9.8
+mkdir -p /tmp/t && cd /tmp/t && npm install left-pad                         # real registry install
+```
+
+Notes: the build runs entirely with the stock 9front toolchain — no cross-compiler needed on
+the 9front side (only the host runs `patch.sh`, which needs `bash`/`sed`/`perl`). npm reaches
+`registry.npmjs.org` over node9's own `libsec` TLS; it does **not** depend on `hget`'s HTTPS or
+on `/sys/lib/tls/ca.pem` (integrity is gated by npm's SHA-512 SRI, not chain validation — see
+Limitations). Full build/obstacle detail is in
+[`port/plan9/NOTES.md`](port/plan9/NOTES.md); the host-side build/run flow mirrors
+[`port/plan9/build-cli.rc`](port/plan9/build-cli.rc).
+
+## 7. Summary table
 
 | | node9 |
 |---|---|
@@ -222,5 +291,5 @@ memory-safety hole). All are guarded; a battery of NaN/float tests passes
 | Popular packages run | **30 / 30** (24 CJS + 6 ESM) |
 | Not supported | native addons, HTTP/2, PKIX chain validation, worker_threads, streamed child_process |
 
-See also: `port/plan9/NOTES.md` (every kencc/APE obstacle + fix), `test/node/README.md`
-(test harness), `PLAN.md` (phase history).
+See also: [`port/plan9/NOTES.md`](port/plan9/NOTES.md) (every kencc/APE obstacle + fix) and
+[`test/node/README.md`](test/node/README.md) (the borrowed-Node test harness).

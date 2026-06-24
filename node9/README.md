@@ -29,8 +29,8 @@ npm install debug      →  pulls its `ms` dependency (arborist dependency graph
 ## Docs
 
 - [**DOCUMENTATION.md**](DOCUMENTATION.md) — what node9 + npm are, fidelity to the
-  originals, **limitations**, and test coverage. **Start here.**
-- [`PLAN.md`](PLAN.md) — phase history.
+  originals, **limitations**, how to install on a stock 9front, and test coverage.
+  **Start here.**
 - [`port/plan9/NOTES.md`](port/plan9/NOTES.md) — the kencc/APE port: every toolchain
   obstacle and fix, including the floating-point codegen bugs found and fixed.
 - [`test/node/README.md`](test/node/README.md) — the borrowed-Node test harness.
