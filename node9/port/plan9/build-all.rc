@@ -1,0 +1,21 @@
+#!/bin/rc
+# node9 Phase 1 — full self-contained build: fetch patched tree + main, compile all
+# with JS_NAN_BOXING=0 (struct JSValue), link ./qjs.
+cd /usr/glenda/node9
+rm -rf work
+mkdir work
+cd work
+hget http://10.0.2.2:8833/qjs-patched.tar.gz >p.tar.gz
+gunzip <p.tar.gz >p.tar
+tar xf p.tar
+hget http://10.0.2.2:8833/n9_main.c >n9_main.c
+rm -f /tmp/all.log
+FLAGS=(-c -I. -DPLAN9 -D__DJGPP -DNO_TM_GMTOFF '-DJS_NAN_BOXING=0' '-D_POSIX_SOURCE' '-D__STDC_NO_ATOMICS__=1')
+for(f in quickjs libregexp libunicode dtoa n9_main){
+	echo '=== '^$f^' ===' >>/tmp/all.log
+	pcc $FLAGS $f.c >>/tmp/all.log >[2=1]
+}
+echo '=== link ===' >>/tmp/all.log
+pcc -o qjs n9_main.6 quickjs.6 libregexp.6 libunicode.6 dtoa.6 >>/tmp/all.log >[2=1]
+echo 'link_status='^$status >>/tmp/all.log
+echo ALL_DONE >>/tmp/all.log

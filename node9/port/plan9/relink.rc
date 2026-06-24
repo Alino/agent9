@@ -1,0 +1,13 @@
+#!/bin/rc
+# Fast path: recompile only n9_cli.c and relink (engine + libc .6 already built).
+cd /usr/glenda/node9/work
+hget http://10.0.2.2:8833/n9_cli.c >n9_cli.c
+rm -f /tmp/relink.log
+FLAGS=(-c -I. -DPLAN9 -D__DJGPP -DNO_TM_GMTOFF '-DJS_NAN_BOXING=0' '-D_POSIX_SOURCE' '-D_BSD_EXTENSION' '-D__STDC_NO_ATOMICS__=1')
+pcc $FLAGS n9_cli.c >/tmp/relink.log >[2=1]
+echo compile=$status >>/tmp/relink.log
+pcc -o qjs n9_cli.6 quickjs.6 libregexp.6 libunicode.6 dtoa.6 quickjs-libc.6 >>/tmp/relink.log >[2=1]
+echo link=$status >>/tmp/relink.log
+cp qjs /amd64/bin/qjs
+mkdir -p /amd64/lib/node9
+echo DONE_RELINK >>/tmp/relink.log

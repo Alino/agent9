@@ -13,11 +13,12 @@ is running pi9 — the cyan title bar reads `pi9— moonshotai/kimi-k2.5`.
 
 ## Built with AI
 
-Most of agent9 — pi9, the python9 port, the desktop plumbing — was written
-with heavy AI assistance (Claude, with some Hermes), and the commit history
-reflects that. The work and the results are real: pi9 is dogfooded daily, and
-python9 scores 100% parity on CPython's own core regression batch. I'd rather
-say so up front than leave it to the log.
+Most of agent9 — pi9, the python9 and node9 ports, the desktop plumbing — was
+written with heavy AI assistance (Claude, with some Hermes), and the commit
+history reflects that. The work and the results are real: pi9 is dogfooded daily,
+python9 scores 100% parity on CPython's own core regression batch, and node9 runs
+the real npm with 30/30 popular packages installing and running. I'd rather say so
+up front than leave it to the log.
 
 ## What's in the box
 
@@ -31,6 +32,7 @@ say so up front than leave it to the log.
 | **pi9**     | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, tree-structured sessions, skills/memory, steering, headless modes, OAuth to Anthropic Pro / GitHub Copilot / OpenAI ChatGPT. At feature parity with upstream [pi](https://pi.dev). | Go |
 | **NetSurf** | Web browser (from [netsurf-plan9](https://github.com/netsurf-plan9)). | C |
 | **python9** | CPython 3.11.14 ported to 9front (kencc/APE), validated at **100% parity** against CPython's own regression suite. Source + parity harness under `python9/`. | C |
+| **node9**   | Node.js-compatible runtime ported to 9front (kencc/APE) on **QuickJS-ng** (not V8), running the **real, unmodified npm 10**. `npm install` from registry.npmjs.org over TLS, SHA-512 SRI-verified; **30/30** popular packages download + run. Source under `node9/`. | C / JS |
 
 ![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
 
@@ -91,6 +93,24 @@ app — porting it does **not** by itself run hermes-agent, whose Rust-backed de
 can't build on Plan 9. See [`python9/README.md`](python9/README.md) for the
 parity contract and [`python9/port/plan9/README.md`](python9/port/plan9/README.md)
 for the build + bug-class archaeology.
+
+**node9** is a **Node.js-compatible runtime + the real npm, running on 9front** — a
+platform Node has never supported. It's built on **QuickJS-ng** (a small ES2023
+bytecode interpreter) rather than V8, which can't build for or run on Plan 9. On top
+of the engine sits a Node-compatible standard library (`node9/lib/boot.js`, ~2,375
+lines, 46 builtin modules) plus a native layer over Plan 9 `libsec` (crypto/TLS) and
+`libz` (gzip), with networking over `/net`. The headline result: the **actual,
+unmodified npm 10.9.8** runs on it — `npm install <pkg>` fetches from
+registry.npmjs.org over real TLS, **SHA-512 SRI-verifies** the tarball (a corrupted
+one is rejected), gunzips + tar-extracts to `node_modules`, and writes the lockfile;
+dependency graphs resolve via arborist. **30/30** popular packages (lodash-class
+utilities, chalk, uuid, semver, commander, …; 24 CommonJS + 6 ESM) download **and**
+run. It also runs Node.js's own `test/parallel` unit tests as a compatibility +
+bug-finding harness. Limitations: no native addons (`.node`), no HTTP/2, no PKIX
+cert-chain validation (SRI gates package integrity instead), interpreter-speed. See
+[`node9/DOCUMENTATION.md`](node9/DOCUMENTATION.md) for the full fidelity/limitations
+write-up and [`node9/port/plan9/NOTES.md`](node9/port/plan9/NOTES.md) for the
+kencc/APE port (incl. the floating-point codegen bugs found and fixed).
 
 ### Installing python9 on a stock 9front (without the agent9 image)
 

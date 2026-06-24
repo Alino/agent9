@@ -1,0 +1,18 @@
+#!/bin/rc
+cd /tmp
+cat >mp.c <<'!'
+#include <math.h>
+#include <time.h>
+double t(double x){
+  return round(x)+trunc(x)+rint(x)+nearbyint(x)
+    +(double)!!isfinite(x)+(double)!!isnan(x)+(double)!!isinf(x)+(double)signbit(x)
+    +acosh(x)+asinh(x)+atanh(x)+cosh(x)+sinh(x)+tanh(x)
+    +expm1(x)+log1p(x)+log2(x)+exp2(x)+cbrt(x)+hypot(x,x)
+    +fmin(x,x)+fmax(x,x)+remainder(x,x)+fmod(x,x)+(double)lrint(x);
+}
+void u(void){ struct tm m; time_t z=0; localtime_r(&z,&m); gmtime_r(&z,&m); m.tm_gmtoff=0; }
+!
+pcc -c '-D_POSIX_SOURCE' mp.c >/tmp/mp.log >[2=1]
+echo status=$status
+cat /tmp/mp.log
+echo DONE_MATHPROBE

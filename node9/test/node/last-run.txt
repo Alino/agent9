@@ -1,0 +1,98 @@
+FAIL parallel/test-buffer-compare-offset.js :: Missing expected exception
+FAIL parallel/test-buffer-compare.js :: Missing expected exception
+FAIL parallel/test-buffer-concat.js :: cannot read property 'length' of undefined
+FAIL parallel/test-buffer-copy.js :: 513 strictEqual 512
+FAIL parallel/test-buffer-equals.js :: Missing expected exception (TypeError)
+FAIL parallel/test-buffer-from.js :: Buffer.from: unsupported
+FAIL parallel/test-buffer-includes.js :: false == true
+FAIL parallel/test-buffer-read.js :: invalid array index
+FAIL parallel/test-buffer-readdouble.js :: 0 strictEqual 0
+FAIL parallel/test-buffer-readfloat.js :: 0 strictEqual 0
+FAIL parallel/test-buffer-readint.js :: Missing expected exception (TypeError)
+FAIL parallel/test-buffer-readuint.js :: Missing expected exception (TypeError)
+FAIL parallel/test-buffer-slice.js :: { 0: 48, 1: 49, 2: 50, 3: 51, 4: 52, 5: 53 } deepStrictEqual { 0: 48, 1: 49, 2: 50 }
+FAIL parallel/test-buffer-tostring.js :: not a function
+FAIL parallel/test-buffer-write.js :: invalid array length
+FAIL parallel/test-buffer-writedouble.js :: false == true
+FAIL parallel/test-buffer-writefloat.js :: false == true
+FAIL parallel/test-buffer-writeuint.js :: Missing expected exception
+FAIL parallel/test-event-capture-rejections.js :: Missing expected exception (TypeError)
+FAIL parallel/test-event-emitter-add-listeners.js :: "newListener" strictEqual "hello"
+FAIL parallel/test-event-emitter-check-listener-leaks.js :: undefined == true
+FAIL parallel/test-event-emitter-emit-context.js :: cannot read property 'foo' of undefined
+FAIL parallel/test-event-emitter-error-monitor.js :: mustCall onErrorMonitor: expected 3 got 0
+FAIL parallel/test-event-emitter-errors.js :: Accepts a string
+FAIL parallel/test-event-emitter-get-max-listeners.js :: cannot read property 'event' of undefined
+FAIL parallel/test-event-emitter-invalid-listener.js :: event.on('foo', null) should throw the proper error (TypeError)
+PASS parallel/test-event-emitter-listener-count.js
+FAIL parallel/test-event-emitter-listeners-side-effects.js :: [ [Function: fail] ] strictEqual [Function: fail]
+FAIL parallel/test-event-emitter-listeners.js :: [ [Function: g] ] deepStrictEqual [ [Function: listener] ]
+FAIL parallel/test-event-emitter-max-listeners-warning-for-null.js :: mustCall <anonymous>: expected 1 got 0
+FAIL parallel/test-event-emitter-max-listeners-warning-for-symbol.js :: mustCall <anonymous>: expected 1 got 0
+FAIL parallel/test-event-emitter-max-listeners-warning.js :: mustCall <anonymous>: expected 1 got 0
+FAIL parallel/test-event-emitter-max-listeners.js :: Missing expected exception (RangeError)
+FAIL parallel/test-event-emitter-method-names.js :: "" strictEqual "setMaxListeners"
+PASS parallel/test-event-emitter-modify-in-emit.js
+FAIL parallel/test-event-emitter-no-error-provided-to-error-event.js :: Unhandled error
+PASS parallel/test-event-emitter-num-args.js
+FAIL parallel/test-event-emitter-once.js :: mustCall <anonymous>: expected 1 got 2
+FAIL parallel/test-event-emitter-prepend.js :: not a function
+FAIL parallel/test-event-emitter-remove-all-listeners.js :: mustCall listener: expected 3 got 0
+FAIL parallel/test-event-emitter-remove-listeners.js :: [  ] deepStrictEqual [ [Function: listener2] ]
+PASS parallel/test-event-emitter-set-max-listeners-side-effects.js
+PASS parallel/test-event-emitter-special-event-names.js
+FAIL parallel/test-event-emitter-subclass.js :: cannot read property '1' of undefined
+PASS parallel/test-event-emitter-symbols.js
+FAIL parallel/test-event-target.js :: Expected Event.NONE to be 0, but got undefined
+FAIL parallel/test-events-customevent.js :: Cannot find module 'internal/event_target' (from /usr/glenda/node9/nt/parallel)
+FAIL parallel/test-events-getmaxlisteners.js :: not a function
+FAIL parallel/test-events-list.js :: [ "foo" ] deepStrictEqual [ "foo", "bar" ]
+FAIL parallel/test-events-listener-count-with-listener.js :: 1 strictEqual 0
+FAIL parallel/test-events-on-async-iterator.js :: Cannot find module 'internal/event_target' (from /usr/glenda/node9/nt/parallel)
+FAIL parallel/test-events-once.js :: Cannot find module 'internal/event_target' (from /usr/glenda/node9/nt/parallel)
+FAIL parallel/test-events-static-geteventlisteners.js :: Cannot find module 'internal/event_target' (from /usr/glenda/node9/nt/parallel)
+FAIL parallel/test-events-uncaught-exception-stack.js :: Error
+FAIL parallel/test-path-basename.js :: "\\dir\\basename.ext" strictEqual "basename.ext"
+FAIL parallel/test-path-dirname.js :: "9/nt/parallel" strictEqual "test/parallel"
+FAIL parallel/test-path-extname.js :: 
+FAIL parallel/test-path-glob.js :: Expected foo\bar\baz to match foo\[bcr]ar\baz on win32
+FAIL parallel/test-path-isabsolute.js :: false strictEqual true
+FAIL parallel/test-path-join.js :: 
+FAIL parallel/test-path-makelong.js :: "C:\\foo" strictEqual "\\\\?\\C:\\foo"
+FAIL parallel/test-path-normalize.js :: "fixtures/b/c.js" strictEqual "fixtures\\b\\c.js"
+FAIL parallel/test-path-parse-format.js :: "./C:\\path\\dir\\index.html" strictEqual "C:\\path\\dir\\index.html"
+PASS parallel/test-path-posix-exists.js
+PASS parallel/test-path-posix-relative-on-windows.js
+FAIL parallel/test-path-relative.js :: 
+FAIL parallel/test-path-resolve.js :: path.win32.resolve("c:/blah\\blah","d:/games","c:../a")
+PASS parallel/test-path-win32-exists.js
+SKIP: Windows only
+PASS parallel/test-path-zero-length-strings.js
+FAIL parallel/test-querystring-escape.js :: expecting surrogate pair
+FAIL parallel/test-querystring-maxKeys-non-finite.js :: 10000 strictEqual 1000
+FAIL parallel/test-querystring-multichar-separator.js :: false == true
+FAIL parallel/test-querystring.js :: false == true
+FAIL parallel/test-string-decoder-end.js :: " ؀Àퟀ\udc00߀ҀɀÀ߀" strictEqual "☃💩"
+FAIL parallel/test-string-decoder-fuzz.js :: Mismatch:
+FAIL parallel/test-string-decoder.js :: Expected "\u275\ufffd\u41", but got "\u275\u241"
+FAIL parallel/test-url-fileurltopath.js :: test "invalid arguments": Missing expected exception
+FAIL parallel/test-url-format-invalid-input.js :: test "format invalid input": cannot read property 'protocol' of undefined
+FAIL parallel/test-url-format-whatwg.js :: test "handle invalid arguments": Missing expected exception (TypeError)
+FAIL parallel/test-url-format.js :: test "format slightly wonky content to a valid URL": wonky format(http://example.com?) == http://example.com/?
+FAIL parallel/test-url-parse-format.js :: test "should parse and format": not a function
+FAIL parallel/test-url-parse-invalid-input.js :: Missing expected exception (TypeError)
+FAIL parallel/test-url-parse-query.js :: not a function
+FAIL parallel/test-url-relative.js :: not a function
+FAIL parallel/test-util-callbackify.js :: 0 strictEqual 1
+FAIL parallel/test-util-deprecate-invalid-code.js :: Missing expected exception (TypeError)
+PASS parallel/test-util-deprecate.js
+FAIL parallel/test-util-format.js :: "0" strictEqual "-0"
+FAIL parallel/test-util-inherits.js :: The super constructor to "inherits" must have a prototype
+FAIL parallel/test-util-inspect-getters-accessing-this.js :: "{ _y: 123 }" strictEqual "X { _y: 123, [y]: [Getter: 123] }"
+FAIL parallel/test-util-inspect-long-running.js :: Maximum call stack size exceeded
+FAIL parallel/test-util-inspect-namespace.js :: mustCall <anonymous>: expected 1 got 0
+FAIL parallel/test-util-inspect-proxy.js :: Cannot find module 'internal/test/binding' (from /usr/glenda/node9/nt/parallel)
+FAIL parallel/test-util-inspect.js :: Cannot find module 'internal/test/binding' (from /usr/glenda/node9/nt/parallel)
+FAIL parallel/test-util-promisify.js :: Cannot find module 'internal/util' (from /usr/glenda/node9/nt/parallel)
+FAIL parallel/test-util-types-exists.js :: { isDate: [Function: isDate], isRegExp: [Function: isRegExp], isNativeError: [Function: isNativeError], isPromise: [Function: isPromise], isArrayBuffer: [Function: isArrayBuffer] } strictEqual { isDate: [Function: isDate], isRegExp: [Function: isRegExp], isNativeError: [Function: isNativeError], isPromise: [Function: isPromise], isArrayBuffer: [Function: isArrayBuffer] }
+FAIL parallel/test-util-types.js :: Cannot find module 'internal/test/binding' (from /usr/glenda/node9/nt/parallel)
