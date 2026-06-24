@@ -106,6 +106,46 @@ load_palette(void)
 	}
 }
 
+/* Detect whether mxio — our window manager, which paints WinXP titlebars
+ * INSIDE each window's rect — is running. Under stock rio there is no
+ * in-window titlebar, so reserving space for one just leaves an empty
+ * strip at the top. Scan /proc process names once at startup. */
+static int
+mxio_present(void)
+{
+	int dfd, pfd, rn;
+	long i, n;
+	Dir *d;
+	char path[64], buf[64], *sp;
+
+	dfd = open("/proc", OREAD);
+	if(dfd < 0)
+		return 0;
+	while((n = dirread(dfd, &d)) > 0){
+		for(i = 0; i < n; i++){
+			snprint(path, sizeof path, "/proc/%s/status", d[i].name);
+			pfd = open(path, OREAD);
+			if(pfd < 0)
+				continue;
+			rn = read(pfd, buf, sizeof buf - 1);
+			close(pfd);
+			if(rn <= 0)
+				continue;
+			buf[rn] = 0;
+			if((sp = strchr(buf, ' ')) != nil) /* name is first field */
+				*sp = 0;
+			if(strcmp(buf, "mxio") == 0){
+				free(d);
+				close(dfd);
+				return 1;
+			}
+		}
+		free(d);
+	}
+	close(dfd);
+	return 0;
+}
+
 Image *colors[16];     /* fg images */
 Image *bgcolors[16];   /* bg images, indexed by palette */
 Font *cellfont;
@@ -189,6 +229,7 @@ static int titlebar_px_cfg = MXIO_TITLEBAR_PX;
 static int titlebar_px = MXIO_TITLEBAR_PX;
 static int side_inset  = MXIO_SELBORDER + 1;  /* matches wmk's Selborder+1 */
 static int top_border  = MXIO_SELBORDER;       /* gap above titlebar */
+static int titlebar_explicit = 0;              /* set when -B/-T given */
 
 /*
  * Decide whether the current window has a titlebar drawn by mxio.
@@ -790,10 +831,12 @@ threadmain(int argc, char **argv)
 		titlebar_px = 0;
 		side_inset = 0;
 		top_border = 0;
+		titlebar_explicit = 1;
 		break;
 	case 'T':
 		titlebar_px_cfg = atoi(ARGF());
 		titlebar_px = titlebar_px_cfg;
+		titlebar_explicit = 1;
 		break;
 	case 'f':
 		/* Explicit font path. Takes precedence over $font and the
@@ -812,6 +855,17 @@ threadmain(int argc, char **argv)
 		mousedebug = 1;
 		break;
 	}ARGEND;
+
+	/* Auto-detect the window manager when not explicitly told. mxio
+	 * draws an in-window titlebar we must leave room for; stock rio does
+	 * not, so reserving that space would leave a blank strip at the top.
+	 * Default to stock-rio (no reservation) unless mxio is running. */
+	if(!titlebar_explicit && !mxio_present()){
+		titlebar_px_cfg = 0;
+		titlebar_px = 0;
+		side_inset = 0;
+		top_border = 0;
+	}
 
 	if(argc > 0)
 		session = argv[0];
