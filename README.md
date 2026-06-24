@@ -42,7 +42,7 @@ set an API key with `/login`.
 
 ## Try it now
 
-Download `agent9-v0.2.0.qcow2` (524 MB) from the
+Download `agent9-v0.3.0.qcow2` (555 MB) from the
 [Releases page](https://github.com/Alino/agent9/releases),
 drop it next to the runner script for your OS, run.
 
@@ -65,13 +65,15 @@ for details.
 
 ## Status
 
-This is **v0.2.0**. New since v0.1.0: the **python9** CPython 3.11
-port is now baked into the image (`python` / `python3` on PATH), and
-**pi9** is at feature parity with upstream pi (tree-structured
-sessions with `/fork` `/clone` `/tree`, steering/follow-up, `@file` +
-autocomplete, headless `-p` / `--mode json`, Codex tool calls, and
-the AGENTS.md/skills/prompt-template/compaction surface). The basics
-work and are dogfooded daily. Known rough edges:
+This is **v0.3.0**. New since v0.2.0: **node9** is baked into the image —
+a Node.js-compatible runtime running the real npm (`node` / `npm` on
+PATH; `npm install` works from the registry). v0.2.0 added the **python9**
+CPython 3.11 port (`python` / `python3` on PATH) and brought **pi9** to
+feature parity with upstream pi (tree-structured sessions with `/fork`
+`/clone` `/tree`, steering/follow-up, `@file` + autocomplete, headless
+`-p` / `--mode json`, Codex tool calls, and the
+AGENTS.md/skills/prompt-template/compaction surface). The basics work
+and are dogfooded daily. Known rough edges:
 
 - Pi9's TUI header occasionally scrolls off-screen after a clear
   (Phase 12 target).
@@ -82,7 +84,7 @@ work and are dogfooded daily. Known rough edges:
 - File manager (`xfiles`) is a stub. Use acme or rc for now.
 - The xfiles entry in the Start menu doesn't do anything yet.
 
-The **python9** CPython 3.11.14 port is **included in the v0.2.0 image** —
+The **python9** CPython 3.11.14 port is **included in the image** —
 `python` and `python3` are on PATH, with the stdlib at
 `/sys/lib/python/lib/python3.11`. It's a hand-authored kencc/APE build that
 scores 100.00% (6120/6120, 0 regressions) on the core regression batch against

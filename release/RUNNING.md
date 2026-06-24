@@ -2,11 +2,12 @@
 
 You need two things:
 1. **QEMU 7.2+** on your host.
-2. **agent9-v0.2.0.qcow2** — the disk image. Download from the
-   GitHub Releases page (~524 MB). New in v0.2.0: the python9 CPython
-   3.11 port (`python` on PATH) and pi9 brought to feature parity with
-   upstream pi (tree sessions, steering, headless modes, Codex tool
-   calls, and more).
+2. **agent9-v0.3.0.qcow2** — the disk image. Download from the
+   GitHub Releases page (~555 MB). New in v0.3.0: **node9** — a
+   Node.js-compatible runtime running the real npm (`node` / `npm` on
+   PATH; `npm install` works from the registry). v0.2.0 added the
+   python9 CPython 3.11 port (`python` on PATH) and pi9 at feature
+   parity with upstream pi.
 
 Drop the qcow2 next to the run script for your OS, then run it.
 
@@ -100,6 +101,8 @@ convenience, this image is not hardened).
 - pi9 (LLM agent, see source at /sys/src/cmd/... in repo)
 - python9 (CPython 3.11.14, `python` / `python3` on PATH; stdlib at
   /sys/lib/python)
+- node9 (Node.js-compatible runtime on QuickJS-ng + the real npm 10;
+  `node` / `npm` on PATH; runtime at /amd64/lib/node9)
 - NetSurf 3.x (web browser, Plan 9 port from netsurf-plan9)
 - Plus the standard 9front stack: acme, plumber, mothra, hget, git9,
   9pm, etc.
@@ -120,11 +123,31 @@ won't import; the pure-Python stdlib works. See
 https://github.com/Alino/agent9 (`python9/`) for the port + parity
 harness, and the README for building it on a stock 9front.
 
+## Using node9 (Node.js + npm)
+
+node9 is a Node.js-compatible runtime (built on QuickJS-ng, not V8)
+with the **real, unmodified npm** on top. `node` and `npm` are on PATH:
+
+```
+node script.js
+npm --version             # 10.9.8
+mkdir /tmp/app && cd /tmp/app
+npm install left-pad      # real install from registry.npmjs.org over TLS
+```
+
+`npm install` fetches from the registry over TLS, SHA-512-verifies the
+tarball, and extracts to `node_modules` with a lockfile; dependency
+graphs resolve. Pure-JS packages (CommonJS and ESM) work — 30/30 popular
+packages were verified. No native addons (`.node`), no HTTP/2, and it's
+interpreter-speed (large packages install slowly). See
+https://github.com/Alino/agent9 (`node9/DOCUMENTATION.md`) for the full
+fidelity/limitations write-up and stock-9front install steps.
+
 ## Persistence
 
 The qcow2 stores all your state — sessions, downloaded files, edited
 source. Back up the qcow2 file to back up your environment. Snapshot
-with `qemu-img snapshot -c name agent9-v0.2.0.qcow2` between
+with `qemu-img snapshot -c name agent9-v0.3.0.qcow2` between
 experiments.
 
 ## Troubleshooting
