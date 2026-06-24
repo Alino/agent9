@@ -7,6 +7,20 @@
 #include "quickjs.h"
 #include "quickjs-libc.h"
 
+/* Plan 9 enables FPU traps for divide-by-zero/overflow/invalid by default, so
+   they fault ("suicide: sys: fp: ...") on real hardware — QEMU silently
+   ignores them, which is why this only bit on bare metal (e.g. `npm help`).
+   JavaScript/IEEE-754 require x/0 -> Infinity, 0/0 -> NaN, precision loss,
+   etc. with no trap, so we DISABLE all FP exception traps at startup. getfcr/
+   setfcr live in the native libc (declared in <libc.h>); APE has no
+   <fpuctl.h>, so we declare them here. Plan 9's fcr uses ENABLE semantics
+   (bit set = trap enabled), inverted from the raw amd64 MXCSR; bits 7..12
+   (0x1f80) are the six exception enables, so clearing them disables all
+   FP traps. (Verified empirically: setting them made `npm --version` fault
+   on precision loss.) */
+extern unsigned long getfcr(void);
+extern void setfcr(unsigned long);
+
 void n9_native_init(JSContext *ctx);   /* defined in n9_native.c */
 
 /* --- DEBUG guard-byte allocator: aborts at the moment of an OOB write, printing the
@@ -96,6 +110,7 @@ static int eval_file(JSContext *ctx, const char *filename) {
 }
 
 int main(int argc, char **argv) {
+    setfcr(getfcr() & ~0x1f80); /* disable all FP traps: IEEE Inf/NaN, no Plan 9 suicide */
     JSRuntime *rt = getenv("NODE9_GUARD") ? JS_NewRuntime2(&n9_gmf, 0) : JS_NewRuntime();
     js_std_init_handlers(rt);
     JS_SetModuleLoaderFunc2(rt, n9_module_normalize, js_module_loader, js_module_check_attributes, NULL);
