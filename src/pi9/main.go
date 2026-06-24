@@ -3000,10 +3000,14 @@ func (m pi9Model) renderInput(cols int) string {
 	}
 
 	const (
-		topLeft     = "╭"
-		topRight    = "╮"
-		botLeft     = "╰"
-		botRight    = "╯"
+		// Sharp corners, not rounded: Terminus's rounded glyphs (╭╮╰╯)
+		// retract their horizontal stub from the cell edge, so they don't
+		// meet the ─ line and the box looks broken at the corners. The
+		// sharp ┌┐└┘ tile flush with ─ and │.
+		topLeft     = "┌"
+		topRight    = "┐"
+		botLeft     = "└"
+		botRight    = "┘"
 		horiz       = "─"
 		vert        = "│"
 		leftMargin  = 2 // space after │ before content
