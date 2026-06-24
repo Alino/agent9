@@ -3079,12 +3079,18 @@ func (m pi9Model) renderInput(cols int) string {
 		content = fitRow(content, innerW)
 	}
 
-	// Build the three rows. Each is exactly `cols` visible chars.
+	// Build the three rows, each exactly `cols` visible columns so the
+	// borders line up:
+	//   top/bot = │corner│ + (cols-2)·─ + │corner│            = cols
+	//   mid     = │ + leftMargin + innerW + rightMargin + │    = cols
+	// (innerW already subtracts both full margins + both verticals, so
+	// the margin spacers must be the FULL margins — an earlier -1 here
+	// made the middle row 2 columns short and skewed the right edge.)
 	top := inputBoxStyle.Render(topLeft + strings.Repeat(horiz, cols-2) + topRight)
 	mid := inputBoxStyle.Render(vert) +
-		strings.Repeat(" ", leftMargin-1) +
+		strings.Repeat(" ", leftMargin) +
 		content +
-		strings.Repeat(" ", rightMargin-1) +
+		strings.Repeat(" ", rightMargin) +
 		inputBoxStyle.Render(vert)
 	bot := inputBoxStyle.Render(botLeft + strings.Repeat(horiz, cols-2) + botRight)
 
@@ -3610,6 +3616,17 @@ func main() {
 	var modelLevel string
 	model, modelLevel = applyModelProviderOverride(model, *flagModel, *flagProvider)
 	apiKey := cfg.APIKey
+	// If there's no legacy config api_key, resolve the key for the
+	// configured model's provider from auth.json. Without this, pi9
+	// launches showing "no API key set" for a model whose key IS stored
+	// (e.g. a persisted MiniMax-M3 default) and the send-guard blocks
+	// until you re-/login. Mirrors syncAPIKeyForModel for startup.
+	if apiKey == "" {
+		if k := store.LookupAPIKey(string(provider.ProviderForModel(model))); k != "" {
+			apiKey = k
+		}
+	}
+	noKeyYet = apiKey == ""
 
 	// Task 6: trust resolution. -approve / -no-approve persist a trust
 	// decision for the cwd BEFORE the system prompt is assembled (the
