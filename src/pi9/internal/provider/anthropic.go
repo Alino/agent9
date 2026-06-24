@@ -40,15 +40,34 @@ import (
 const interleavedThinkingBeta = "interleaved-thinking-2025-05-14"
 
 // anthropic implements Provider against the native Anthropic API.
-type anthropic struct{}
+//
+// The same Anthropic Messages wire format also serves providers that
+// expose an Anthropic-compatible endpoint (e.g. MiniMax at
+// api.minimax.io/anthropic). id and baseURL let one implementation
+// back several such providers; the zero value is the native Anthropic
+// provider (id "anthropic", api.anthropic.com).
+type anthropic struct {
+	id      ProviderID // "" == ProviderAnthropic
+	baseURL string     // "" == https://api.anthropic.com/v1/messages
+}
 
-func (anthropic) Name() ProviderID { return ProviderAnthropic }
+func (a anthropic) Name() ProviderID {
+	if a.id != "" {
+		return a.id
+	}
+	return ProviderAnthropic
+}
 
-func (anthropic) Stream(ctx context.Context, cfg Config, messages []Message) (<-chan Chunk, <-chan error) {
+func (a anthropic) Stream(ctx context.Context, cfg Config, messages []Message) (<-chan Chunk, <-chan error) {
 	chunks := make(chan Chunk, 8)
 	errs := make(chan error, 1)
 
+	// cfg.APIURL (rarely set outside tests) wins, then the provider's
+	// baked-in baseURL, then the native Anthropic endpoint.
 	url := cfg.APIURL
+	if url == "" {
+		url = a.baseURL
+	}
 	if url == "" {
 		url = "https://api.anthropic.com/v1/messages"
 	}

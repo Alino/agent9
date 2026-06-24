@@ -961,6 +961,21 @@ func splitArgs(s string) []string {
 	return args
 }
 
+// syncAPIKeyForModel refreshes the cached m.apiKey to the credential
+// stored for the CURRENT model's provider. Must be called after any
+// model switch: the send-guard (and the next request) read m.apiKey,
+// which otherwise only gets updated at /login time and only when the
+// active model already maps to the logged-in provider. Without this,
+// "/login MiniMax" while Kimi is active, then "/model MiniMax-M3",
+// leaves m.apiKey stale ("" -> bogus "no API key set"), even though
+// auth.json holds the minimax key. Only overwrites when a key exists
+// for the new provider, preserving the legacy config-key fallback.
+func (m *pi9Model) syncAPIKeyForModel() {
+	if k := store.LookupAPIKey(string(provider.ProviderForModel(m.model))); k != "" {
+		m.apiKey = k
+	}
+}
+
 func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 	parts := splitArgs(text)
 	if len(parts) == 0 {
@@ -1302,6 +1317,7 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		}
 		old := m.model
 		m.model = args[0]
+		m.syncAPIKeyForModel()
 		if m.tree != nil && m.model != old {
 			m.tree.AppendModelChange(m.model)
 		}
@@ -1340,6 +1356,7 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		if newCfg.Model != "" {
 			m.model = newCfg.Model
 		}
+		m.syncAPIKeyForModel()
 		m.history.System = buildSystemPrompt()
 		m.history.AppendLocal(text, "reloaded config + memory + skill index")
 		m.saveSession()
@@ -1812,6 +1829,7 @@ func (m pi9Model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		picked := filtered[m.modelCursor]
 		old := m.model
 		m.model = picked.ID
+		m.syncAPIKeyForModel()
 		m.modelPickerOpen = false
 		if m.tree != nil && m.model != old {
 			m.tree.AppendModelChange(m.model)

@@ -138,6 +138,7 @@ const (
 	ProviderFireworks  ProviderID = "fireworks"
 	ProviderCerebras   ProviderID = "cerebras"
 	ProviderCopilot    ProviderID = "github-copilot" // Phase 10 S3: separate from OpenAI/OpenRouter; has its own URL + headers
+	ProviderMiniMax    ProviderID = "minimax"        // Anthropic-compatible endpoint (api.minimax.io/anthropic); MiniMax-M3 etc.
 )
 
 // AllProviders returns the canonical list shown in /login. Order
@@ -157,6 +158,7 @@ func AllProviders() []ProviderID {
 		ProviderTogether,
 		ProviderFireworks,
 		ProviderCerebras,
+		ProviderMiniMax,
 	}
 }
 
@@ -187,6 +189,8 @@ func DisplayName(p ProviderID) string {
 		return "Cerebras"
 	case ProviderCopilot:
 		return "GitHub Copilot"
+	case ProviderMiniMax:
+		return "MiniMax"
 	default:
 		return string(p)
 	}
@@ -232,6 +236,8 @@ func KeyURL(p ProviderID) string {
 		return "https://console.x.ai/"
 	case ProviderGoogle:
 		return "https://aistudio.google.com/apikey"
+	case ProviderMiniMax:
+		return "https://www.minimax.io/platform/user-center/basic-information/interface-key"
 	}
 	return ""
 }
@@ -281,6 +287,8 @@ func ProviderForModel(model string) ProviderID {
 		return ProviderMistral
 	case strings.HasPrefix(m, "deepseek-"):
 		return ProviderDeepSeek
+	case strings.HasPrefix(m, "minimax-"):
+		return ProviderMiniMax
 	}
 	return ProviderOpenRouter
 }
@@ -297,6 +305,10 @@ func Get(id ProviderID) Provider {
 	switch id {
 	case ProviderAnthropic:
 		return anthropic{}
+	case ProviderMiniMax:
+		// MiniMax exposes an Anthropic Messages-compatible endpoint, so
+		// reuse the anthropic wire format with MiniMax's base URL.
+		return anthropic{id: ProviderMiniMax, baseURL: "https://api.minimax.io/anthropic/v1/messages"}
 	case ProviderCopilot:
 		return copilotProvider{}
 	case ProviderOpenRouter, ProviderOpenAI, ProviderGroq, ProviderDeepSeek,

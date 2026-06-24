@@ -91,6 +91,12 @@ func CuratedModels() []ModelInfo {
 		{ProviderDeepSeek, "deepseek-chat", "DeepSeek Chat (direct)", 128000, false},
 		{ProviderDeepSeek, "deepseek-reasoner", "DeepSeek Reasoner (direct)", 128000, false},
 
+		// MiniMax direct — Anthropic-compatible endpoint. Model IDs from
+		// pi.dev's minimax.models.ts. Requires `/login → MiniMax` first.
+		{ProviderMiniMax, "MiniMax-M3", "MiniMax-M3 (direct)", 512000, false},
+		{ProviderMiniMax, "MiniMax-M2.7", "MiniMax-M2.7 (direct)", 204800, false},
+		{ProviderMiniMax, "MiniMax-M2.7-highspeed", "MiniMax-M2.7 Highspeed (direct)", 204800, false},
+
 		// GitHub Copilot subscription — pi9 routes via "copilot/" prefix.
 		// Requires `/login → GitHub Copilot` first (OAuth device flow).
 		// Model IDs taken from pi.dev's models.generated.ts; subset of
