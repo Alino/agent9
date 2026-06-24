@@ -245,7 +245,8 @@ func (h *History) ToProviderMessages() []provider.Message {
 	return out
 }
 
-// Styles for rendering Turn content. WinXP Luna palette.
+// Styles for rendering Turn content. Contemporary dark palette (the
+// 16 indices are remapped in vtwin; semantics here are unchanged).
 var (
 	userStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -286,18 +287,80 @@ var (
 
 	localBodyStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("7")) // white
+
+	// Lightweight markdown styles for assistant prose.
+	mdHeading = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12")) // bright blue
+	mdCodeBlk = lipgloss.NewStyle().Foreground(lipgloss.Color("10"))            // green
+	mdGutter  = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))             // dim │ rail
+	mdBullet  = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))             // cyan •
+	mdQuote   = lipgloss.NewStyle().Foreground(lipgloss.Color("8")).Italic(true)
 )
+
+// renderMarkdown renders a lightweight block-level markdown subset
+// (headings, fenced code blocks, bullet/numbered lists, blockquotes)
+// to styled, wrapped lines. Inline spans are left as-is — the visible
+// win is structural (code blocks especially). Returns un-indented
+// lines; the caller indents the whole block under its bar label.
+func renderMarkdown(body string, width int) string {
+	var out []string
+	inCode := false
+	for _, ln := range strings.Split(body, "\n") {
+		t := strings.TrimSpace(ln)
+		if strings.HasPrefix(t, "```") {
+			inCode = !inCode
+			continue // drop fence lines; the gutter rail marks the block
+		}
+		if inCode {
+			out = append(out, mdGutter.Render("│ ")+mdCodeBlk.Render(ln))
+			continue
+		}
+		// ATX heading: 1-6 leading '#' then a space.
+		hn := 0
+		for hn < len(t) && t[hn] == '#' {
+			hn++
+		}
+		if hn >= 1 && hn <= 6 && hn < len(t) && t[hn] == ' ' {
+			out = append(out, mdHeading.Render(strings.TrimSpace(t[hn:])))
+			continue
+		}
+		// Bullet list: -, *, + followed by a space.
+		if len(t) > 2 && (t[0] == '-' || t[0] == '*' || t[0] == '+') && t[1] == ' ' {
+			wrapped := strings.Split(wrap(t[2:], width-2), "\n")
+			for i, w := range wrapped {
+				if i == 0 {
+					out = append(out, mdBullet.Render("• ")+asstStyle.Render(w))
+				} else {
+					out = append(out, "  "+asstStyle.Render(w))
+				}
+			}
+			continue
+		}
+		// Blockquote.
+		if strings.HasPrefix(t, "> ") {
+			out = append(out, mdGutter.Render("│ ")+mdQuote.Render(t[2:]))
+			continue
+		}
+		if t == "" {
+			out = append(out, "")
+			continue
+		}
+		for _, w := range strings.Split(wrap(ln, width), "\n") {
+			out = append(out, asstStyle.Render(w))
+		}
+	}
+	return strings.Join(out, "\n")
+}
 
 // renderCall formats one tool invocation. Collapsed-by-default:
 //
-//	-> run_rc({"command":"ls /tmp"})  [42ms] 73 bytes
+//	▸ run_rc({"command":"ls /tmp"})  [42ms] 73 bytes
 //
-// Errors get an 'x' prefix and the error text in red.
+// Errors render the error text in red.
 //
-// Uses ASCII only — libdraw's defaultfont in vtwin doesn't have
-// box-drawing or arrow glyphs.
+// vtwin's Terminus font has full box-drawing/arrow/marker coverage, so
+// we use real Unicode glyphs (see Tier-0 capability check).
 func renderCall(c ToolInvocation, width int) string {
-	prefix := toolLabel.Render("  -> ")
+	prefix := toolLabel.Render("  ▸ ")
 	args := compactArgs(c.Args)
 	head := fmt.Sprintf("%s(%s)", c.Name, args)
 	// Trim if it overflows.
@@ -337,30 +400,37 @@ func RenderTurn(t Turn, width int, hideThinking bool) string {
 		return renderLocalTurn(t, width)
 	}
 	var b strings.Builder
+	cw := width - 2 // content is indented two columns under its bar label
 
-	b.WriteString(userStyle.Render("you: "))
-	b.WriteString(wrap(t.User, width-5))
+	// Each speaker gets a colored left-bar label ("▌ you" / "▌ pi9") with
+	// its message indented beneath — a clearer block structure than the
+	// old inline "you:" / "pi9:" prefixes.
+	b.WriteString(userStyle.Render("▌ you"))
+	b.WriteString("\n")
+	b.WriteString(indent(wrap(t.User, cw), 2))
 	b.WriteString("\n\n")
 
 	// Streamed reasoning renders before the reply, dimmed + labelled.
 	if !hideThinking {
 		if reasoning := strings.TrimSpace(t.Reasoning); reasoning != "" {
-			b.WriteString(thinkingStyle.Render("thinking: "))
-			b.WriteString(thinkingStyle.Render(wrap(reasoning, width-10)))
+			b.WriteString(thinkingStyle.Render("▌ thinking"))
+			b.WriteString("\n")
+			b.WriteString(indent(thinkingStyle.Render(wrap(reasoning, cw)), 2))
 			b.WriteString("\n\n")
 		}
 	}
 
-	b.WriteString(asstLabel.Render("pi9: "))
+	b.WriteString(asstLabel.Render("▌ pi9"))
+	b.WriteString("\n")
 	if t.Err != nil {
-		b.WriteString(errStyle.Render("error: " + t.Err.Error()))
+		b.WriteString(indent(errStyle.Render("error: "+t.Err.Error()), 2))
 	} else {
 		body := t.Assistant
 		if body == "" && t.Finished.IsZero() && len(t.Calls) == 0 {
 			body = "..."
 		}
 		if body != "" {
-			b.WriteString(asstStyle.Render(wrap(body, width-5)))
+			b.WriteString(indent(renderMarkdown(body, cw), 2))
 		}
 	}
 	for _, c := range t.Calls {
@@ -370,17 +440,28 @@ func RenderTurn(t Turn, width int, hideThinking bool) string {
 	if !t.Finished.IsZero() {
 		dur := t.Finished.Sub(t.Started).Round(time.Millisecond)
 		b.WriteString("\n")
-		b.WriteString(hintStyle.Render(fmt.Sprintf("  (%s)", dur)))
+		b.WriteString(hintStyle.Render(fmt.Sprintf("  %s", dur)))
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+// indent prefixes every line of s with n spaces. Used to set message
+// bodies in under their bar labels.
+func indent(s string, n int) string {
+	pad := strings.Repeat(" ", n)
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = pad + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // renderLocalTurn formats a slash-command turn. Compact: user line in
 // magenta, body indented two spaces, no "pi9:" label or timing.
 func renderLocalTurn(t Turn, width int) string {
 	var b strings.Builder
-	b.WriteString(localUserStyle.Render(t.User))
+	b.WriteString(localUserStyle.Render("▌ " + t.User))
 	b.WriteString("\n")
 	for _, line := range strings.Split(t.Assistant, "\n") {
 		b.WriteString("  ")

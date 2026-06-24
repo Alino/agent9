@@ -2930,18 +2930,25 @@ var (
 	headerStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("15")).
-			Background(lipgloss.Color("4")). // Luna blue
+			Background(lipgloss.Color("4")). // accent bar
 			Padding(0, 1)
 
 	statusStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("8")).
 			Italic(true)
 
+	// Muted border so the rounded input box reads as a frame, not a
+	// loud element, on the dark theme.
 	inputBoxStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("4")) // Luna blue border color
+			Foreground(lipgloss.Color("8"))
 
 	inputTextStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("15"))
+
+	// Accent for the input prompt glyph + the streaming spinner.
+	promptStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("6")) // cyan
 
 	hintStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("8"))
@@ -2973,12 +2980,12 @@ func (m pi9Model) renderInput(cols int) string {
 	}
 
 	const (
-		topLeft     = "+"
-		topRight    = "+"
-		botLeft     = "+"
-		botRight    = "+"
-		horiz       = "-"
-		vert        = "|"
+		topLeft     = "╭"
+		topRight    = "╮"
+		botLeft     = "╰"
+		botRight    = "╯"
+		horiz       = "─"
+		vert        = "│"
 		leftMargin  = 2 // space after │ before content
 		rightMargin = 2 // space before │ after content
 	)
@@ -2992,7 +2999,11 @@ func (m pi9Model) renderInput(cols int) string {
 	// Build content: "> typed_text_with_cursor"
 	var content string
 	if m.streaming {
-		content = "> " + hintStyle.Render("working... (ctrl-c to cancel)")
+		// Animated Braille spinner; the frame advances as the view
+		// re-renders on each stream chunk (no separate tick needed).
+		frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+		sp := string(frames[(time.Now().UnixMilli()/100)%int64(len(frames))])
+		content = promptStyle.Render(sp+" ") + hintStyle.Render("working... (ctrl-c to cancel)")
 	} else {
 		// Visible substring of input + cursor.
 		text := string(m.input)
@@ -3035,7 +3046,7 @@ func (m pi9Model) renderInput(cols int) string {
 		}
 		left = string(runes[start : start+cur])
 		right = string(runes[start+cur : end])
-		content = "> " + inputTextStyle.Render(left+"_"+right)
+		content = promptStyle.Render("❯ ") + inputTextStyle.Render(left+"█"+right)
 	}
 
 	// Compute visible width of content. We need the content to be
