@@ -368,10 +368,22 @@ fswrite(Req *r)
 			parser_feed(&s->parser, (uchar*)r->ifcall.data, n);
 			qunlock(&s->lock);
 		}
-		if(s->keyin_buf_len + n > (int)sizeof s->keyin_buf)
-			s->keyin_buf_len = 0;
-		memmove(s->keyin_buf + s->keyin_buf_len, r->ifcall.data, n);
-		s->keyin_buf_len += n;
+		/* Record recent input for read-back via fsread cons. Bound
+		 * against keyin_buf: a single write larger than the buffer
+		 * (e.g. a big paste from vtwin) must NOT memmove past its end
+		 * — that overflows the Session struct and corrupts the heap,
+		 * faulting later. Keep only the most recent bytes. */
+		if(n >= (long)sizeof s->keyin_buf){
+			memmove(s->keyin_buf,
+				(uchar*)r->ifcall.data + (n - (long)sizeof s->keyin_buf),
+				sizeof s->keyin_buf);
+			s->keyin_buf_len = sizeof s->keyin_buf;
+		} else {
+			if(s->keyin_buf_len + n > (int)sizeof s->keyin_buf)
+				s->keyin_buf_len = 0;
+			memmove(s->keyin_buf + s->keyin_buf_len, r->ifcall.data, n);
+			s->keyin_buf_len += n;
+		}
 		r->ofcall.count = n;
 		respond(r, nil);
 		return;
@@ -397,17 +409,25 @@ add_session_files(Session *s)
 		return -1;
 	}
 
+	/* Keep every File* createfile hands back: each carries one
+	 * reference that teardown must release with exactly one removefile.
+	 * (The previous code discarded these and re-derived them with
+	 * walkfile at teardown — which takes an EXTRA ref and, combined
+	 * with child-removal dropping the parent's ref, corrupted lib9p's
+	 * accounting and faulted freefile() after a handful of sessions.) */
+	s->files[0] = sess_dir;
+
 	axp = (void*)(uintptr)Faux_sess_ctl;
-	createfile(sess_dir, "ctl", "vts", 0666, axp);
+	s->files[1] = createfile(sess_dir, "ctl", "vts", 0666, axp);
 
 	axp = (void*)(uintptr)Faux_sess_cons;
-	createfile(sess_dir, "cons", "vts", 0666, axp);
+	s->files[2] = createfile(sess_dir, "cons", "vts", 0666, axp);
 
 	axp = (void*)(uintptr)Faux_sess_cells;
-	createfile(sess_dir, "cells", "vts", 0444, axp);
+	s->files[3] = createfile(sess_dir, "cells", "vts", 0444, axp);
 
 	axp = (void*)(uintptr)Faux_sess_scroll;
-	createfile(sess_dir, "scroll", "vts", 0444, axp);
+	s->files[4] = createfile(sess_dir, "scroll", "vts", 0444, axp);
 
 	return 0;
 }
@@ -415,19 +435,22 @@ add_session_files(Session *s)
 static int
 remove_session_files(Session *s)
 {
-	File *sess_dir, *child;
-	const char *names[] = {"ctl", "cons", "cells", "scroll"};
 	int i;
 
-	sess_dir = walkfile(vts_srv.tree->root, s->name);
-	if(sess_dir == nil)
+	if(s->files[0] == nil)
 		return -1;
-	for(i = 0; i < 4; i++){
-		child = walkfile(sess_dir, (char*)names[i]);
-		if(child != nil)
-			removefile(child);
+	/* Children first, then the directory. removefile unlinks the file
+	 * and drops the createfile reference; if a client still has the
+	 * file open, lib9p keeps the (now unlinked) File alive until the
+	 * last fid clunks, so this is safe even mid-use. No walkfile. */
+	for(i = 1; i < 5; i++){
+		if(s->files[i] != nil){
+			removefile((File*)s->files[i]);
+			s->files[i] = nil;
+		}
 	}
-	removefile(sess_dir);
+	removefile((File*)s->files[0]);
+	s->files[0] = nil;
 	return 0;
 }
 
@@ -458,11 +481,12 @@ create_session(const char *name, int spawn_rc)
 		return -1;
 	memset(s, 0, sizeof(Session));
 	session_init(s, (char*)name, 24, 80);
+	s->onheap = 1;	/* heap-allocated; teardown may free(s) */
 	gsessions[slot] = s;
 	if(slot >= nsessions) nsessions = slot + 1;
 
 	if(add_session_files(s) < 0){
-		free(s);
+		session_free(s);
 		gsessions[slot] = nil;
 		return -1;
 	}
@@ -500,9 +524,34 @@ kill_session(const char *name)
 		}
 	}
 
+	/* Reclaim the keyin write end. (The reader proc closes the shellout
+	 * read end when rc's death makes its read return EOF.) Killing rc
+	 * via the note above also makes that happen. Marking rc_alive=0 +
+	 * keyin_wfd=-1 keeps any late session_feed_keystrokes a no-op. */
+	s->rc_alive = 0;
+	if(s->keyin_wfd >= 0){
+		close(s->keyin_wfd);
+		s->keyin_wfd = -1;
+	}
+
 	remove_session_files(s);
 	fprint(2, "vts: killed session %s\n", name);
-	/* Leak the Session struct; freeing requires waiting for reader proc. */
+
+	/* Teardown handshake (see session.c). The reader proc may still be
+	 * unwinding out of its blocking read on this session. Mark it killed;
+	 * if the reader has already finished, we're the last user and free
+	 * now. Otherwise the reader frees when it exits and sees `killed`.
+	 * gsessions[i] is already nil and the files are removed, so no 9P
+	 * request can reach `s` after this point. */
+	{
+		int reader_done;
+		qlock(&s->lock);
+		s->killed = 1;
+		reader_done = s->reader_done;
+		qunlock(&s->lock);
+		if(reader_done)
+			session_free(s);
+	}
 	return 0;
 }
 

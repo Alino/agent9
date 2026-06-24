@@ -46,7 +46,39 @@ shellout_reader(void *arg)
 		parser_feed(&s->parser, buf, (int)n);
 		qunlock(&s->lock);
 	}
+	/* rc is gone — reclaim the shellout read end. */
+	if(s->shellout_rfd >= 0){
+		close(s->shellout_rfd);
+		s->shellout_rfd = -1;
+	}
+	/* Teardown handshake: mark ourselves done and, if the session was
+	 * already killed, free it — we're the last user. If it wasn't
+	 * killed (rc just exited on its own), leave the session in place;
+	 * kill_session will free it later and will see reader_done set. */
+	{
+		int killed;
+		qlock(&s->lock);
+		s->reader_done = 1;
+		killed = s->killed;
+		qunlock(&s->lock);
+		if(killed)
+			session_free(s);
+	}
 	threadexits(nil);
+}
+
+/* Free a session's heap resources. Caller must be the last user (see
+ * the kill/reader handshake): nothing may touch *s afterward. The
+ * static first session (onheap==0) keeps its struct; only its buffers
+ * are released. */
+void
+session_free(Session *s)
+{
+	cellbuf_free(&s->buf);
+	free(s->name);
+	s->name = nil;
+	if(s->onheap)
+		free(s);
 }
 
 int
@@ -140,4 +172,8 @@ session_init(Session *s, char *name, int rows, int cols)
 	s->rc_pid = -1;
 	s->rc_alive = 0;
 	s->keyin_buf_len = 0;
+	s->killed = 0;
+	s->reader_done = 0;
+	/* onheap is set by the allocator (create_session); leave it so the
+	 * static first session stays onheap==0. */
 }
