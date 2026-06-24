@@ -976,6 +976,24 @@ func (m *pi9Model) syncAPIKeyForModel() {
 	}
 }
 
+// persistModel writes the current model back to the config file so the
+// last explicitly selected model becomes the default on the next launch.
+// Startup reads cfg.Model; without this, /model and the picker only
+// change the model in memory + the session tree, so a restart reverts to
+// the configured default (surprising — the user expects their last pick
+// to stick). LoadConfig+SaveConfig preserves the api_key, comments, etc.
+func (m *pi9Model) persistModel() {
+	cfg, err := store.LoadConfig()
+	if err != nil {
+		return
+	}
+	if cfg.Model == m.model {
+		return
+	}
+	cfg.Model = m.model
+	_ = store.SaveConfig(cfg)
+}
+
 func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 	parts := splitArgs(text)
 	if len(parts) == 0 {
@@ -1318,6 +1336,7 @@ func (m *pi9Model) handleSlash(text string) (tea.Model, tea.Cmd) {
 		old := m.model
 		m.model = args[0]
 		m.syncAPIKeyForModel()
+		m.persistModel() // make the new model the default on next launch
 		if m.tree != nil && m.model != old {
 			m.tree.AppendModelChange(m.model)
 		}
@@ -1830,6 +1849,7 @@ func (m pi9Model) handleModelPickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		old := m.model
 		m.model = picked.ID
 		m.syncAPIKeyForModel()
+		m.persistModel() // make the picked model the default on next launch
 		m.modelPickerOpen = false
 		if m.tree != nil && m.model != old {
 			m.tree.AppendModelChange(m.model)
