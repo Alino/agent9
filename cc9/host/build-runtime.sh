@@ -16,7 +16,7 @@ LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 # libc++ headers built with localization+monotonic-clock ON (the iostream/regex
 # tree). _LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE: use libc++'s own ctype table on
 # this minimal platform (no BSD <ctype.h> rune masks).
-LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-loc/include/c++/v1}"
+LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-thr/include/c++/v1}"
 LLVMSRC="${CC9_LLVMSRC:-$HOME/Projects/llvm-project}"
 INC="$CC9/runtime/include"
 O="/tmp/cc9-rt"; rm -rf "$O"; mkdir -p "$O" "$CC9/lib"  # clean: stale .o would re-enter the archive via the *.o glob
@@ -33,13 +33,14 @@ base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/xlocale.c" -o "$O/xlocale.o"
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/stdio.c" -o "$O/stdio.o"
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/printf.c" -o "$O/printf.o"
+"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/pthread.c" -o "$O/pthread.o"
 "$LLVM/clang++" "${base[@]}" -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
 "$LLVM/clang" "${base[@]}" -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"
 
 # targeted libc++ runtime objects
 lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O0 -w)
-for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected exception locale ios iostream ostream regex; do
+for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected exception locale ios iostream ostream regex thread mutex mutex_destructor condition_variable condition_variable_destructor shared_mutex future; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"

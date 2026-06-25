@@ -83,3 +83,83 @@ n9_close:
 	addq	$16, %rsp
 	popq	%rbp
 	ret
+
+// long n9_sleep(long millisecs)   SLEEP=17 (sleep(0) yields the CPU)
+	.globl n9_sleep
+n9_sleep:
+	pushq	%rbp
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	$17, %rbp
+	syscall
+	addq	$16, %rsp
+	popq	%rbp
+	ret
+
+// int n9_semacquire(int *addr, int block)   SEMACQUIRE=37
+	.globl n9_semacquire
+n9_semacquire:
+	pushq	%rbp
+	subq	$24, %rsp
+	movq	%rdi, 8(%rsp)      // addr
+	movl	%esi, 16(%rsp)     // block
+	movq	$37, %rbp
+	syscall
+	addq	$24, %rsp
+	popq	%rbp
+	ret
+
+// int n9_semrelease(int *addr, int count)   SEMRELEASE=38
+	.globl n9_semrelease
+n9_semrelease:
+	pushq	%rbp
+	subq	$24, %rsp
+	movq	%rdi, 8(%rsp)
+	movl	%esi, 16(%rsp)
+	movq	$38, %rbp
+	syscall
+	addq	$24, %rsp
+	popq	%rbp
+	ret
+
+// long n9_rfork_thread(void *stacktop, void (*fn)(void*), void *arg)
+//   Creates a thread (RFPROC|RFMEM|RFNOWAIT = 112) running fn(arg) on a fresh
+//   stack. Returns the child pid in the parent; the child never returns.
+//   The Plan 9 rfork syscall does NOT preserve general registers into the
+//   child, so fn/arg/stack are handed off through RFMEM-shared globals (the
+//   pthread layer holds a lock around the call to serialize the handoff). The
+//   child switches to the new stack before any shared-stack access, so it never
+//   races the parent on the original stack.
+	.data
+	.globl n9_th_stack
+	.globl n9_th_fn
+	.globl n9_th_arg
+n9_th_stack: .quad 0
+n9_th_fn:    .quad 0
+n9_th_arg:   .quad 0
+	.text
+	.globl n9_rfork_thread
+n9_rfork_thread:                  // rdi=stacktop, rsi=fn, rdx=arg
+	movq	%rdi, n9_th_stack(%rip)
+	movq	%rsi, n9_th_fn(%rip)
+	movq	%rdx, n9_th_arg(%rip)
+	pushq	%rbp
+	subq	$16, %rsp
+	movl	$112, 8(%rsp)      // RFPROC|RFMEM|RFNOWAIT
+	movq	$19, %rbp          // RFORK
+	syscall
+	testq	%rax, %rax         // rax==0 in child; test touches no stack
+	jz	1f
+	addq	$16, %rsp
+	popq	%rbp
+	ret
+1:	// child: read the handoff from shared memory, switch stack, call fn(arg)
+	movq	n9_th_stack(%rip), %rsp
+	movq	n9_th_arg(%rip), %rdi
+	movq	n9_th_fn(%rip), %rax
+	callq	*%rax
+	subq	$16, %rsp
+	movq	$0, 8(%rsp)
+	movq	$8, %rbp           // EXITS
+	syscall
+2:	jmp	2b

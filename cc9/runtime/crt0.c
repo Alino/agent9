@@ -36,9 +36,21 @@ void __cc9_run(void)
 	n9_exits(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");
 }
 
+/* main() runs on this BSS stack, NOT the kernel-provided per-process stack.
+ * rfork(RFMEM) threads share data/bss/heap but each process keeps its OWN stack
+ * (same vaddr, different memory), so a captured-by-reference local would not be
+ * visible across threads unless it lives in a shared segment. BSS is shared, so
+ * putting main's stack here makes the ubiquitous `std::thread([&]{...})` pattern
+ * work. Thread stacks are heap-allocated (also shared). */
+#define CC9_MAIN_STACK (8*1024*1024)
+__attribute__((aligned(16), used)) char __cc9_main_stack[CC9_MAIN_STACK];
+
 __attribute__((naked, used)) void _start(void)
 {
-	__asm__ volatile("andq $-16, %rsp\n\t"
-	                 "call __cc9_run\n\t"
-	                 "hlt");
+	__asm__ volatile(
+		"leaq __cc9_main_stack(%rip), %rsp\n\t"
+		"addq $" "8388608" ", %rsp\n\t"   /* top of the 8 MiB stack */
+		"andq $-16, %rsp\n\t"
+		"call __cc9_run\n\t"
+		"hlt");
 }

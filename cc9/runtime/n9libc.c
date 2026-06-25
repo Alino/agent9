@@ -31,7 +31,7 @@ static Header *kr_freep = 0;
  * there is no collision. */
 #define CC9_ALIGN_MAGIC 0xA11C9EDA11C9EDUL
 
-void free(void *ap){
+static void free_u(void *ap){
 	if(!ap) return;
 	if(((unsigned long*)ap)[-1] == CC9_ALIGN_MAGIC) ap = *(void**)((char*)ap - 16);
 	Header *bp = (Header*)ap - 1, *p;
@@ -48,10 +48,10 @@ static Header *kr_morecore(size_t nu){
 	void *cp = n9_sbrk((long)(nu * sizeof(Header)));
 	if(cp == (void*)-1) return 0;
 	Header *up = (Header*)cp; up->s.size = nu;
-	free((void*)(up + 1));
+	free_u((void*)(up + 1));
 	return kr_freep;
 }
-void *malloc(size_t nbytes){
+static void *malloc_u(size_t nbytes){
 	if(nbytes == 0) return 0;
 	size_t nunits = (nbytes + sizeof(Header) - 1) / sizeof(Header) + 1;
 	Header *p, *prevp;
@@ -66,6 +66,14 @@ void *malloc(size_t nbytes){
 		if(p == kr_freep && (p = kr_morecore(nunits)) == 0) return 0;
 	}
 }
+/* Public allocator: a Plan 9 semaphore serializes the shared heap across threads
+ * (cc9 threads share memory via rfork(RFMEM)). Single-threaded programs pay one
+ * uncontended semacquire/semrelease per call. */
+extern int n9_semacquire(int *, int);
+extern int n9_semrelease(int *, int);
+static int malloc_lock = 1;
+void *malloc(size_t n){ n9_semacquire(&malloc_lock,1); void *r=malloc_u(n); n9_semrelease(&malloc_lock,1); return r; }
+void free(void *p){ if(!p) return; n9_semacquire(&malloc_lock,1); free_u(p); n9_semrelease(&malloc_lock,1); }
 /* aligned_alloc(alignment, size) (C11). malloc is 16-byte aligned, so small
  * alignments are free; larger ones over-allocate and align, recording the base
  * + sentinel so plain free() reclaims it (see free above). */
@@ -86,10 +94,12 @@ void *calloc(size_t a,size_t b){ size_t n=a*b; char*p=malloc(n); if(p) for(size_
 void *realloc(void*old,size_t n){
 	if(!old) return malloc(n);
 	if(n==0){ free(old); return 0; }
+	n9_semacquire(&malloc_lock,1);
 	Header *bp=(Header*)old-1; size_t oldsz=(bp->s.size-1)*sizeof(Header);
-	char *np=malloc(n); if(!np) return 0;
-	size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i];
-	free(old); return np;
+	char *np=malloc_u(n);
+	if(np){ size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i]; free_u(old); }
+	n9_semrelease(&malloc_lock,1);
+	return np;
 }
 void abort(void){ n9_exits("cc9: abort\n"); for(;;){} }
 void exit(int code){ n9_exits(code? "cc9: exit nonzero\n" : 0); for(;;){} }
@@ -151,6 +161,8 @@ char *strerror(int e){
 	char *d=buf; const char*p="Unknown error "; while(*p)*d++=*p++;
 	d=utoa_((unsigned long long)(e<0?-e:e), d, 10); *d=0; return buf;
 }
+/* POSIX/XSI strerror_r (threads-on system_error uses the reentrant form). */
+int strerror_r(int e, char *buf, size_t n){ char *m=strerror(e); size_t i; for(i=0;i+1<n && m[i]; i++) buf[i]=m[i]; if(n) buf[i]=0; return 0; }
 
 /* errno + a C locale (always "C": '.' decimal point) for libc++/json */
 static int n9_errno_v = 0;
