@@ -74,9 +74,38 @@ int fstatat(int dfd, const char *path, struct stat *st, int flag){ (void)dfd;(vo
 
 int mkdir(const char *path, mode_t m){ long fd=n9_create(path, 0/*OREAD*/, DMDIR|(m&0777)); if(fd<0){errno=EEXIST;return -1;} n9_close((int)fd); return 0; }
 int mkdirat(int dfd, const char *path, unsigned int m){ (void)dfd; return mkdir(path,m); }
-int chmod(const char *p, mode_t m){ (void)p;(void)m; return 0; }   /* via wstat; not yet */
-int fchmod(int fd, mode_t m){ (void)fd;(void)m; return 0; }
-int fchmodat(int d, const char *p, mode_t m, int f){ (void)d;(void)p;(void)m;(void)f; return 0; }
+
+extern long n9_wstat(const char *, unsigned char *, int);
+extern long n9_fwstat(int, unsigned char *, int);
+extern long n9_fd2path(int, char *, int);
+static void putle(unsigned char *p, unsigned long long v, int n){ for(int i=0;i<n;i++) p[i]=(unsigned char)(v>>(8*i)); }
+/* Build a wstat Dir with all fields "don't change" (~0 / empty) except those
+ * given: name (rename), mode (chmod), length (truncate). 0xFFFF.. = leave. */
+static int build_wstat(unsigned char *buf, const char *name, unsigned long mode, unsigned long long length){
+	unsigned char *p = buf + 2;                 /* size filled last */
+	putle(p,0xFFFF,2); p+=2;                     /* type */
+	putle(p,0xFFFFFFFF,4); p+=4;                 /* dev */
+	*p++ = 0xFF;                                 /* qid.type */
+	putle(p,0xFFFFFFFF,4); p+=4;                 /* qid.vers */
+	putle(p,~0ULL,8); p+=8;                      /* qid.path */
+	putle(p,mode,4); p+=4;                       /* mode */
+	putle(p,0xFFFFFFFF,4); p+=4;                 /* atime */
+	putle(p,0xFFFFFFFF,4); p+=4;                 /* mtime */
+	putle(p,length,8); p+=8;                     /* length */
+	int nl = name ? (int)strlen(name) : 0;
+	putle(p,nl,2); p+=2; for(int i=0;i<nl;i++) *p++=(unsigned char)name[i];   /* name */
+	putle(p,0,2); p+=2; putle(p,0,2); p+=2; putle(p,0,2); p+=2;               /* uid,gid,muid */
+	int total = (int)(p - buf);
+	putle(buf, (unsigned)(total-2), 2);
+	return total;
+}
+int chmod(const char *path, mode_t m){
+	struct stat st; unsigned long keep=0; if(stat(path,&st)==0) keep = (st.st_mode&S_IFDIR)?DMDIR:0;
+	unsigned char b[128]; int n=build_wstat(b,0,keep|(m&0777),~0ULL);
+	return n9_wstat(path,b,n)<0?(errno=EACCES,-1):0;
+}
+int fchmod(int fd, mode_t m){ unsigned char b[128]; int n=build_wstat(b,0,m&0777,~0ULL); return n9_fwstat(fd,b,n)<0?-1:0; }
+int fchmodat(int d, const char *p, mode_t m, int f){ (void)d;(void)f; return chmod(p,m); }
 long pathconf(const char *p, int name){ (void)p; return name==4 ? 4096 : 255; }
 long fpathconf(int fd, int name){ (void)fd; return name==4 ? 4096 : 255; }
 int unlink(const char *path){ if(n9_remove(path)<0){errno=ENOENT;return -1;} return 0; }
@@ -87,13 +116,26 @@ int chdir(const char *path){ return n9_chdir(path)<0 ? -1 : 0; }
 int access(const char *path, int mode){ (void)mode; struct stat st; return stat(path,&st)==0?0:-1; }
 int isatty(int fd){ (void)fd; return 0; }
 int fsync(int fd){ (void)fd; return 0; }
-int ftruncate(int fd, long len){ (void)fd;(void)len; return 0; }   /* via wstat; not yet */
-int truncate(const char *p, long len){ (void)p;(void)len; return 0; }
+int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len); return n9_fwstat(fd,b,n)<0?-1:0; }
+int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len); return n9_wstat(p,b,n)<0?-1:0; }
 int dup(int fd){ (void)fd; errno=EBADF; return -1; }
 
-/* not supported on this minimal layer yet — fail cleanly */
-int rename(const char *a, const char *b){ (void)a;(void)b; errno=ENOSYS; return -1; }
-int renameat(int d1,const char*a,int d2,const char*b){ (void)d1;(void)a;(void)d2;(void)b; errno=ENOSYS; return -1; }
+/* rename: Plan 9 wstat changes only the final name component, so this works for
+ * same-directory renames; cross-directory -> EXDEV (libc++ falls back to copy). */
+static int same_dir(const char *a, const char *b){
+	const char *la=a, *lb=b;
+	for(const char *p=a;*p;p++) if(*p=='/') la=p;
+	for(const char *p=b;*p;p++) if(*p=='/') lb=p;
+	long na=la-a, nb=lb-b; if(na!=nb) return 0;
+	for(long i=0;i<na;i++) if(a[i]!=b[i]) return 0; return 1;
+}
+int rename(const char *old, const char *neu){
+	if(!same_dir(old,neu)){ errno=EXDEV; return -1; }
+	const char *nb=neu; for(const char *p=neu;*p;p++) if(*p=='/') nb=p+1;
+	unsigned char b[256]; int n=build_wstat(b,nb,0xFFFFFFFF,~0ULL);
+	return n9_wstat(old,b,n)<0?(errno=EEXIST,-1):0;
+}
+int renameat(int d1,const char*a,int d2,const char*b){ (void)d1;(void)d2; return rename(a,b); }
 int link(const char *a, const char *b){ (void)a;(void)b; errno=ENOSYS; return -1; }
 int linkat(int d1,const char*a,int d2,const char*b,int f){ (void)d1;(void)a;(void)d2;(void)b;(void)f; errno=ENOSYS; return -1; }
 int symlink(const char *a, const char *b){ (void)a;(void)b; errno=ENOSYS; return -1; }
@@ -101,7 +143,7 @@ int symlinkat(const char*a,int d,const char*b){ (void)a;(void)d;(void)b; errno=E
 long readlink(const char *p, char *b, size_t n){ (void)p;(void)b;(void)n; errno=EINVAL; return -1; }
 long readlinkat(int d,const char*p,char*b,size_t n){ (void)d;(void)p;(void)b;(void)n; errno=EINVAL; return -1; }
 char *realpath(const char *p, char *out){ if(out){ size_t i=0; while(p[i]){out[i]=p[i];i++;} out[i]=0; return out; } return 0; }
-char *getcwd(char *buf, size_t n){ if(buf && n){ buf[0]='/'; buf[1]=0; } return buf; }
+char *getcwd(char *buf, size_t n){ long fd=n9_open(".",0); if(fd<0)return 0; long r=n9_fd2path((int)fd,buf,(int)n); n9_close((int)fd); return r<0?0:buf; }
 
 /* ---- directories ---- */
 struct __cc9_dir { int fd; unsigned char buf[8192]; int len; int pos; struct dirent de; };

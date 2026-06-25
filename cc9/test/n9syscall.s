@@ -165,6 +165,48 @@ n9_chdir:
 	popq	%rbp
 	ret
 
+// long n9_wstat(const char *name, unsigned char *edir, int nedir)  WSTAT=44.
+	.globl n9_wstat
+n9_wstat:
+	pushq	%rbp
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	%rsi, 16(%rsp)
+	movl	%edx, 24(%rsp)
+	movq	$44, %rbp
+	syscall
+	addq	$32, %rsp
+	popq	%rbp
+	ret
+
+// long n9_fwstat(int fd, unsigned char *edir, int nedir)  FWSTAT=45.
+	.globl n9_fwstat
+n9_fwstat:
+	pushq	%rbp
+	subq	$32, %rsp
+	movl	%edi, 8(%rsp)
+	movq	%rsi, 16(%rsp)
+	movl	%edx, 24(%rsp)
+	movq	$45, %rbp
+	syscall
+	addq	$32, %rsp
+	popq	%rbp
+	ret
+
+// long n9_fd2path(int fd, char *buf, int nbuf)  FD2PATH=23.
+	.globl n9_fd2path
+n9_fd2path:
+	pushq	%rbp
+	subq	$32, %rsp
+	movl	%edi, 8(%rsp)
+	movq	%rsi, 16(%rsp)
+	movl	%edx, 24(%rsp)
+	movq	$23, %rbp
+	syscall
+	addq	$32, %rsp
+	popq	%rbp
+	ret
+
 // long n9_sleep(long millisecs)   SLEEP=17 (sleep(0) yields the CPU)
 	.globl n9_sleep
 n9_sleep:
