@@ -39,7 +39,7 @@ base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc
 # targeted libc++ runtime objects
 lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O0 -w)
-for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected exception locale ios iostream ostream; do
+for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected exception locale ios iostream ostream regex; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"

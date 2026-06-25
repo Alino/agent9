@@ -31,7 +31,7 @@ for t in $(echo "$sample" | head -"$N"); do
   # any header pulling an unsupported subsystem.
   # localization + monotonic-clock are now ON, so those features no longer gate.
   miss='no-exceptions|no-rtti|no-threads|no-wide-characters|no-filesystem|no-tzdb|libcpp-has-no-incomplete-pstl|no-random-device|c\+\+23|c\+\+26|availability'
-  if grep -qE '#include <(thread|regex|fstream|mutex|shared_mutex|future|filesystem|format|syncstream|print|coroutine|stop_token|barrier|latch|semaphore|condition_variable)>' "$t" \
+  if grep -qE '#include <(thread|fstream|mutex|shared_mutex|future|filesystem|format|syncstream|print|coroutine|stop_token|barrier|latch|semaphore|condition_variable)>' "$t" \
      || grep -qE "(UNSUPPORTED|XFAIL):[^/]*($miss)" "$t" \
      || grep -qE '// *REQUIRES:' "$t"; then
     skip=$((skip+1)); continue; fi
