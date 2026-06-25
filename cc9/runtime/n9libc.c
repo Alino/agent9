@@ -173,41 +173,25 @@ int vsnprintf(char *out, size_t n, const char *f, __builtin_va_list ap){
 }
 int snprintf(char *out, size_t n, const char *f, ...){ __builtin_va_list ap; __builtin_va_start(ap,f); int r=vsnprintf(out,n,f,ap); __builtin_va_end(ap); return r; }
 
-/* math: hardware sqrt + simple rounding/abs/fmod (enough for typical compute) */
-double sqrt(double x){ double r; __asm__("sqrtsd %1,%0":"=x"(r):"x"(x)); return r; }
-float sqrtf(float x){ float r; __asm__("sqrtss %1,%0":"=x"(r):"x"(x)); return r; }
-double fabs(double x){ return x<0?-x:x; }
-float fabsf(float x){ return x<0?-x:x; }
-double trunc(double x){ return (double)(long long)x; }
-double floor(double x){ long long t=(long long)x; double d=(double)t; return d>x?d-1:d; }
-double ceil(double x){ long long t=(long long)x; double d=(double)t; return d<x?d+1:d; }
-double round(double x){ return x<0?ceil(x-0.5):floor(x+0.5); }
-double nearbyint(double x){ return round(x); }
-double rint(double x){ return round(x); }
-float floorf(float x){ return (float)floor(x); }
-float ceilf(float x){ return (float)ceil(x); }
-float truncf(float x){ return (float)trunc(x); }
-double fmod(double a,double b){ if(b==0)return 0; return a-trunc(a/b)*b; }
-double copysign(double x,double y){ return y<0?-fabs(x):fabs(x); }
-double scalbn(double x,int n){ while(n>0){x*=2;n--;} while(n<0){x*=0.5;n++;} return x; }
-double ldexp(double x,int n){ return scalbn(x,n); }
-double frexp(double x,int*e){ int n=0; if(x!=0){ double a=fabs(x); while(a>=1){a*=0.5;n++;} while(a<0.5){a*=2;n--;} } *e=n; return scalbn(x,-n); }
-double nextafter(double x,double y){
-	if(x!=x||y!=y) return x+y;
-	if(x==y) return y;
-	union{ double d; unsigned long long u; } v; v.d=x;
-	if(x==0){ v.u=1; return y>0?v.d:-v.d; }
-	if((y>x)==(x>0)) v.u++; else v.u--;
-	return v.d;
-}
-float nextafterf(float x,float y){
-	if(x!=x||y!=y) return x+y;
-	if(x==y) return y;
-	union{ float f; unsigned int u; } v; v.f=x;
-	if(x==0){ v.u=1; return y>0?v.f:-v.f; }
-	if((y>x)==(x>0)) v.u++; else v.u--;
-	return v.f;
-}
+/* libm (sqrt/sin/exp/atan2/... + f/l variants) now comes from libcc9m.a
+ * (openlibm) — a real correctly-rounded libm with full inf/nan/signbit
+ * semantics and 80-bit long double. Only integer abs stays here (openlibm is
+ * float-only); the fenv stubs openlibm references live below. */
+int abs(int x){ return x<0?-x:x; }
+long labs(long x){ return x<0?-x:x; }
+long long llabs(long long x){ return x<0?-x:x; }
+
+/* fenv: cc9 keeps FP traps masked (n9_cli sets the FCR once) and the tests
+ * don't inspect IEEE exception flags, so openlibm's fenv hooks are no-ops. */
+int feraiseexcept(int e){ (void)e; return 0; }
+int feclearexcept(int e){ (void)e; return 0; }
+int fetestexcept(int e){ (void)e; return 0; }
+int fegetenv(void *p){ (void)p; return 0; }
+int fesetenv(const void *p){ (void)p; return 0; }
+int feholdexcept(void *p){ (void)p; return 0; }
+int feupdateenv(const void *p){ (void)p; return 0; }
+int fegetround(void){ return 0 /*FE_TONEAREST*/; }
+int fesetround(int r){ (void)r; return 0; }
 
 /* Generic GCC atomic library calls — emitted for atomics that aren't inline
  * lock-free (large/odd-size types). cc9 is single-threaded, so they reduce to

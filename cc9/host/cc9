@@ -12,7 +12,7 @@ CC9="$(cd "$(dirname "$0")/.." && pwd)"
 LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 LLD="${CC9_LLD:-$(brew --prefix lld)/bin/ld.lld}"
 LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-build/include/c++/v1}"
-INC="$CC9/runtime/include"; LIB="$CC9/lib/libcc9cxx.a"; LDS="$CC9/test/plan9.ld"
+INC="$CC9/runtime/include"; LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
 
 cmd="${1:-}"; src="${2:-}"
 { [ -n "$cmd" ] && [ -n "$src" ]; } || { echo "usage: cc9 build|run SRC"; exit 2; }
@@ -30,7 +30,9 @@ esac
 "$CC" --target=x86_64-unknown-none -nostdlib -DNDEBUG \
   "${STD[@]}" -isystem "$INC" -fno-exceptions -fno-rtti -fno-threadsafe-statics \
   -c "$src" -o "$obj"
-"$LLD" -o "$elf" "$obj" "$LIB" -T "$LDS" -static -nostdlib
+# --start-group: the runtime and libm are mutually dependent (libm needs
+# memcpy/fenv from the runtime; the runtime's math comes from libm).
+"$LLD" -o "$elf" "$obj" --start-group "$LIB" "$LIBM" --end-group -T "$LDS" -static -nostdlib
 python3 "$CC9/host/elf2aout.py" "$elf" "$out" >&2   # diagnostics to stderr
 
 if [ "$cmd" = run ]; then

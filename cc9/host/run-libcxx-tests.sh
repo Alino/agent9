@@ -10,7 +10,7 @@ LLD="${CC9_LLD:-$(brew --prefix lld)/bin/ld.lld}"
 LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-build/include/c++/v1}"
 LLVMSRC="${CC9_LLVMSRC:-$HOME/Projects/llvm-project}"
 TST="$LLVMSRC/libcxx/test"
-INC="$CC9/runtime/include"; LIB="$CC9/lib/libcc9cxx.a"; LDS="$CC9/test/plan9.ld"
+INC="$CC9/runtime/include"; LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
 read -r DH DP <<<"${CC9_DEV:-127.0.0.1 1717}"
 
 sub="${1:-utilities}"; N="${2:-20}"
@@ -33,7 +33,7 @@ for t in $(echo "$sample" | head -"$N"); do
   # *.compile.pass.cpp are compile-only conformance checks (no main): passing ==
   # compiling. Don't link/run them — they'd fail the link for lack of main.
   case "$name" in *.compile.pass.cpp) pass=$((pass+1)); continue;; esac
-  if ! "$LLD" -o /tmp/lt.elf /tmp/lt.o "$LIB" -T "$LDS" -static -nostdlib 2>/dev/null; then
+  if ! "$LLD" -o /tmp/lt.elf /tmp/lt.o --start-group "$LIB" "$LIBM" --end-group -T "$LDS" -static -nostdlib 2>/dev/null; then
     cfail=$((cfail+1)); failed="$failed L:$name"; continue; fi
   if ! python3 "$CC9/host/elf2aout.py" /tmp/lt.elf /tmp/lt.aout >/dev/null 2>&1; then
     cfail=$((cfail+1)); failed="$failed A:$name"; continue; fi
