@@ -28,6 +28,8 @@ int asprintf(char **, const char *, ...); int vasprintf(char **, const char *, v
 int scanf(const char *, ...); int fscanf(FILE *, const char *, ...); int sscanf(const char *, const char *, ...);
 int vscanf(const char *, va_list); int vfscanf(FILE *, const char *, va_list); int vsscanf(const char *, const char *, va_list);
 FILE *fopen(const char *, const char *); FILE *freopen(const char *, const char *, FILE *);
+FILE *fdopen(int, const char *); int fileno(FILE *);
+int fseeko(FILE *, long, int); long ftello(FILE *);
 int fclose(FILE *); int fflush(FILE *);
 size_t fread(void *, size_t, size_t, FILE *); size_t fwrite(const void *, size_t, size_t, FILE *);
 int fseek(FILE *, long, int); long ftell(FILE *); void rewind(FILE *);

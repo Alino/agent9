@@ -59,3 +59,35 @@ int vprintf(const char *fmt, __builtin_va_list ap){ return vfprintf(stdout, fmt,
 /* sscanf: minimal — enough for the few locale code paths that touch it. */
 int vsscanf(const char *s, const char *f, __builtin_va_list ap){ (void)s;(void)f;(void)ap; return 0; }
 int sscanf(const char *s, const char *f, ...){ (void)s;(void)f; return 0; }
+
+/* real files over Plan 9 (backs std::fstream / basic_filebuf). */
+extern long n9_open(const char *, int);
+extern long n9_create(const char *, int, unsigned long);
+extern long n9_close(int);
+extern long n9_seek(long long *, int, long long, int);
+extern void *malloc(size_t); extern void free(void *);
+FILE *fopen(const char *path, const char *mode){
+	int omode=0, creat=0, trunc=0, append=0, plus=0;
+	for(const char *m=mode; *m; m++) if(*m=='+') plus=1;
+	if(mode[0]=='r') omode = plus?2:0;
+	else if(mode[0]=='w'){ omode = plus?2:1; creat=1; trunc=1; }
+	else if(mode[0]=='a'){ omode = plus?2:1; creat=1; append=1; }
+	long fd = creat ? n9_create(path, omode|(trunc?16:0), 0666) : n9_open(path, omode);
+	if(fd<0) return 0;
+	FILE *f=malloc(sizeof *f); if(!f){ n9_close((int)fd); return 0; }
+	f->fd=(int)fd; f->ungot=-1; f->eof=0; f->err=0;
+	if(append){ long long r; n9_seek(&r,(int)fd,0,2); }
+	return f;
+}
+FILE *fdopen(int fd, const char *mode){ (void)mode; FILE *f=malloc(sizeof *f); if(!f)return 0; f->fd=fd; f->ungot=-1; f->eof=0; f->err=0; return f; }
+FILE *freopen(const char *path, const char *mode, FILE *f){ if(!f)return 0; if(f->fd>2)n9_close(f->fd); FILE *nf=fopen(path,mode); if(!nf)return 0; f->fd=nf->fd; f->ungot=-1; f->eof=0; f->err=0; free(nf); return f; }
+int fclose(FILE *f){ if(!f) return 0; if(f==stdin||f==stdout||f==stderr) return 0; int fd=f->fd; free(f); return n9_close(fd)<0?-1:0; }
+long ftell(FILE *f){ long long r=0; if(n9_seek(&r,f->fd,0,1)<0) return -1; return (long)r; }
+long ftello(FILE *f){ return ftell(f); }
+int fseek(FILE *f, long off, int whence){ long long r; f->ungot=-1; f->eof=0; return n9_seek(&r,f->fd,off,whence)<0?-1:0; }
+int fseeko(FILE *f, long off, int whence){ return fseek(f,off,whence); }
+void rewind(FILE *f){ fseek(f,0,0); }
+int fgetpos(FILE *f, void *pos){ long *p=pos; *p=ftell(f); return 0; }
+int fsetpos(FILE *f, const void *pos){ const long *p=pos; return fseek(f,*p,0); }
+int setvbuf(FILE *f, char *b, int m, size_t s){ (void)f;(void)b;(void)m;(void)s; return 0; }
+void setbuf(FILE *f, char *b){ (void)f;(void)b; }

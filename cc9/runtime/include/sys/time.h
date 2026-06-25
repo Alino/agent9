@@ -8,6 +8,7 @@ struct timezone { int tz_minuteswest; int tz_dsttime; };
 extern "C" {
 #endif
 int gettimeofday(struct timeval *, void *);
+int utimes(const char *, const struct timeval *);
 #ifdef __cplusplus
 }
 #endif

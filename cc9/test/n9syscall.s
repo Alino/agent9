@@ -84,6 +84,87 @@ n9_close:
 	popq	%rbp
 	ret
 
+// long n9_create(const char *name, int omode, unsigned long perm)  CREATE=22.
+	.globl n9_create
+n9_create:
+	pushq	%rbp
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)      // name
+	movl	%esi, 16(%rsp)     // omode
+	movl	%edx, 24(%rsp)     // perm (DMDIR|0777 etc.)
+	movq	$22, %rbp
+	syscall
+	addq	$32, %rsp
+	popq	%rbp
+	ret
+
+// long n9_seek(long long *ret, int fd, long long off, int whence)  SEEK=39.
+	.globl n9_seek
+n9_seek:
+	pushq	%rbp
+	subq	$48, %rsp
+	movq	%rdi, 8(%rsp)      // ret ptr
+	movl	%esi, 16(%rsp)     // fd
+	movq	%rdx, 24(%rsp)     // off (vlong)
+	movl	%ecx, 32(%rsp)     // whence
+	movq	$39, %rbp
+	syscall
+	addq	$48, %rsp
+	popq	%rbp
+	ret
+
+// long n9_stat(const char *name, unsigned char *edir, int nedir)  STAT=42.
+	.globl n9_stat
+n9_stat:
+	pushq	%rbp
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	%rsi, 16(%rsp)
+	movl	%edx, 24(%rsp)
+	movq	$42, %rbp
+	syscall
+	addq	$32, %rsp
+	popq	%rbp
+	ret
+
+// long n9_fstat(int fd, unsigned char *edir, int nedir)  FSTAT=43.
+	.globl n9_fstat
+n9_fstat:
+	pushq	%rbp
+	subq	$32, %rsp
+	movl	%edi, 8(%rsp)
+	movq	%rsi, 16(%rsp)
+	movl	%edx, 24(%rsp)
+	movq	$43, %rbp
+	syscall
+	addq	$32, %rsp
+	popq	%rbp
+	ret
+
+// long n9_remove(const char *name)  REMOVE=25.
+	.globl n9_remove
+n9_remove:
+	pushq	%rbp
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	$25, %rbp
+	syscall
+	addq	$16, %rsp
+	popq	%rbp
+	ret
+
+// long n9_chdir(const char *path)  CHDIR=3.
+	.globl n9_chdir
+n9_chdir:
+	pushq	%rbp
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	$3, %rbp
+	syscall
+	addq	$16, %rsp
+	popq	%rbp
+	ret
+
 // long n9_sleep(long millisecs)   SLEEP=17 (sleep(0) yields the CPU)
 	.globl n9_sleep
 n9_sleep:
