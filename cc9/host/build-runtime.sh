@@ -33,14 +33,15 @@ base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc
 # targeted libc++ runtime objects
 lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O0 -w)
-for f in string stdexcept memory hash functional memory_resource system_error error_category valarray chrono expected exception; do
+for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected exception; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
-"$LLVM/clang++" "${base[@]}" -D_LIBCXXABI_BUILDING_LIBRARY \
-  -I "$LLVMSRC/libcxxabi/include" -I "$LLVMSRC/libcxxabi/src" -I "$LIBCXX" \
-  -isystem "$INC" -std=c++23 -DNDEBUG -O0 -w \
-  -c "$LLVMSRC/libcxxabi/src/stdlib_exception.cpp" -o "$O/abi_exc.o"
+# NB: libcxx/src/exception.cpp (in the loop above) is a strict superset of
+# libcxxabi's stdlib_exception.cpp — it provides the exception/bad_alloc/
+# bad_exception/bad_array_new_length destructors AND bad_typeid/bad_cast/
+# nested_exception/exception_ptr/terminate — so we do NOT also link
+# stdlib_exception.cpp (that would duplicate ~exception()).
 
 # rm first: `ar rcs` only inserts/replaces, never removes — a dropped object
 # would otherwise linger in the archive across rebuilds.

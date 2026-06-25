@@ -92,6 +92,16 @@ void *realloc(void*old,size_t n){
 void abort(void){ n9_exits("cc9: abort\n"); for(;;){} }
 void exit(int code){ n9_exits(code? "cc9: exit nonzero\n" : 0); for(;;){} }
 void _Exit(int code){ exit(code); }
+void quick_exit(int code){ exit(code); }
+int at_quick_exit(void (*f)(void)){ (void)f; return 0; }   /* no handler table */
+
+/* C signal surface (no POSIX delivery on cc9): track a handler table so
+ * signal()/raise() round-trip for the conformance tests; raise runs the
+ * handler if one is installed. */
+typedef void (*n9_sigh)(int);
+static n9_sigh n9_sigtab[32];
+n9_sigh signal(int s, n9_sigh h){ if(s<0||s>=32) return (n9_sigh)-1; n9_sigh o=n9_sigtab[s]; n9_sigtab[s]=h; return o; }
+int raise(int s){ if(s<0||s>=32) return -1; n9_sigh h=n9_sigtab[s]; if(h&&h!=(n9_sigh)1) h(s); return 0; }
 /* __atomic_is_lock_free(size, ptr): native scalar widths (<=16B) are lock-free
  * on amd64. Builtin name, so define via an __asm__ label (see __atomic_* below). */
 int cc9_atomic_is_lock_free(size_t n, const volatile void *p) __asm__("__atomic_is_lock_free");

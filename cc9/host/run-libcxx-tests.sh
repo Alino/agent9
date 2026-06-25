@@ -34,9 +34,12 @@ for t in $(echo "$sample" | head -"$N"); do
      || grep -qE "(UNSUPPORTED|XFAIL):[^/]*($miss)" "$t" \
      || grep -qE '// *REQUIRES:' "$t"; then
     skip=$((skip+1)); continue; fi
+  # Honor the test's ADDITIONAL_COMPILE_FLAGS (what upstream lit applies) — e.g.
+  # -D_LIBCPP_ENABLE_CXX20_REMOVED_* for tests of deprecated/removed features.
+  addf="$(grep -hE '// *ADDITIONAL_COMPILE_FLAGS:' "$t" | sed -E 's#.*ADDITIONAL_COMPILE_FLAGS:##' | tr ',\n' '  ')"
   if ! "$LLVM/clang++" --target=x86_64-unknown-none -nostdlib -DNDEBUG -std=c++23 -nostdinc++ \
         -isystem "$LIBCXX" -isystem "$INC" -I "$TST/support" -I "$(dirname "$t")" \
-        -fno-exceptions -fno-rtti -fno-threadsafe-statics -c "$t" -o /tmp/lt.o 2>/dev/null; then
+        -fno-exceptions -fno-rtti -fno-threadsafe-statics $addf -c "$t" -o /tmp/lt.o 2>/dev/null; then
     cfail=$((cfail+1)); failed="$failed C:$name"; continue; fi
   # *.compile.pass.cpp are compile-only conformance checks (no main): passing ==
   # compiling. Don't link/run them — they'd fail the link for lack of main.
