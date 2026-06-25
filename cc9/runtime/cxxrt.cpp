@@ -9,18 +9,17 @@ extern "C" void __cxa_pure_virtual()
 	n9_exits("cc9: pure virtual call\n");
 }
 
-// Deleting destructors reference operator delete even when we never heap-delete.
-// No heap yet -> no-op stubs (would call free() once we have an allocator).
-void operator delete(void *) noexcept {}
-void operator delete(void *, unsigned long) noexcept {}
-void operator delete[](void *) noexcept {}
-void operator delete[](void *, unsigned long) noexcept {}
-
-// Heap: operator new over the C malloc shim.
+// Heap: operator new/delete over the C allocator. delete MUST call free —
+// a no-op leaks every realloc until brk runs out (found via the test suite).
 extern "C" void *malloc(unsigned long);
+extern "C" void free(void *);
 void *operator new(unsigned long n) { return malloc(n); }
 void *operator new[](unsigned long n) { return malloc(n); }
 void *operator new(unsigned long n, void *p) noexcept { (void)n; return p; }
+void operator delete(void *p) noexcept { free(p); }
+void operator delete(void *p, unsigned long) noexcept { free(p); }
+void operator delete[](void *p) noexcept { free(p); }
+void operator delete[](void *p, unsigned long) noexcept { free(p); }
 
 // libc++ hardening / error path.
 namespace std { inline namespace __1 {
@@ -34,7 +33,7 @@ __attribute__((noreturn)) void __libcpp_verbose_abort(const char *, ...) {
 namespace std { enum class align_val_t : unsigned long {}; }
 void *operator new(unsigned long n, std::align_val_t) { return malloc(n); }
 void *operator new[](unsigned long n, std::align_val_t) { return malloc(n); }
-void operator delete(void *, std::align_val_t) noexcept {}
-void operator delete[](void *, std::align_val_t) noexcept {}
-void operator delete(void *, unsigned long, std::align_val_t) noexcept {}
-void operator delete[](void *, unsigned long, std::align_val_t) noexcept {}
+void operator delete(void *p, std::align_val_t) noexcept { free(p); }
+void operator delete[](void *p, std::align_val_t) noexcept { free(p); }
+void operator delete(void *p, unsigned long, std::align_val_t) noexcept { free(p); }
+void operator delete[](void *p, unsigned long, std::align_val_t) noexcept { free(p); }

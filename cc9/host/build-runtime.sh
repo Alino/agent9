@@ -18,7 +18,10 @@ LLVMSRC="${CC9_LLVMSRC:-$HOME/Projects/llvm-project}"
 INC="$CC9/runtime/include"
 O="/tmp/cc9-rt"; mkdir -p "$O" "$CC9/lib"
 
-base=(--target=x86_64-unknown-none -ffreestanding -nostdlib -fno-exceptions -fno-rtti -nostdinc++)
+# NB: no -ffreestanding — must match the user-code compile (cc9 wrapper drops it
+# for the `main` symbol), else std::string's out-of-line ABI mismatches the
+# header-instantiated one and over-SSO strings corrupt.
+base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc++)
 
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/test/n9syscall.s" -o "$O/n9syscall.o"
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/n9libc.c" -o "$O/n9libc.o"
@@ -27,14 +30,14 @@ base=(--target=x86_64-unknown-none -ffreestanding -nostdlib -fno-exceptions -fno
 
 # targeted libc++ runtime objects
 lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
-      -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -O2 -w)
+      -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++20 -DNDEBUG -O0 -w)
 for f in string stdexcept memory hash functional; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
 "$LLVM/clang++" "${base[@]}" -D_LIBCXXABI_BUILDING_LIBRARY \
   -I "$LLVMSRC/libcxxabi/include" -I "$LLVMSRC/libcxxabi/src" -I "$LIBCXX" \
-  -isystem "$INC" -std=c++23 -O2 -w \
+  -isystem "$INC" -std=c++20 -DNDEBUG -O0 -w \
   -c "$LLVMSRC/libcxxabi/src/stdlib_exception.cpp" -o "$O/abi_exc.o"
 
 "$LLVM/llvm-ar" rcs "$CC9/lib/libcc9cxx.a" "$O"/*.o
