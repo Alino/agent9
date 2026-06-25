@@ -22,8 +22,15 @@ typedef union header { struct { union header *ptr; size_t size; } s; long a; } H
 static Header kr_base;
 static Header *kr_freep = 0;
 
+/* aligned_alloc (C11) stamps this sentinel at ap[-1] and the real malloc base
+ * at ap[-2], so plain free() can recover and release the underlying block. The
+ * value is huge; a normal block's ap[-1] is a small Header.size unit count, so
+ * there is no collision. */
+#define CC9_ALIGN_MAGIC 0xA11C9EDA11C9EDUL
+
 void free(void *ap){
 	if(!ap) return;
+	if(((unsigned long*)ap)[-1] == CC9_ALIGN_MAGIC) ap = *(void**)((char*)ap - 16);
 	Header *bp = (Header*)ap - 1, *p;
 	for(p = kr_freep; !(bp > p && bp < p->s.ptr); p = p->s.ptr)
 		if(p >= p->s.ptr && (bp > p || bp < p->s.ptr)) break;
@@ -55,6 +62,22 @@ void *malloc(size_t nbytes){
 		}
 		if(p == kr_freep && (p = kr_morecore(nunits)) == 0) return 0;
 	}
+}
+/* aligned_alloc(alignment, size) (C11). malloc is 16-byte aligned, so small
+ * alignments are free; larger ones over-allocate and align, recording the base
+ * + sentinel so plain free() reclaims it (see free above). */
+void *aligned_alloc(size_t al, size_t size){
+	if(al <= 16) return malloc(size);
+	char *base = malloc(size + al + 16);
+	if(!base) return 0;
+	unsigned long a = ((unsigned long)base + 16 + al - 1) & ~(al - 1);
+	*(void**)(a - 16) = base;
+	((unsigned long*)a)[-1] = CC9_ALIGN_MAGIC;
+	return (void*)a;
+}
+int posix_memalign(void **out, size_t al, size_t size){
+	void *p = aligned_alloc(al < 16 ? 16 : al, size);
+	if(!p) return 12 /*ENOMEM*/; *out = p; return 0;
 }
 void *calloc(size_t a,size_t b){ size_t n=a*b; char*p=malloc(n); if(p) for(size_t i=0;i<n;i++)p[i]=0; return p; }
 void *realloc(void*old,size_t n){

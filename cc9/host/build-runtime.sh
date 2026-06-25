@@ -16,7 +16,7 @@ LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-build/include/c++/v1}"
 LLVMSRC="${CC9_LLVMSRC:-$HOME/Projects/llvm-project}"
 INC="$CC9/runtime/include"
-O="/tmp/cc9-rt"; mkdir -p "$O" "$CC9/lib"
+O="/tmp/cc9-rt"; rm -rf "$O"; mkdir -p "$O" "$CC9/lib"  # clean: stale .o would re-enter the archive via the *.o glob
 
 # NB: no -ffreestanding — must match the user-code compile (cc9 wrapper drops it
 # for the `main` symbol), else std::string's out-of-line ABI mismatches the
@@ -31,7 +31,7 @@ base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc
 # targeted libc++ runtime objects
 lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++20 -DNDEBUG -O0 -w)
-for f in string stdexcept memory hash functional; do
+for f in string stdexcept memory hash functional memory_resource; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
@@ -40,5 +40,8 @@ done
   -isystem "$INC" -std=c++20 -DNDEBUG -O0 -w \
   -c "$LLVMSRC/libcxxabi/src/stdlib_exception.cpp" -o "$O/abi_exc.o"
 
+# rm first: `ar rcs` only inserts/replaces, never removes — a dropped object
+# would otherwise linger in the archive across rebuilds.
+rm -f "$CC9/lib/libcc9cxx.a"
 "$LLVM/llvm-ar" rcs "$CC9/lib/libcc9cxx.a" "$O"/*.o
 echo "built $CC9/lib/libcc9cxx.a ($("$LLVM/llvm-ar" t "$CC9/lib/libcc9cxx.a" | wc -l | tr -d ' ') objects)"
