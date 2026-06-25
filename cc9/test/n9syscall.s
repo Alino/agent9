@@ -42,3 +42,44 @@ n9_brk:
 	addq	$16, %rsp
 	popq	%rbp
 	ret
+
+// long n9_open(const char *name, int mode)   OPEN=14. SysV: rdi=name, esi=mode.
+	.globl n9_open
+n9_open:
+	pushq	%rbp
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)      // name @ rsp+8
+	movl	%esi, 16(%rsp)     // mode @ rsp+16
+	movq	$14, %rbp
+	syscall
+	addq	$32, %rsp
+	popq	%rbp
+	ret
+
+// long n9_pread(int fd, void *buf, long n, long long off)  PREAD=50.
+//   SysV in: edi=fd, rsi=buf, edx=n, rcx=off
+	.globl n9_pread
+n9_pread:
+	pushq	%rbp
+	subq	$48, %rsp
+	movl	%edi, 8(%rsp)      // fd  @ rsp+8
+	movq	%rsi, 16(%rsp)     // buf @ rsp+16
+	movl	%edx, 24(%rsp)     // n   @ rsp+24
+	movq	%rcx, 32(%rsp)     // off @ rsp+32
+	movq	$50, %rbp
+	syscall
+	addq	$48, %rsp
+	popq	%rbp
+	ret
+
+// long n9_close(int fd)   CLOSE=4. SysV: edi=fd.
+	.globl n9_close
+n9_close:
+	pushq	%rbp
+	subq	$16, %rsp
+	movl	%edi, 8(%rsp)
+	movq	$4, %rbp
+	syscall
+	addq	$16, %rsp
+	popq	%rbp
+	ret

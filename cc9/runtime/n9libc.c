@@ -95,6 +95,21 @@ void *memmove(void*d,const void*s,size_t n){ char*a=d; const char*b=s; if(a<b)fo
 void *memset(void*d,int c,size_t n){ char*a=d; for(size_t i=0;i<n;i++)a[i]=(char)c; return d; }
 int memcmp(const void*x,const void*y,size_t n){ const unsigned char*a=x,*b=y; for(size_t i=0;i<n;i++) if(a[i]!=b[i]) return a[i]-b[i]; return 0; }
 size_t strlen(const char*s){ size_t n=0; while(s[n])n++; return n; }
+char *strcpy(char*d,const char*s){ char*r=d; while((*d++=*s++)); return r; }
+char *strncpy(char*d,const char*s,size_t n){ char*r=d; while(n&&(*d=*s)){d++;s++;n--;} while(n--)*d++=0; return r; }
+char *strcat(char*d,const char*s){ char*r=d; while(*d)d++; while((*d++=*s++)); return r; }
+char *strncat(char*d,const char*s,size_t n){ char*r=d; while(*d)d++; while(n&&*s){*d++=*s++;n--;} *d=0; return r; }
+int strcmp(const char*a,const char*b){ while(*a&&*a==*b){a++;b++;} return (unsigned char)*a-(unsigned char)*b; }
+int strncmp(const char*a,const char*b,size_t n){ while(n&&*a&&*a==*b){a++;b++;n--;} return n?(unsigned char)*a-(unsigned char)*b:0; }
+int strcoll(const char*a,const char*b){ return strcmp(a,b); }            /* C locale */
+size_t strxfrm(char*d,const char*s,size_t n){ size_t l=strlen(s),i; if(n){ for(i=0;i<n-1&&i<l;i++)d[i]=s[i]; d[i]=0; } return l; }
+char *strchr(const char*s,int c){ for(;;s++){ if(*s==(char)c) return (char*)s; if(!*s) return 0; } }
+char *strrchr(const char*s,int c){ const char*r=0; for(;;s++){ if(*s==(char)c)r=s; if(!*s) return (char*)r; } }
+char *strstr(const char*h,const char*n){ if(!*n) return (char*)h; for(;*h;h++){ const char*a=h,*b=n; while(*a&&*b&&*a==*b){a++;b++;} if(!*b) return (char*)h; } return 0; }
+size_t strspn(const char*s,const char*set){ size_t n=0; for(;s[n];n++){ const char*p=set; while(*p&&*p!=s[n])p++; if(!*p) break; } return n; }
+size_t strcspn(const char*s,const char*set){ size_t n=0; for(;s[n];n++){ const char*p=set; while(*p&&*p!=s[n])p++; if(*p) break; } return n; }
+char *strpbrk(const char*s,const char*set){ for(;*s;s++){ const char*p=set; while(*p){ if(*p==*s) return (char*)s; p++; } } return 0; }
+char *strtok(char*s,const char*sep){ static char*save; if(!s)s=save; if(!s)return 0; s+=strspn(s,sep); if(!*s){save=0;return 0;} char*t=s+strcspn(s,sep); if(*t){*t=0;save=t+1;}else save=0; return s; }
 
 /* strerror: common POSIX errno messages (enough for <system_error>'s
  * generic_category().message()). Unknown codes get a generic string. */
@@ -180,6 +195,42 @@ int snprintf(char *out, size_t n, const char *f, ...){ __builtin_va_list ap; __b
 int abs(int x){ return x<0?-x:x; }
 long labs(long x){ return x<0?-x:x; }
 long long llabs(long long x){ return x<0?-x:x; }
+
+/* Wall-clock time via Plan 9's /dev/bintime: reading it yields 8 bytes of
+ * big-endian nanoseconds since the Unix epoch. Backs gettimeofday/clock_gettime
+ * (what libc++'s <chrono> system/steady clocks call). */
+extern long n9_open(const char*, int);
+extern long n9_pread(int, void*, long, long long);
+extern long n9_close(int);
+static unsigned long long n9_nsec(void){
+	int fd = (int)n9_open("/dev/bintime", 0 /*OREAD*/);
+	if(fd < 0) return 0;
+	unsigned char b[8];
+	long n = n9_pread(fd, b, 8, -1);
+	n9_close(fd);
+	if(n < 8) return 0;
+	unsigned long long ns = 0; int i;
+	for(i=0;i<8;i++) ns = (ns<<8) | b[i];   /* big-endian */
+	return ns;
+}
+int gettimeofday(void *tvp, void *tz){
+	(void)tz;
+	struct { long tv_sec, tv_usec; } *tv = tvp;
+	unsigned long long ns = n9_nsec();
+	tv->tv_sec = (long)(ns / 1000000000ULL);
+	tv->tv_usec = (long)((ns % 1000000000ULL) / 1000);
+	return 0;
+}
+struct n9_timespec { long tv_sec, tv_nsec; };
+int clock_gettime(int clk, void *tsp){
+	(void)clk;
+	struct n9_timespec *ts = tsp;
+	unsigned long long ns = n9_nsec();
+	ts->tv_sec = (long)(ns / 1000000000ULL);
+	ts->tv_nsec = (long)(ns % 1000000000ULL);
+	return 0;
+}
+long time(long *t){ long s = (long)(n9_nsec()/1000000000ULL); if(t)*t=s; return s; }
 
 /* fenv: cc9 keeps FP traps masked (n9_cli sets the FCR once) and the tests
  * don't inspect IEEE exception flags, so openlibm's fenv hooks are no-ops. */
