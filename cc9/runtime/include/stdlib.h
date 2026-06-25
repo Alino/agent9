@@ -21,6 +21,8 @@ int abs(int); long labs(long); long long llabs(long long);
 div_t div(int, int); ldiv_t ldiv(long, long); lldiv_t lldiv(long long, long long);
 int atoi(const char *); long atol(const char *);
 void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
+int mblen(const char *, size_t); int mbtowc(wchar_t *, const char *, size_t); int wctomb(char *, wchar_t);
+size_t mbstowcs(wchar_t *, const char *, size_t); size_t wcstombs(char *, const wchar_t *, size_t);
 #ifdef __cplusplus
 }
 #endif
