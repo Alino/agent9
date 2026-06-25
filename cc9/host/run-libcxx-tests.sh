@@ -45,7 +45,7 @@ for t in $(echo "$sample" | head -"$N"); do
   addf="$(grep -hE '// *ADDITIONAL_COMPILE_FLAGS(\([^)]*\))?:' "$t" | sed -E 's#.*ADDITIONAL_COMPILE_FLAGS(\([^)]*\))?: *##; s#-fconstexpr-ops-limit=[0-9]+##g' | tr ',\n' '  ')"
   if ! "$LLVM/clang++" --target=x86_64-unknown-none -nostdlib -DNDEBUG -std=c++23 -nostdinc++ \
         -isystem "$LIBCXX" -isystem "$INC" -I "$TST/support" -I "$(dirname "$t")" \
-        -fno-exceptions -frtti -fno-threadsafe-statics -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls $addf -c "$t" -o /tmp/lt.o 2>/dev/null; then
+        -fexceptions -frtti -funwind-tables -fno-pic -fno-threadsafe-statics -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls $addf -c "$t" -o /tmp/lt.o 2>/dev/null; then
     cfail=$((cfail+1)); failed="$failed C:$name"; continue; fi
   # *.compile.pass.cpp are compile-only conformance checks (no main): passing ==
   # compiling. Don't link/run them — they'd fail the link for lack of main.

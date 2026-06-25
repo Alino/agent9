@@ -199,5 +199,12 @@ void *__emutls_get_address(void *control){
 	return m;
 }
 
+/* rwlock = plain mutex (readers serialize; fine for libunwind's FDE cache). */
+int pthread_rwlock_init(pthread_rwlock_t *l, const void *a){ return pthread_mutex_init(l,(const pthread_mutexattr_t*)a); }
+int pthread_rwlock_destroy(pthread_rwlock_t *l){ return pthread_mutex_destroy(l); }
+int pthread_rwlock_rdlock(pthread_rwlock_t *l){ return pthread_mutex_lock(l); }
+int pthread_rwlock_wrlock(pthread_rwlock_t *l){ return pthread_mutex_lock(l); }
+int pthread_rwlock_unlock(pthread_rwlock_t *l){ return pthread_mutex_unlock(l); }
+
 int sched_yield(void){ n9_sleep(0); return 0; }
 int nanosleep(const struct timespec *req, struct timespec *rem){ (void)rem; if(req) n9_sleep(req->tv_sec*1000 + req->tv_nsec/1000000); return 0; }

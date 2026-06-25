@@ -14,14 +14,8 @@ extern "C" void __cxa_pure_virtual()
 	n9_exits("cc9: pure virtual call\n");
 }
 
-// libcxxabi's internal abort (used by the RTTI/exception runtime).
-extern "C" __attribute__((noreturn)) void __abort_message(const char *, ...) {
-	n9_exits("cc9: abort_message\n"); __builtin_unreachable();
-}
-// RTTI failure throwers — under -fno-exceptions they abort (typeid on a null
-// polymorphic deref / a bad reference dynamic_cast).
-extern "C" __attribute__((noreturn)) void __cxa_bad_typeid() { n9_exits("cc9: bad_typeid\n"); __builtin_unreachable(); }
-extern "C" __attribute__((noreturn)) void __cxa_bad_cast() { n9_exits("cc9: bad_cast\n"); __builtin_unreachable(); }
+// (__abort_message, __cxa_bad_typeid, __cxa_bad_cast now come from the real
+// libcxxabi runtime — exceptions are enabled.)
 
 // Thread-safe-static init guards (Itanium ABI). cc9 is single-threaded, so the
 // guard's first byte is just an "initialized" flag — the classic minimal impl.
@@ -38,8 +32,8 @@ extern "C" void __cxa_guard_abort(unsigned long long *g) { (void)g; }
 // with a duplicate symbol. Weak makes ours the default only.
 #define CC9_WEAK __attribute__((weak))
 
-CC9_WEAK void *operator new(unsigned long n) { return malloc(n); }
-CC9_WEAK void *operator new[](unsigned long n) { return malloc(n); }
+CC9_WEAK void *operator new(unsigned long n) { void *p = malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
+CC9_WEAK void *operator new[](unsigned long n) { void *p = malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
 // (placement new/delete come from <new>, inline — don't redefine.)
 CC9_WEAK void operator delete(void *p) noexcept { free(p); }
 CC9_WEAK void operator delete(void *p, unsigned long) noexcept { free(p); }
@@ -66,14 +60,17 @@ CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a, const std::no
 CC9_WEAK void operator delete(void *p, std::align_val_t, const std::nothrow_t &) noexcept { free(p); }
 CC9_WEAK void operator delete[](void *p, std::align_val_t, const std::nothrow_t &) noexcept { free(p); }
 
-// The new-handler machinery + the std::nothrow object (normally in libc++abi's
-// new.cpp, which we don't link — it drags in __lcxx_override).
+// The std::nothrow object (set/get_new_handler now come from libcxxabi).
+namespace std { const nothrow_t nothrow{}; }
+
+// std::uncaught_exceptions (was in libc++ exception.cpp, which libcxxabi
+// replaces) + a __cxa_demangle stub (only used to prettify terminate messages).
+extern "C" unsigned __cxa_uncaught_exceptions() noexcept;
 namespace std {
-const nothrow_t nothrow{};
-static new_handler g_new_handler = nullptr;
-new_handler set_new_handler(new_handler h) noexcept { new_handler o = g_new_handler; g_new_handler = h; return o; }
-new_handler get_new_handler() noexcept { return g_new_handler; }
+int uncaught_exceptions() noexcept { return (int)__cxa_uncaught_exceptions(); }
+bool uncaught_exception() noexcept { return uncaught_exceptions() > 0; }
 }
+extern "C" char *__cxa_demangle(const char *, char *, unsigned long *, int *status) { if (status) *status = -2; return nullptr; }
 
 // libc++ hardening / error paths.
 namespace std { inline namespace __1 {
@@ -85,7 +82,5 @@ __attribute__((noreturn)) void __libcpp_verbose_abort(const char *, ...) noexcep
 // std::__throw_bad_alloc() — allocation-failure path (in std, NOT __1). Under
 // -fno-exceptions it aborts. Provided here since we don't link new.cpp.
 namespace std {
-__attribute__((noreturn)) void __throw_bad_alloc() {
-	n9_exits("cc9: bad_alloc\n"); __builtin_unreachable();
-}
+__attribute__((noreturn)) void __throw_bad_alloc() { throw bad_alloc(); }
 }

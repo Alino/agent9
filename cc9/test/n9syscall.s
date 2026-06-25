@@ -1,13 +1,41 @@
 // Plan 9 amd64 syscall thunks. Marshal System V register args (what clang
 // emits) into the Plan 9 ABI: args on the stack at rsp+8.., number in rbp,
 // SYSCALL. Return value comes back in rax (matches SysV return reg).
+//
+// CRITICAL: the Plan 9 amd64 SYSCALL path does NOT preserve the SysV
+// callee-saved registers — empirically it clobbers %rbx, %rbp and %r13 (the
+// kernel leaves kernel-space values in them; see test/regprobe.s). SysV code
+// (clang) keeps live values in those registers across calls, so every thunk
+// must save/restore all callee-saved regs (rbx,rbp,r12,r13,r14,r15) around the
+// syscall. (rbp also carries the syscall number, so it must be saved anyway.)
+// Missing this corrupts e.g. the `this` pointer across a malloc/pwrite syscall.
 	.text
+
+// Save/restore all SysV callee-saved registers. 6 pushes = 48 bytes (16-aligned
+// neutral); args are addressed relative to rsp AFTER the per-thunk subq, so the
+// 8(%rsp).. offsets below are unaffected by these pushes.
+	.macro SAVE_CALLEE
+	pushq	%rbp
+	pushq	%rbx
+	pushq	%r12
+	pushq	%r13
+	pushq	%r14
+	pushq	%r15
+	.endm
+	.macro REST_CALLEE
+	popq	%r15
+	popq	%r14
+	popq	%r13
+	popq	%r12
+	popq	%rbx
+	popq	%rbp
+	.endm
 
 // long n9_pwrite(int fd, const void *buf, long n, long long off)
 //   SysV in: edi=fd, rsi=buf, edx=n, rcx=off
 	.globl n9_pwrite
 n9_pwrite:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$48, %rsp
 	movl	%edi, 8(%rsp)      // fd     @ rsp+8
 	movq	%rsi, 16(%rsp)     // buf    @ rsp+16
@@ -16,51 +44,51 @@ n9_pwrite:
 	movq	$51, %rbp          // PWRITE
 	syscall
 	addq	$48, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // void n9_exits(const char *msg)   SysV in: rdi=msg
 	.globl n9_exits
 n9_exits:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$16, %rsp
 	movq	%rdi, 8(%rsp)      // msg @ rsp+8
 	movq	$8, %rbp           // EXITS
 	syscall
 	addq	$16, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_brk(void *addr)  — BRK_ = 24; set the program break. SysV: rdi=addr.
 	.globl n9_brk
 n9_brk:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$16, %rsp
 	movq	%rdi, 8(%rsp)
 	movq	$24, %rbp
 	syscall
 	addq	$16, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_open(const char *name, int mode)   OPEN=14. SysV: rdi=name, esi=mode.
 	.globl n9_open
 n9_open:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$32, %rsp
 	movq	%rdi, 8(%rsp)      // name @ rsp+8
 	movl	%esi, 16(%rsp)     // mode @ rsp+16
 	movq	$14, %rbp
 	syscall
 	addq	$32, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_pread(int fd, void *buf, long n, long long off)  PREAD=50.
 //   SysV in: edi=fd, rsi=buf, edx=n, rcx=off
 	.globl n9_pread
 n9_pread:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$48, %rsp
 	movl	%edi, 8(%rsp)      // fd  @ rsp+8
 	movq	%rsi, 16(%rsp)     // buf @ rsp+16
@@ -69,25 +97,25 @@ n9_pread:
 	movq	$50, %rbp
 	syscall
 	addq	$48, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_close(int fd)   CLOSE=4. SysV: edi=fd.
 	.globl n9_close
 n9_close:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$16, %rsp
 	movl	%edi, 8(%rsp)
 	movq	$4, %rbp
 	syscall
 	addq	$16, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_create(const char *name, int omode, unsigned long perm)  CREATE=22.
 	.globl n9_create
 n9_create:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$32, %rsp
 	movq	%rdi, 8(%rsp)      // name
 	movl	%esi, 16(%rsp)     // omode
@@ -95,13 +123,13 @@ n9_create:
 	movq	$22, %rbp
 	syscall
 	addq	$32, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_seek(long long *ret, int fd, long long off, int whence)  SEEK=39.
 	.globl n9_seek
 n9_seek:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$48, %rsp
 	movq	%rdi, 8(%rsp)      // ret ptr
 	movl	%esi, 16(%rsp)     // fd
@@ -110,13 +138,13 @@ n9_seek:
 	movq	$39, %rbp
 	syscall
 	addq	$48, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_stat(const char *name, unsigned char *edir, int nedir)  STAT=42.
 	.globl n9_stat
 n9_stat:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$32, %rsp
 	movq	%rdi, 8(%rsp)
 	movq	%rsi, 16(%rsp)
@@ -124,13 +152,13 @@ n9_stat:
 	movq	$42, %rbp
 	syscall
 	addq	$32, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_fstat(int fd, unsigned char *edir, int nedir)  FSTAT=43.
 	.globl n9_fstat
 n9_fstat:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$32, %rsp
 	movl	%edi, 8(%rsp)
 	movq	%rsi, 16(%rsp)
@@ -138,37 +166,37 @@ n9_fstat:
 	movq	$43, %rbp
 	syscall
 	addq	$32, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_remove(const char *name)  REMOVE=25.
 	.globl n9_remove
 n9_remove:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$16, %rsp
 	movq	%rdi, 8(%rsp)
 	movq	$25, %rbp
 	syscall
 	addq	$16, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_chdir(const char *path)  CHDIR=3.
 	.globl n9_chdir
 n9_chdir:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$16, %rsp
 	movq	%rdi, 8(%rsp)
 	movq	$3, %rbp
 	syscall
 	addq	$16, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_wstat(const char *name, unsigned char *edir, int nedir)  WSTAT=44.
 	.globl n9_wstat
 n9_wstat:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$32, %rsp
 	movq	%rdi, 8(%rsp)
 	movq	%rsi, 16(%rsp)
@@ -176,13 +204,13 @@ n9_wstat:
 	movq	$44, %rbp
 	syscall
 	addq	$32, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_fwstat(int fd, unsigned char *edir, int nedir)  FWSTAT=45.
 	.globl n9_fwstat
 n9_fwstat:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$32, %rsp
 	movl	%edi, 8(%rsp)
 	movq	%rsi, 16(%rsp)
@@ -190,13 +218,13 @@ n9_fwstat:
 	movq	$45, %rbp
 	syscall
 	addq	$32, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_fd2path(int fd, char *buf, int nbuf)  FD2PATH=23.
 	.globl n9_fd2path
 n9_fd2path:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$32, %rsp
 	movl	%edi, 8(%rsp)
 	movq	%rsi, 16(%rsp)
@@ -204,45 +232,45 @@ n9_fd2path:
 	movq	$23, %rbp
 	syscall
 	addq	$32, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_sleep(long millisecs)   SLEEP=17 (sleep(0) yields the CPU)
 	.globl n9_sleep
 n9_sleep:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$16, %rsp
 	movq	%rdi, 8(%rsp)
 	movq	$17, %rbp
 	syscall
 	addq	$16, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // int n9_semacquire(int *addr, int block)   SEMACQUIRE=37
 	.globl n9_semacquire
 n9_semacquire:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$24, %rsp
 	movq	%rdi, 8(%rsp)      // addr
 	movl	%esi, 16(%rsp)     // block
 	movq	$37, %rbp
 	syscall
 	addq	$24, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // int n9_semrelease(int *addr, int count)   SEMRELEASE=38
 	.globl n9_semrelease
 n9_semrelease:
-	pushq	%rbp
+	SAVE_CALLEE
 	subq	$24, %rsp
 	movq	%rdi, 8(%rsp)
 	movl	%esi, 16(%rsp)
 	movq	$38, %rbp
 	syscall
 	addq	$24, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 
 // long n9_rfork_thread(void *stacktop, void (*fn)(void*), void *arg)
@@ -266,7 +294,7 @@ n9_rfork_thread:                  // rdi=stacktop, rsi=fn, rdx=arg
 	movq	%rdi, n9_th_stack(%rip)
 	movq	%rsi, n9_th_fn(%rip)
 	movq	%rdx, n9_th_arg(%rip)
-	pushq	%rbp
+	SAVE_CALLEE                // parent must get rbx/r13/... back intact
 	subq	$16, %rsp
 	movl	$112, 8(%rsp)      // RFPROC|RFMEM|RFNOWAIT
 	movq	$19, %rbp          // RFORK
@@ -274,7 +302,7 @@ n9_rfork_thread:                  // rdi=stacktop, rsi=fn, rdx=arg
 	testq	%rax, %rax         // rax==0 in child; test touches no stack
 	jz	1f
 	addq	$16, %rsp
-	popq	%rbp
+	REST_CALLEE
 	ret
 1:	// child: read the handoff from shared memory, switch stack, call fn(arg)
 	movq	n9_th_stack(%rip), %rsp

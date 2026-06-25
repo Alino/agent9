@@ -24,7 +24,7 @@ O="/tmp/cc9-rt"; rm -rf "$O"; mkdir -p "$O" "$CC9/lib"  # clean: stale .o would 
 # NB: no -ffreestanding — must match the user-code compile (cc9 wrapper drops it
 # for the `main` symbol), else std::string's out-of-line ABI mismatches the
 # header-instantiated one and over-SSO strings corrupt.
-base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -frtti -nostdinc++ -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls)
+base=(--target=x86_64-unknown-none -nostdlib -fexceptions -frtti -funwind-tables -fno-pic -nostdinc++ -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls)
 
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/test/n9syscall.s" -o "$O/n9syscall.o"
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/runtime/setjmp.s" -o "$O/setjmp.o"
@@ -38,13 +38,12 @@ base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -frtti -nostdinc++ 
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -O2 -c "$CC9/runtime/int128.c" -o "$O/int128.o"
 "$LLVM/clang++" "${base[@]}" -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
-"$LLVM/clang++" "${base[@]}" -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/typeinfo_min.cpp" -o "$O/typeinfo_min.o"
 "$LLVM/clang" "${base[@]}" -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"
 
 # targeted libc++ runtime objects
 lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
-      -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O0 -w)
-for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected exception locale ios iostream ostream regex thread mutex mutex_destructor condition_variable condition_variable_destructor shared_mutex future atomic barrier; do
+      -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O1 -w)
+for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected locale ios iostream ostream regex thread mutex mutex_destructor condition_variable condition_variable_destructor shared_mutex future atomic barrier; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
@@ -61,15 +60,26 @@ for ff in operations directory_iterator directory_entry path filesystem_error; d
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/ios.instantiations.cpp" -o "$O/lcx_iosinst.o"
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/call_once.cpp" -o "$O/lcx_callonce.o"
-# libcxxabi RTTI runtime: __dynamic_cast + the __class_type_info vtables.
-"$LLVM/clang++" "${base[@]}" -D_LIBCXXABI_BUILDING_LIBRARY -I "$LLVMSRC/libcxxabi/include" \
-  -I "$LLVMSRC/libcxxabi/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O0 -w \
-  -c "$LLVMSRC/libcxxabi/src/private_typeinfo.cpp" -o "$O/abi_typeinfo.o"
-# NB: libcxx/src/exception.cpp (in the loop above) is a strict superset of
-# libcxxabi's stdlib_exception.cpp — it provides the exception/bad_alloc/
-# bad_exception/bad_array_new_length destructors AND bad_typeid/bad_cast/
-# nested_exception/exception_ptr/terminate — so we do NOT also link
-# stdlib_exception.cpp (that would duplicate ~exception()).
+# --- libcxxabi exception + RTTI runtime + the DWARF unwinder (replaces libc++
+# exception.cpp). DWARF (clang's well-supported x86_64 path; SJLJ codegen is
+# buggy on x86_64). The bare-metal unwinder finds .eh_frame via linker symbols
+# __eh_frame_start/end (no dynamic loader), so a.out works. ---
+abix=("${base[@]}" -D_LIBCXXABI_BUILDING_LIBRARY -D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS
+      -I "$LLVMSRC/libcxxabi/include" -I "$LLVMSRC/libcxxabi/src" -I "$LLVMSRC/libunwind/include"
+      -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O1 -w)
+for a in stdlib_exception stdlib_typeinfo private_typeinfo cxa_aux_runtime abort_message \
+         cxa_exception cxa_exception_storage cxa_personality cxa_handlers cxa_default_handlers \
+         cxa_vector fallback_malloc; do
+  "$LLVM/clang++" "${abix[@]}" -c "$LLVMSRC/libcxxabi/src/$a.cpp" -o "$O/abi_$a.o"
+done
+# libunwind DWARF core: the cursor+CFI interpreter, level-1 API, register save/restore.
+uwf=(--target=x86_64-unknown-none -nostdlib -I "$LLVMSRC/libunwind/include" -I "$LLVMSRC/libunwind/src"
+     -isystem "$INC" -D_LIBUNWIND_IS_NATIVE_ONLY -D_LIBUNWIND_IS_BAREMETAL -D_LIBUNWIND_SUPPORT_DWARF_UNWIND
+     -DNDEBUG -O1 -w -funwind-tables -fno-pic -femulated-tls)
+"$LLVM/clang++" "${uwf[@]}" -frtti -fno-exceptions -nostdinc++ -isystem "$LIBCXX" -c "$LLVMSRC/libunwind/src/libunwind.cpp" -o "$O/uw_core.o"
+"$LLVM/clang" "${uwf[@]}" -c "$LLVMSRC/libunwind/src/UnwindLevel1.c" -o "$O/uw_level1.o"
+"$LLVM/clang" "${uwf[@]}" -c "$LLVMSRC/libunwind/src/UnwindRegistersSave.S" -o "$O/uw_save.o"
+"$LLVM/clang" "${uwf[@]}" -c "$LLVMSRC/libunwind/src/UnwindRegistersRestore.S" -o "$O/uw_restore.o"
 
 # rm first: `ar rcs` only inserts/replaces, never removes — a dropped object
 # would otherwise linger in the archive across rebuilds.

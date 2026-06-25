@@ -11,6 +11,8 @@ typedef int pthread_key_t;
 typedef struct { int kind; } pthread_mutexattr_t;
 typedef struct { int unused; } pthread_condattr_t;
 typedef struct { int unused; } pthread_attr_t;
+typedef pthread_mutex_t pthread_rwlock_t;   /* a plain mutex (readers serialize) */
+#define PTHREAD_RWLOCK_INITIALIZER {1,0,0,0}
 #define PTHREAD_MUTEX_INITIALIZER {1,0,0,0}
 #define PTHREAD_COND_INITIALIZER {0,0,1}
 #define PTHREAD_ONCE_INIT 0
@@ -46,6 +48,11 @@ int pthread_key_create(pthread_key_t *, void (*)(void *));
 int pthread_key_delete(pthread_key_t);
 void *pthread_getspecific(pthread_key_t);
 int pthread_setspecific(pthread_key_t, const void *);
+int pthread_rwlock_init(pthread_rwlock_t *, const void *);
+int pthread_rwlock_destroy(pthread_rwlock_t *);
+int pthread_rwlock_rdlock(pthread_rwlock_t *);
+int pthread_rwlock_wrlock(pthread_rwlock_t *);
+int pthread_rwlock_unlock(pthread_rwlock_t *);
 int sched_yield(void);
 int nanosleep(const struct timespec *, struct timespec *);
 #ifdef __cplusplus

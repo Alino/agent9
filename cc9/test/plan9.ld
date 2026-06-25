@@ -12,6 +12,11 @@ SECTIONS {
 	. = 0x200028;
 	.text : {
 		*(.text) *(.text.*) *(.rodata) *(.rodata.*)
+		*(.gcc_except_table) *(.gcc_except_table.*)   /* exception LSDAs */
+		/* DWARF unwind tables, found at runtime via these symbols (bare-metal
+		 * libunwind — no dynamic loader on a.out). */
+		. = ALIGN(8);
+		__eh_frame_start = .; KEEP(*(.eh_frame)) __eh_frame_end = .;
 		. = ALIGN(8);
 		__init_array_start = .; *(.init_array) *(.init_array.*) __init_array_end = .;
 		__fini_array_start = .; *(.fini_array) *(.fini_array.*) __fini_array_end = .;
@@ -20,5 +25,8 @@ SECTIONS {
 	.data : { *(.data) *(.data.*) } :data
 	.bss  : { *(.bss) *(.bss.*) *(COMMON) } :data
 	end = .; _end = .;      /* heap (sbrk) starts here */
-	/DISCARD/ : { *(.comment) *(.note*) *(.eh_frame) *(.eh_frame_hdr) }
+	/* No .eh_frame_hdr index — libunwind scans .eh_frame linearly. */
+	__eh_frame_hdr_start = 0;
+	__eh_frame_hdr_end = 0;
+	/DISCARD/ : { *(.comment) *(.note*) *(.eh_frame_hdr) }
 }
