@@ -24,7 +24,7 @@ O="/tmp/cc9-rt"; rm -rf "$O"; mkdir -p "$O" "$CC9/lib"  # clean: stale .o would 
 # NB: no -ffreestanding — must match the user-code compile (cc9 wrapper drops it
 # for the `main` symbol), else std::string's out-of-line ABI mismatches the
 # header-instantiated one and over-SSO strings corrupt.
-base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc++ -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls)
+base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -frtti -nostdinc++ -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls)
 
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/test/n9syscall.s" -o "$O/n9syscall.o"
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/runtime/setjmp.s" -o "$O/setjmp.o"
@@ -38,6 +38,7 @@ base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -O2 -c "$CC9/runtime/int128.c" -o "$O/int128.o"
 "$LLVM/clang++" "${base[@]}" -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
+"$LLVM/clang++" "${base[@]}" -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/typeinfo_min.cpp" -o "$O/typeinfo_min.o"
 "$LLVM/clang" "${base[@]}" -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"
 
 # targeted libc++ runtime objects
@@ -50,6 +51,7 @@ done
 # float std::to_chars shim (integer to_chars is header-inline; charconv.cpp's
 # from_chars float side needs shared/fp_bits.h, absent from this checkout).
 "$LLVM/clang++" "${lcxx[@]}" -c "$CC9/runtime/tochars.cpp" -o "$O/tochars.o"
+"$LLVM/clang++" "${lcxx[@]}" -D_LIBCPP_USING_DEV_RANDOM -c "$LLVMSRC/libcxx/src/random.cpp" -o "$O/lcx_random.o"
 for r in d2s f2s d2fixed; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/ryu/$r.cpp" -o "$O/lcx_ryu_$r.o"
 done
@@ -59,6 +61,10 @@ for ff in operations directory_iterator directory_entry path filesystem_error; d
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/ios.instantiations.cpp" -o "$O/lcx_iosinst.o"
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/call_once.cpp" -o "$O/lcx_callonce.o"
+# libcxxabi RTTI runtime: __dynamic_cast + the __class_type_info vtables.
+"$LLVM/clang++" "${base[@]}" -D_LIBCXXABI_BUILDING_LIBRARY -I "$LLVMSRC/libcxxabi/include" \
+  -I "$LLVMSRC/libcxxabi/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O0 -w \
+  -c "$LLVMSRC/libcxxabi/src/private_typeinfo.cpp" -o "$O/abi_typeinfo.o"
 # NB: libcxx/src/exception.cpp (in the loop above) is a strict superset of
 # libcxxabi's stdlib_exception.cpp — it provides the exception/bad_alloc/
 # bad_exception/bad_array_new_length destructors AND bad_typeid/bad_cast/

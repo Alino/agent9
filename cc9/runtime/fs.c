@@ -44,7 +44,9 @@ static void dir_to_stat(const unsigned char *b, struct stat *st){
 	st->st_blocks = (st->st_size + 511) / 512;
 }
 
+static int streq(const char *a, const char *b){ while(*a&&*a==*b){a++;b++;} return *a==*b; }
 int open(const char *path, int flags, ...){
+	if(streq(path,"/dev/urandom")) path="/dev/random";   /* Plan 9 entropy source */
 	int omode = flags & O_ACCMODE;        /* OREAD/OWRITE/ORDWR == 0/1/2 */
 	if(flags & O_TRUNC) omode |= OTRUNC;
 	long fd;

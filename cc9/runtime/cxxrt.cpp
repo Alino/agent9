@@ -14,6 +14,15 @@ extern "C" void __cxa_pure_virtual()
 	n9_exits("cc9: pure virtual call\n");
 }
 
+// libcxxabi's internal abort (used by the RTTI/exception runtime).
+extern "C" __attribute__((noreturn)) void __abort_message(const char *, ...) {
+	n9_exits("cc9: abort_message\n"); __builtin_unreachable();
+}
+// RTTI failure throwers — under -fno-exceptions they abort (typeid on a null
+// polymorphic deref / a bad reference dynamic_cast).
+extern "C" __attribute__((noreturn)) void __cxa_bad_typeid() { n9_exits("cc9: bad_typeid\n"); __builtin_unreachable(); }
+extern "C" __attribute__((noreturn)) void __cxa_bad_cast() { n9_exits("cc9: bad_cast\n"); __builtin_unreachable(); }
+
 // Thread-safe-static init guards (Itanium ABI). cc9 is single-threaded, so the
 // guard's first byte is just an "initialized" flag — the classic minimal impl.
 extern "C" int __cxa_guard_acquire(unsigned long long *g) { return !*(char *)g; }
