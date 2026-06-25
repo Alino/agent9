@@ -1,12 +1,17 @@
 /* Lay out a freestanding x86_64 image for Plan 9 amd64 a.out conversion.
- * Text (code + rodata) at 0x200028 = UTZERO(0x200000) + 40-byte a.out header,
- * in its OWN PT_LOAD that does NOT include the ELF ehdr/phdrs (so the ELF stays
- * valid and objcopy -O binary yields exactly the bytes Plan 9 maps at 0x200028).
+ *   text (code+rodata) at 0x200028 = UTZERO(0x200000)+40-byte header, R+X.
+ *   data+bss at 0x400000 = roundup(text_end, 0x200000) — where the 9front
+ *   kernel maps the data segment for a small-text binary (verified on cirno).
+ * Each segment in its own PT_LOAD; the ELF ehdr/phdrs are NOT mapped, so the
+ * ELF stays valid and elf2aout.py repackages by vaddr.
  */
 ENTRY(_start)
-PHDRS { text PT_LOAD FLAGS(5); }   /* R+X */
+PHDRS { text PT_LOAD FLAGS(5); data PT_LOAD FLAGS(6); }
 SECTIONS {
 	. = 0x200028;
 	.text : { *(.text) *(.text.*) *(.rodata) *(.rodata.*) } :text
-	/DISCARD/ : { *(.comment) *(.note*) *(.eh_frame) *(.eh_frame_hdr) *(.data*) *(.bss*) }
+	. = 0x400000;
+	.data : { *(.data) *(.data.*) } :data
+	.bss  : { *(.bss) *(.bss.*) *(COMMON) } :data
+	/DISCARD/ : { *(.comment) *(.note*) *(.eh_frame) *(.eh_frame_hdr) }
 }
