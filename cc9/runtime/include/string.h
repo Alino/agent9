@@ -17,6 +17,9 @@ char *strstr(const char *, const char *); char *strpbrk(const char *, const char
 size_t strspn(const char *, const char *); size_t strcspn(const char *, const char *);
 char *strtok(char *, const char *);
 char *strerror(int);
+typedef void *locale_t;
+int strcoll_l(const char *, const char *, locale_t);
+size_t strxfrm_l(char *, const char *, size_t, locale_t);
 #ifdef __cplusplus
 }
 #endif

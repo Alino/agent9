@@ -1,6 +1,8 @@
 typedef unsigned long size_t;
 extern void n9_exits(const char*);
 static char *utoa_(unsigned long long v, char *p, int base);  /* defined below */
+double strtod(const char*, char**); float strtof(const char*, char**); long double strtold(const char*, char**);
+long strtol(const char*, char**, int); unsigned long strtoul(const char*, char**, int);
 
 /* Heap over the Plan 9 brk syscall: grows real memory from the kernel (no
  * fixed cap). `end` is the end of bss (linker symbol); the break starts there.
@@ -159,6 +161,61 @@ static char empty[] = "";
 static struct lconv n9_lconv = { dot, empty, empty, {empty,empty,empty,empty,empty,empty,empty} };
 struct lconv *localeconv(void){ return &n9_lconv; }
 char *setlocale(int c, const char *l){ (void)c; (void)l; return (char*)"C"; }
+/* minimal strftime for the time_put facet (common specifiers, C locale). */
+struct n9_tm { int tm_sec,tm_min,tm_hour,tm_mday,tm_mon,tm_year,tm_wday,tm_yday,tm_isdst; };
+static const char *n9_wday[]={"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
+static const char *n9_mon[]={"January","February","March","April","May","June","July","August","September","October","November","December"};
+size_t strftime(char *s, size_t max, const char *f, const struct n9_tm *t){
+	char *o=s, *end=s+max;
+	#define PUT(c) do{ if(o<end-1)*o++=(c); }while(0)
+	#define PUTS(str) do{ const char*p=(str); while(*p)PUT(*p++); }while(0)
+	#define PUT2(n) do{ PUT('0'+((n)/10)%10); PUT('0'+(n)%10); }while(0)
+	for(; *f; f++){
+		if(*f!='%'){ PUT(*f); continue; }
+		f++;
+		switch(*f){
+		case 'Y':{ int y=t->tm_year+1900; char b[8]; int i=0; if(y==0)b[i++]='0'; while(y){b[i++]='0'+y%10;y/=10;} while(i)PUT(b[--i]); }break;
+		case 'y': PUT2((t->tm_year+1900)%100); break;
+		case 'm': PUT2(t->tm_mon+1); break;
+		case 'd': PUT2(t->tm_mday); break;
+		case 'e': if(t->tm_mday<10)PUT(' '); else PUT('0'+t->tm_mday/10); PUT('0'+t->tm_mday%10); break;
+		case 'H': PUT2(t->tm_hour); break;
+		case 'I':{ int h=t->tm_hour%12; if(!h)h=12; PUT2(h); }break;
+		case 'M': PUT2(t->tm_min); break;
+		case 'S': PUT2(t->tm_sec); break;
+		case 'p': PUTS(t->tm_hour<12?"AM":"PM"); break;
+		case 'j': PUT('0'+(t->tm_yday+1)/100%10); PUT2((t->tm_yday+1)%100); break;
+		case 'a': if((unsigned)t->tm_wday<7){ const char*w=n9_wday[t->tm_wday]; PUT(w[0]);PUT(w[1]);PUT(w[2]); } break;
+		case 'A': if((unsigned)t->tm_wday<7) PUTS(n9_wday[t->tm_wday]); break;
+		case 'b': case 'h': if((unsigned)t->tm_mon<12){ const char*m=n9_mon[t->tm_mon]; PUT(m[0]);PUT(m[1]);PUT(m[2]); } break;
+		case 'B': if((unsigned)t->tm_mon<12) PUTS(n9_mon[t->tm_mon]); break;
+		case 'w': PUT('0'+t->tm_wday); break;
+		case 'n': PUT('\n'); break;
+		case 't': PUT('\t'); break;
+		case '%': PUT('%'); break;
+		default: PUT('%'); if(*f)PUT(*f); break;
+		}
+		if(!*f) break;
+	}
+	#undef PUT
+	#undef PUTS
+	#undef PUT2
+	if(max) *o=0;
+	return (size_t)(o-s);
+}
+
+/* xlocale shim: cc9 is C-locale only, so locale_t is a dummy handle and the
+ * *_l functions ignore it. A single static object backs every locale_t. */
+static int n9_cloc;
+void *newlocale(int m, const char *name, void *base){ (void)m; (void)name; (void)base; return &n9_cloc; }
+void *duplocale(void *l){ (void)l; return &n9_cloc; }
+void freelocale(void *l){ (void)l; }
+void *uselocale(void *l){ (void)l; return &n9_cloc; }
+double strtod_l(const char *s, char **e, void *l){ (void)l; return strtod(s,e); }
+float strtof_l(const char *s, char **e, void *l){ (void)l; return strtof(s,e); }
+long double strtold_l(const char *s, char **e, void *l){ (void)l; return strtold(s,e); }
+long strtol_l(const char *s, char **e, int b, void *l){ (void)l; return strtol(s,e,b); }
+unsigned long strtoul_l(const char *s, char **e, int b, void *l){ (void)l; return strtoul(s,e,b); }
 double strtod(const char *s, char **e){ double r=0; int neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){r=r*10+(*s-'0');s++;} if(*s=='.'){s++;double f=0.1; while(*s>='0'&&*s<='9'){r+=(*s-'0')*f;f*=0.1;s++;}} if(e)*e=(char*)s; return neg?-r:r; }
 long strtol(const char *s, char **e, int b){ (void)b; long r=0; int neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){r=r*10+(*s-'0');s++;} if(e)*e=(char*)s; return neg?-r:r; }
 
@@ -203,6 +260,12 @@ int vsnprintf(char *out, size_t n, const char *f, __builtin_va_list ap){
   *o=0; size_t len=o-buf, i; for(i=0;i+1<n&&i<len;i++) out[i]=buf[i]; if(n)out[i]=0; return (int)len;
 }
 int snprintf(char *out, size_t n, const char *f, ...){ __builtin_va_list ap; __builtin_va_start(ap,f); int r=vsnprintf(out,n,f,ap); __builtin_va_end(ap); return r; }
+int vasprintf(char **out, const char *f, __builtin_va_list ap){
+	char buf[1024]; int n=vsnprintf(buf,sizeof buf,f,ap);
+	char *s=malloc((size_t)n+1); if(!s){ *out=0; return -1; }
+	int i; for(i=0;i<=n;i++) s[i]=buf[i]; *out=s; return n;
+}
+int asprintf(char **out, const char *f, ...){ __builtin_va_list ap; __builtin_va_start(ap,f); int r=vasprintf(out,f,ap); __builtin_va_end(ap); return r; }
 
 /* libm (sqrt/sin/exp/atan2/... + f/l variants) now comes from libcc9m.a
  * (openlibm) — a real correctly-rounded libm with full inf/nan/signbit

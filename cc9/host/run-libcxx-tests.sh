@@ -7,7 +7,7 @@
 CC9="$(cd "$(dirname "$0")/.." && pwd)"
 LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 LLD="${CC9_LLD:-$(brew --prefix lld)/bin/ld.lld}"
-LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-build/include/c++/v1}"
+LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-loc/include/c++/v1}"
 LLVMSRC="${CC9_LLVMSRC:-$HOME/Projects/llvm-project}"
 TST="$LLVMSRC/libcxx/test"
 INC="$CC9/runtime/include"; LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
@@ -29,8 +29,9 @@ for t in $(echo "$sample" | head -"$N"); do
   # device, locale. Also skip tests unsupported AT c++23/c++26 (we compile c++23;
   # a c++23-feature test lists UNSUPPORTED: c++03..c++20 and MUST still run), and
   # any header pulling an unsupported subsystem.
-  miss='no-exceptions|no-rtti|no-threads|no-wide-characters|no-localization|no-filesystem|no-tzdb|no-monotonic-clock|libcpp-has-no-incomplete-pstl|no-random-device|c\+\+23|c\+\+26|availability'
-  if grep -qE '#include <(iostream|thread|regex|locale|fstream|sstream|mutex|shared_mutex|future|filesystem|format|syncstream|print|coroutine|stop_token|barrier|latch|semaphore|condition_variable)>' "$t" \
+  # localization + monotonic-clock are now ON, so those features no longer gate.
+  miss='no-exceptions|no-rtti|no-threads|no-wide-characters|no-filesystem|no-tzdb|libcpp-has-no-incomplete-pstl|no-random-device|c\+\+23|c\+\+26|availability'
+  if grep -qE '#include <(thread|regex|fstream|mutex|shared_mutex|future|filesystem|format|syncstream|print|coroutine|stop_token|barrier|latch|semaphore|condition_variable)>' "$t" \
      || grep -qE "(UNSUPPORTED|XFAIL):[^/]*($miss)" "$t" \
      || grep -qE '// *REQUIRES:' "$t"; then
     skip=$((skip+1)); continue; fi
@@ -44,7 +45,7 @@ for t in $(echo "$sample" | head -"$N"); do
   addf="$(grep -hE '// *ADDITIONAL_COMPILE_FLAGS(\([^)]*\))?:' "$t" | sed -E 's#.*ADDITIONAL_COMPILE_FLAGS(\([^)]*\))?: *##; s#-fconstexpr-ops-limit=[0-9]+##g' | tr ',\n' '  ')"
   if ! "$LLVM/clang++" --target=x86_64-unknown-none -nostdlib -DNDEBUG -std=c++23 -nostdinc++ \
         -isystem "$LIBCXX" -isystem "$INC" -I "$TST/support" -I "$(dirname "$t")" \
-        -fno-exceptions -fno-rtti -fno-threadsafe-statics $addf -c "$t" -o /tmp/lt.o 2>/dev/null; then
+        -fno-exceptions -fno-rtti -fno-threadsafe-statics -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME $addf -c "$t" -o /tmp/lt.o 2>/dev/null; then
     cfail=$((cfail+1)); failed="$failed C:$name"; continue; fi
   # *.compile.pass.cpp are compile-only conformance checks (no main): passing ==
   # compiling. Don't link/run them — they'd fail the link for lack of main.

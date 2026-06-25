@@ -1,6 +1,7 @@
 #ifndef _STDLIB_H
 #define _STDLIB_H
 #include <stddef.h>
+#define MB_CUR_MAX 1
 typedef struct { int quot, rem; } div_t;
 typedef struct { long quot, rem; } ldiv_t;
 typedef struct { long long quot, rem; } lldiv_t;
