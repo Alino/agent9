@@ -7,7 +7,7 @@ extern void n9_exits(const char*);
  * grows). free() is a no-op for now (a free-list is the next refinement). */
 extern char end[];
 extern long n9_brk(void *);
-static char *cur_brk = 0, *hp = 0, *hend = 0;
+static char *cur_brk = 0;
 
 static void *n9_sbrk(long incr){
 	if(!cur_brk) cur_brk = (char*)(((unsigned long)end + 0xfff) & ~0xfffUL);
@@ -16,19 +16,55 @@ static void *n9_sbrk(long incr){
 	cur_brk += incr;
 	return old;
 }
-void *malloc(size_t n){
-	n = (n + 15) & ~(size_t)15;
-	if(!hp) hp = hend = (char*)n9_sbrk(0);
-	if(hp + n > hend){
-		size_t grow = (n > 0x100000) ? n : 0x100000;
-		if(n9_sbrk((long)grow) == (void*)-1) return 0;
-		hend += grow;
+
+/* K&R free-list allocator: free() reclaims and coalesces (no more leak). */
+typedef union header { struct { union header *ptr; size_t size; } s; long a; } Header;
+static Header kr_base;
+static Header *kr_freep = 0;
+
+void free(void *ap){
+	if(!ap) return;
+	Header *bp = (Header*)ap - 1, *p;
+	for(p = kr_freep; !(bp > p && bp < p->s.ptr); p = p->s.ptr)
+		if(p >= p->s.ptr && (bp > p || bp < p->s.ptr)) break;
+	if(bp + bp->s.size == p->s.ptr){ bp->s.size += p->s.ptr->s.size; bp->s.ptr = p->s.ptr->s.ptr; }
+	else bp->s.ptr = p->s.ptr;
+	if(p + p->s.size == bp){ p->s.size += bp->s.size; p->s.ptr = bp->s.ptr; }
+	else p->s.ptr = bp;
+	kr_freep = p;
+}
+static Header *kr_morecore(size_t nu){
+	if(nu < 4096) nu = 4096;
+	void *cp = n9_sbrk((long)(nu * sizeof(Header)));
+	if(cp == (void*)-1) return 0;
+	Header *up = (Header*)cp; up->s.size = nu;
+	free((void*)(up + 1));
+	return kr_freep;
+}
+void *malloc(size_t nbytes){
+	if(nbytes == 0) return 0;
+	size_t nunits = (nbytes + sizeof(Header) - 1) / sizeof(Header) + 1;
+	Header *p, *prevp;
+	if((prevp = kr_freep) == 0){ kr_base.s.ptr = kr_freep = prevp = &kr_base; kr_base.s.size = 0; }
+	for(p = prevp->s.ptr; ; prevp = p, p = p->s.ptr){
+		if(p->s.size >= nunits){
+			if(p->s.size == nunits) prevp->s.ptr = p->s.ptr;
+			else { p->s.size -= nunits; p += p->s.size; p->s.size = nunits; }
+			kr_freep = prevp;
+			return (void*)(p + 1);
+		}
+		if(p == kr_freep && (p = kr_morecore(nunits)) == 0) return 0;
 	}
-	void *r = hp; hp += n; return r;
 }
 void *calloc(size_t a,size_t b){ size_t n=a*b; char*p=malloc(n); if(p) for(size_t i=0;i<n;i++)p[i]=0; return p; }
-void *realloc(void*old,size_t n){ char*p=malloc(n); if(p&&old){ char*o=old; for(size_t i=0;i<n;i++)p[i]=o[i]; } return p; }
-void free(void*p){ (void)p; }
+void *realloc(void*old,size_t n){
+	if(!old) return malloc(n);
+	if(n==0){ free(old); return 0; }
+	Header *bp=(Header*)old-1; size_t oldsz=(bp->s.size-1)*sizeof(Header);
+	char *np=malloc(n); if(!np) return 0;
+	size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i];
+	free(old); return np;
+}
 void abort(void){ n9_exits("cc9: abort\n"); for(;;){} }
 void *memcpy(void*d,const void*s,size_t n){ char*a=d; const char*b=s; for(size_t i=0;i<n;i++)a[i]=b[i]; return d; }
 void *memmove(void*d,const void*s,size_t n){ char*a=d; const char*b=s; if(a<b)for(size_t i=0;i<n;i++)a[i]=b[i]; else for(size_t i=n;i>0;i--)a[i-1]=b[i-1]; return d; }
