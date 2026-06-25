@@ -192,3 +192,37 @@ double copysign(double x,double y){ return y<0?-fabs(x):fabs(x); }
 double scalbn(double x,int n){ while(n>0){x*=2;n--;} while(n<0){x*=0.5;n++;} return x; }
 double ldexp(double x,int n){ return scalbn(x,n); }
 double frexp(double x,int*e){ int n=0; if(x!=0){ double a=fabs(x); while(a>=1){a*=0.5;n++;} while(a<0.5){a*=2;n--;} } *e=n; return scalbn(x,-n); }
+double nextafter(double x,double y){
+	if(x!=x||y!=y) return x+y;
+	if(x==y) return y;
+	union{ double d; unsigned long long u; } v; v.d=x;
+	if(x==0){ v.u=1; return y>0?v.d:-v.d; }
+	if((y>x)==(x>0)) v.u++; else v.u--;
+	return v.d;
+}
+float nextafterf(float x,float y){
+	if(x!=x||y!=y) return x+y;
+	if(x==y) return y;
+	union{ float f; unsigned int u; } v; v.f=x;
+	if(x==0){ v.u=1; return y>0?v.f:-v.f; }
+	if((y>x)==(x>0)) v.u++; else v.u--;
+	return v.f;
+}
+
+/* Generic GCC atomic library calls — emitted for atomics that aren't inline
+ * lock-free (large/odd-size types). cc9 is single-threaded, so they reduce to
+ * plain memory ops; the memory-order arg is irrelevant on a serial machine.
+ * The names are builtins, so we define under cc9_ names with __asm__ labels
+ * that emit the real __atomic_* symbols (clang won't let us redeclare builtins). */
+void cc9_atomic_load(size_t n,const void*src,void*dst,int m) __asm__("__atomic_load");
+void cc9_atomic_store(size_t n,void*dst,const void*src,int m) __asm__("__atomic_store");
+void cc9_atomic_exchange(size_t n,void*ptr,const void*val,void*ret,int m) __asm__("__atomic_exchange");
+int cc9_atomic_cas(size_t n,void*ptr,void*exp,const void*des,int s,int f) __asm__("__atomic_compare_exchange");
+void cc9_atomic_load(size_t n,const void*src,void*dst,int m){ (void)m; memcpy(dst,src,n); }
+void cc9_atomic_store(size_t n,void*dst,const void*src,int m){ (void)m; memcpy(dst,src,n); }
+void cc9_atomic_exchange(size_t n,void*ptr,const void*val,void*ret,int m){ (void)m; memcpy(ret,ptr,n); memcpy(ptr,val,n); }
+int cc9_atomic_cas(size_t n,void*ptr,void*exp,const void*des,int s,int f){
+	(void)s; (void)f;
+	if(memcmp(ptr,exp,n)==0){ memcpy(ptr,des,n); return 1; }
+	memcpy(exp,ptr,n); return 0;
+}

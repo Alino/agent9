@@ -22,9 +22,11 @@ sample="$(echo "$all" | awk -v tot="$tot" -v n="$N" 'BEGIN{for(i=0;i<n;i++)w[int
 pass=0 cfail=0 rfail=0 skip=0; failed=""
 for t in $(echo "$sample" | head -"$N"); do
   name="${t#$TST/std/}"
-  if grep -qE '#include <(iostream|thread|regex|locale|fstream|sstream|mutex|shared_mutex|future|filesystem|format|syncstream|print|coroutine|stop_token|barrier|latch|semaphore|condition_variable)>|UNSUPPORTED: *(c\+\+20|c\+\+23|c\+\+26)|REQUIRES' "$t"; then
+  # We compile at c++23, so skip only tests unsupported AT c++23/c++26 (a
+  # c++23-feature test lists UNSUPPORTED: c++03..c++20 and MUST still run).
+  if grep -qE '#include <(iostream|thread|regex|locale|fstream|sstream|mutex|shared_mutex|future|filesystem|format|syncstream|print|coroutine|stop_token|barrier|latch|semaphore|condition_variable)>|UNSUPPORTED:[^/]*(c\+\+23|c\+\+26)|REQUIRES' "$t"; then
     skip=$((skip+1)); continue; fi
-  if ! "$LLVM/clang++" --target=x86_64-unknown-none -nostdlib -DNDEBUG -std=c++20 -nostdinc++ \
+  if ! "$LLVM/clang++" --target=x86_64-unknown-none -nostdlib -DNDEBUG -std=c++23 -nostdinc++ \
         -isystem "$LIBCXX" -isystem "$INC" -I "$TST/support" -I "$(dirname "$t")" \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -c "$t" -o /tmp/lt.o 2>/dev/null; then
     cfail=$((cfail+1)); failed="$failed C:$name"; continue; fi

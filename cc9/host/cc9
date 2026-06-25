@@ -20,7 +20,7 @@ cmd="${1:-}"; src="${2:-}"
 
 base="$(basename "$src")"; obj="/tmp/$base.o"; elf="/tmp/$base.elf"; out="/tmp/$base.aout"
 case "$src" in
-  *.cpp|*.cc|*.cxx|*.C) CC="$LLVM/clang++"; STD=(-std=c++20 -nostdinc++ -isystem "$LIBCXX") ;;
+  *.cpp|*.cc|*.cxx|*.C) CC="$LLVM/clang++"; STD=(-std=c++23 -nostdinc++ -isystem "$LIBCXX") ;;
   *) CC="$LLVM/clang"; STD=() ;;
 esac
 

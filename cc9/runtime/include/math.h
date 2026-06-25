@@ -23,6 +23,7 @@ double pow(double,double),fmod(double,double),atan2(double,double),hypot(double,
 double ceil(double),floor(double),trunc(double),round(double),nearbyint(double),rint(double);
 double copysign(double,double),scalbn(double,int),frexp(double,int*),ldexp(double,int),modf(double,double*);
 float sinf(float),cosf(float),powf(float,float),floorf(float),ceilf(float),copysignf(float,float);
+double nextafter(double,double); float nextafterf(float,float);
 int abs(int);
 #ifdef __cplusplus
 }
