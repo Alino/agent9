@@ -6,7 +6,7 @@ extern "C" long n9_pwrite(int, const void *, long, long long);
 extern "C" void n9_exits(const char *);
 using json = nlohmann::json;
 
-extern "C" void _start()
+int main()
 {
 	json j = json::parse(R"({"os":"9front","answer":40,"langs":["c","go","js"]})");
 	j["answer"] = j["answer"].get<int>() + 2;      // 42
@@ -15,5 +15,5 @@ extern "C" void _start()
 	std::string out = j.dump();
 	n9_pwrite(1, out.data(), (long)out.size(), -1);
 	n9_pwrite(1, "\n", 1, -1);
-	n9_exits(0);
+	return 0;
 }

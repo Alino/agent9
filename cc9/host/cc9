@@ -24,7 +24,10 @@ case "$src" in
   *) CC="$LLVM/clang"; STD=() ;;
 esac
 
-"$CC" --target=x86_64-unknown-none -ffreestanding -nostdlib -DNDEBUG \
+# NB: no -ffreestanding for user code — it would mangle `main` (the crt0 entry
+# expects the unmangled symbol). -nostdlib + the freestanding libc++ headers
+# still keep it self-contained.
+"$CC" --target=x86_64-unknown-none -nostdlib -DNDEBUG \
   "${STD[@]}" -isystem "$INC" -fno-exceptions -fno-rtti -fno-threadsafe-statics \
   -c "$src" -o "$obj"
 "$LLD" -o "$elf" "$obj" "$LIB" -T "$LDS" -static -nostdlib

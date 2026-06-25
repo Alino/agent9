@@ -11,7 +11,7 @@ static int fmtint(char *b, int v) {
 	return j;
 }
 
-extern "C" void _start()
+int main()
 {
 	std::vector<int> v;
 	for (int i = 1; i <= 8; i++) v.push_back(i * i);  // squares
@@ -23,5 +23,5 @@ extern "C" void _start()
 	n += fmtint(out + n, sum);
 	out[n++] = '\n';
 	n9_pwrite(1, out, n, -1);
-	n9_exits(0);
+	return 0;
 }

@@ -9,7 +9,12 @@ ENTRY(_start)
 PHDRS { text PT_LOAD FLAGS(5); data PT_LOAD FLAGS(6); }
 SECTIONS {
 	. = 0x200028;
-	.text : { *(.text) *(.text.*) *(.rodata) *(.rodata.*) } :text
+	.text : {
+		*(.text) *(.text.*) *(.rodata) *(.rodata.*)
+		. = ALIGN(8);
+		__init_array_start = .; *(.init_array) *(.init_array.*) __init_array_end = .;
+		__fini_array_start = .; *(.fini_array) *(.fini_array.*) __fini_array_end = .;
+	} :text
 	. = 0x400000;
 	.data : { *(.data) *(.data.*) } :data
 	.bss  : { *(.bss) *(.bss.*) *(COMMON) } :data

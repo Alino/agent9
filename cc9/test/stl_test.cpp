@@ -9,7 +9,7 @@
 extern "C" long n9_pwrite(int, const void *, long, long long);
 extern "C" void n9_exits(const char *);
 
-extern "C" void _start()
+int main()
 {
 	std::string r;
 	std::vector<int> v{5, 3, 8, 1, 9, 2};
@@ -28,5 +28,5 @@ extern "C" void _start()
 	r += " opt:"; r += std::to_string(o.value_or(0));
 	r += '\n';
 	n9_pwrite(1, r.data(), (long)r.size(), -1);
-	n9_exits(0);
+	return 0;
 }
