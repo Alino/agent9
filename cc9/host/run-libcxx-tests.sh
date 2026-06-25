@@ -29,7 +29,7 @@ for t in $(echo "$sample" | head -"$N"); do
   # device, locale. Also skip tests unsupported AT c++23/c++26 (we compile c++23;
   # a c++23-feature test lists UNSUPPORTED: c++03..c++20 and MUST still run), and
   # any header pulling an unsupported subsystem.
-  miss='no-exceptions|no-rtti|no-threads|no-wide-characters|no-localization|no-filesystem|no-tzdb|libcpp-has-no-incomplete-pstl|no-random-device|c\+\+23|c\+\+26|availability'
+  miss='no-exceptions|no-rtti|no-threads|no-wide-characters|no-localization|no-filesystem|no-tzdb|no-monotonic-clock|libcpp-has-no-incomplete-pstl|no-random-device|c\+\+23|c\+\+26|availability'
   if grep -qE '#include <(iostream|thread|regex|locale|fstream|sstream|mutex|shared_mutex|future|filesystem|format|syncstream|print|coroutine|stop_token|barrier|latch|semaphore|condition_variable)>' "$t" \
      || grep -qE "(UNSUPPORTED|XFAIL):[^/]*($miss)" "$t" \
      || grep -qE '// *REQUIRES:' "$t"; then

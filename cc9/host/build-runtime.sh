@@ -37,6 +37,7 @@ for f in string stdexcept memory hash functional bind memory_resource system_err
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
+"$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/filesystem/filesystem_clock.cpp" -o "$O/lcx_fsclock.o"
 # NB: libcxx/src/exception.cpp (in the loop above) is a strict superset of
 # libcxxabi's stdlib_exception.cpp — it provides the exception/bad_alloc/
 # bad_exception/bad_array_new_length destructors AND bad_typeid/bad_cast/
