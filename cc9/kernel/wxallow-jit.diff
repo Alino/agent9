@@ -1,0 +1,46 @@
+Optional W^X / JIT for 9front amd64 — wxallow gate + SG_EXEC per-segment opt-in.
+Diffs are against stock 9front /sys/src/9 (Plan 9 `diff` normal format: `<` = old,
+`>` = new). See README.md. Apply by hand (4 small edits) on the box, then rebuild
+in /sys/src/9/pc64 and install the kernel to /n/9fat/9pc64 (the 9fat partition is
+what 9boot loads — NOT /amd64/9pc64).
+
+===== /sys/src/9/port/portdat.h =====
+413a414
+> 	SG_EXEC		= 04000,	/* Executable data (W^X opt-in, gated by wxallow) */
+
+(added inside the "Segment types" enum, right after `SG_NOEXEC = 02000`)
+
+===== /sys/src/9/port/segment.c =====
+10a11
+> int wxallow;			/* W^X gate; set from plan9.ini in confinit() */
+
+(file-scope global, just before `static Physseg physseg[10]`)
+
+823a825,828
+>
+> 	/* W^X opt-in: SG_EXEC honored only when the wxallow gate is set. */
+> 	if((attr & SG_EXEC) != 0 && wxallow == 0)
+> 		attr &= ~SG_EXEC;
+
+(in segattach(), right after `attr &= ~(SG_TYPE | SG_CACHED | SG_DEVICE);`)
+
+===== /sys/src/9/port/fault.c =====
+252c252
+< 	if((s->type & SG_NOEXEC) != 0 || s->flushme == 0)
+---
+> 	if(((s->type & SG_NOEXEC) != 0 || s->flushme == 0) && (s->type & SG_EXEC) == 0)
+282c282
+< 	if((attr & SG_NOEXEC) != 0 || s->flushme == 0)
+---
+> 	if(((attr & SG_NOEXEC) != 0 || s->flushme == 0) && (s->type & SG_EXEC) == 0)
+
+(both are the `mmuphys |= PTENOEXEC;` guards: don't mark NX if the segment is SG_EXEC)
+
+===== /sys/src/9/pc64/main.c =====
+17a18
+> extern int wxallow;		/* W^X gate (see port/segment.c) */
+37a39,40
+> 	if(p = getconf("wxallow"))
+> 		wxallow = strtol(p, 0, 0) != 0;
+
+(extern near the other externs; the getconf read inside confinit(), before `conf.npage = 0;`)
