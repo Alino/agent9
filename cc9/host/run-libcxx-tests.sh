@@ -30,7 +30,7 @@ for t in $(echo "$sample" | head -"$N"); do
   # a c++23-feature test lists UNSUPPORTED: c++03..c++20 and MUST still run), and
   # any header pulling an unsupported subsystem.
   # localization + monotonic-clock are now ON, so those features no longer gate.
-  miss='no-exceptions|no-rtti|no-tzdb|libcpp-has-no-incomplete-pstl|no-random-device|c\+\+23|c\+\+26|availability'
+  miss='no-exceptions|no-tzdb|libcpp-has-no-incomplete-pstl|c\+\+23|c\+\+26|availability'
   if grep -qE '#include <(format|syncstream|print|coroutine)>' "$t" \
      || grep -qE "(UNSUPPORTED|XFAIL):[^/]*($miss)" "$t" \
      || grep -qE '// *REQUIRES:' "$t"; then
