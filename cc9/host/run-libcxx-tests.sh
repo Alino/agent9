@@ -36,7 +36,12 @@ for t in $(echo "$sample" | head -"$N"); do
     skip=$((skip+1)); continue; fi
   # Honor the test's ADDITIONAL_COMPILE_FLAGS (what upstream lit applies) — e.g.
   # -D_LIBCPP_ENABLE_CXX20_REMOVED_* for tests of deprecated/removed features.
-  addf="$(grep -hE '// *ADDITIONAL_COMPILE_FLAGS:' "$t" | sed -E 's#.*ADDITIONAL_COMPILE_FLAGS:##' | tr ',\n' '  ')"
+  # Both the bare `ADDITIONAL_COMPILE_FLAGS:` and the feature-guarded
+  # `ADDITIONAL_COMPILE_FLAGS(has-fconstexpr-steps):` forms (the guarded clang
+  # flags — constexpr step/ops limits — are universally available, so apply).
+  # Drop -fconstexpr-ops-limit (a GCC-only flag, guarded has-fconstexpr-ops-limit
+  # which is false for clang; clang's equivalent -fconstexpr-steps is also given).
+  addf="$(grep -hE '// *ADDITIONAL_COMPILE_FLAGS(\([^)]*\))?:' "$t" | sed -E 's#.*ADDITIONAL_COMPILE_FLAGS(\([^)]*\))?: *##; s#-fconstexpr-ops-limit=[0-9]+##g' | tr ',\n' '  ')"
   if ! "$LLVM/clang++" --target=x86_64-unknown-none -nostdlib -DNDEBUG -std=c++23 -nostdinc++ \
         -isystem "$LIBCXX" -isystem "$INC" -I "$TST/support" -I "$(dirname "$t")" \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics $addf -c "$t" -o /tmp/lt.o 2>/dev/null; then
