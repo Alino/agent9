@@ -24,7 +24,7 @@ O="/tmp/cc9-rt"; rm -rf "$O"; mkdir -p "$O" "$CC9/lib"  # clean: stale .o would 
 # NB: no -ffreestanding — must match the user-code compile (cc9 wrapper drops it
 # for the `main` symbol), else std::string's out-of-line ABI mismatches the
 # header-instantiated one and over-SSO strings corrupt.
-base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc++ -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME)
+base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc++ -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls)
 
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/test/n9syscall.s" -o "$O/n9syscall.o"
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/runtime/setjmp.s" -o "$O/setjmp.o"

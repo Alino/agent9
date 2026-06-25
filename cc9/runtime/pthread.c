@@ -18,30 +18,44 @@ extern void free(void *);
 
 #define STACKSIZE (256*1024)
 
-static unsigned long cur_pid(void){
-	char b[16]; int fd=(int)n9_open("/dev/pid", 0); if(fd<0) return 0;
-	long n=n9_pread(fd, b, 15, -1); n9_close(fd); if(n<=0) return 0;
-	unsigned long p=0; for(int i=0;i<n;i++){ if(b[i]>='0'&&b[i]<='9') p=p*10+(b[i]-'0'); else break; } return p;
-}
-
 typedef struct { void *(*start)(void *); void *arg; void *ret; int joinsem; int done; int detached; void *stack; unsigned long pid; } n9_thread;
 
+/* Identify the current thread WITHOUT a real getpid (/dev/pid isn't in the
+ * listener namespace, and main's BSS stack has no kernel TOS). Each thread has a
+ * distinct stack region, so the current %rsp tells us which thread we are. The
+ * thread table (below) records each thread's stack range; main is the default. */
 static int create_lock = 1;       /* serializes the rfork handoff */
 static int handoff_sem = 0;       /* child signals it has consumed the handoff */
 
 #define MAXTH 1024
 static struct { int used; unsigned long pid; n9_thread *t; } th_tab[MAXTH];
 static int th_lock = 1;
-static n9_thread main_thread;
 
 static n9_thread *find_thread(unsigned long pid){
 	for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==pid) return th_tab[i].t;
 	return 0;
 }
 
+/* current "pid" = a stable per-thread id derived from which stack %rsp is in. */
+static unsigned long cur_pid(void){
+	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
+	for(int i=0;i<MAXTH;i++){
+		if(!th_tab[i].used) continue;
+		unsigned long lo=(unsigned long)th_tab[i].t->stack;
+		if(sp>=lo && sp<lo+STACKSIZE) return th_tab[i].pid;
+	}
+	return 1;   /* main thread */
+}
+
 static void trampoline(void *p){
 	n9_thread *t = (n9_thread *)p;
-	n9_semrelease(&handoff_sem, 1);   /* signal the rfork globals are consumed */
+	/* Register (tid, t, stack) BEFORE releasing the handoff the creator waits on,
+	 * so by the time pthread_create returns the thread is findable AND cur_pid()
+	 * (stack-range scan) resolves this thread — both before start() runs. */
+	n9_semacquire(&th_lock,1);
+	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){ th_tab[i].used=1; th_tab[i].pid=t->pid; th_tab[i].t=t; break; }
+	n9_semrelease(&th_lock,1);
+	n9_semrelease(&handoff_sem, 1);   /* signal the rfork globals are consumed + registered */
 	t->ret = t->start(t->arg);
 	t->done = 1;
 	n9_semrelease(&t->joinsem, 1);    /* wake any joiner */
@@ -51,23 +65,22 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	(void)attr;
 	n9_thread *t = malloc(sizeof *t);
 	if(!t) return 11;
-	t->start=start; t->arg=arg; t->ret=0; t->joinsem=0; t->done=0; t->detached=0; t->pid=0;
+	/* Unique thread id, assigned by the parent (the rfork-return pid isn't
+	 * visible to the child, and /dev/pid isn't readable here). Starts at 2 (main
+	 * is 1). The child registers itself in the table keyed by this id. */
+	static unsigned long tid_ctr = 1;
+	static int tid_lock = 1;
+	n9_semacquire(&tid_lock,1); unsigned long tid = ++tid_ctr; n9_semrelease(&tid_lock,1);
+	t->start=start; t->arg=arg; t->ret=0; t->joinsem=0; t->done=0; t->detached=0; t->pid=tid;
 	char *stk = malloc(STACKSIZE); if(!stk){ free(t); return 11; }
 	t->stack=stk;
 	void *top = (void *)(((unsigned long)(stk+STACKSIZE)) & ~15UL);
 	n9_semacquire(&create_lock, 1);
 	long pid = n9_rfork_thread(top, trampoline, t);
-	n9_semacquire(&handoff_sem, 1);   /* wait until the child copied the handoff */
+	n9_semacquire(&handoff_sem, 1);   /* wait until the child registered + copied the handoff */
 	n9_semrelease(&create_lock, 1);
 	if(pid < 0){ free(stk); free(t); return 11; }
-	/* Register from the parent (synchronously, before returning) so a join that
-	 * races right after create always finds the thread — the child registering
-	 * itself would race the join. */
-	t->pid = (unsigned long)pid;
-	n9_semacquire(&th_lock,1);
-	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){ th_tab[i].used=1; th_tab[i].pid=(unsigned long)pid; th_tab[i].t=t; break; }
-	n9_semrelease(&th_lock,1);
-	*th = (pthread_t)pid;
+	*th = (pthread_t)tid;
 	return 0;
 }
 
@@ -157,6 +170,33 @@ int pthread_setspecific(pthread_key_t k, const void *v){
 	for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].pid==pid && tls_tab[i].key==k){ tls_tab[i].val=(void*)v; n9_semrelease(&tls_lock,1); return 0; }
 	for(int i=0;i<MAXTLS;i++) if(!tls_tab[i].used){ tls_tab[i].used=1; tls_tab[i].pid=pid; tls_tab[i].key=k; tls_tab[i].val=(void*)v; n9_semrelease(&tls_lock,1); return 0; }
 	n9_semrelease(&tls_lock,1); return 11;
+}
+
+/* Emulated TLS (-femulated-tls): the compiler turns each `thread_local` into a
+ * call to __emutls_get_address(control), where control = {size, align, index,
+ * init}. We return per-thread storage keyed by (pid, control) — the ELF %fs TLS
+ * model doesn't work under rfork(RFMEM) (no per-thread %fs base), but this does. */
+extern void *memcpy(void *, const void *, size_t);
+extern void *memset(void *, int, size_t);
+#define MAXEMUTLS 8192
+static struct { int used; unsigned long pid; void *ctrl; void *mem; } emutls_tab[MAXEMUTLS];
+static int emutls_lock = 1;
+void *__emutls_get_address(void *control){
+	size_t *c = control;
+	size_t size = c[0];
+	void *init = ((void **)control)[3];
+	unsigned long pid = cur_pid();
+	n9_semacquire(&emutls_lock,1);
+	for(int i=0;i<MAXEMUTLS;i++)
+		if(emutls_tab[i].used && emutls_tab[i].pid==pid && emutls_tab[i].ctrl==control){
+			void *m=emutls_tab[i].mem; n9_semrelease(&emutls_lock,1); return m; }
+	n9_semrelease(&emutls_lock,1);
+	void *m = malloc(size ? size : 1);
+	if(init) memcpy(m, init, size); else memset(m, 0, size);
+	n9_semacquire(&emutls_lock,1);
+	for(int i=0;i<MAXEMUTLS;i++) if(!emutls_tab[i].used){ emutls_tab[i].used=1; emutls_tab[i].pid=pid; emutls_tab[i].ctrl=control; emutls_tab[i].mem=m; break; }
+	n9_semrelease(&emutls_lock,1);
+	return m;
 }
 
 int sched_yield(void){ n9_sleep(0); return 0; }
