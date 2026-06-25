@@ -14,7 +14,7 @@ long strtol(const char *, char **, int);
 unsigned long strtoul(const char *, char **, int);
 long long strtoll(const char *, char **, int);
 unsigned long long strtoull(const char *, char **, int);
-double strtod(const char *, char **); float strtof(const char *, char **);
+double strtod(const char *, char **); float strtof(const char *, char **); long double strtold(const char *, char **);
 int abs(int); long labs(long); long long llabs(long long);
 div_t div(int, int); ldiv_t ldiv(long, long); lldiv_t lldiv(long long, long long);
 int atoi(const char *); long atol(const char *);
