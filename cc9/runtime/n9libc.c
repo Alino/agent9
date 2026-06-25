@@ -241,31 +241,16 @@ long long strtoll(const char *s, char **e, int b){ (void)b; long long r=0; int n
 unsigned long strtoul(const char *s, char **e, int b){ return (unsigned long)strtoull(s,e,b); }
 
 void *memchr(const void *s, int c, size_t n){ const unsigned char *p=s; for(size_t i=0;i<n;i++) if(p[i]==(unsigned char)c) return (void*)(p+i); return 0; }
+/* <inttypes.h> intmax helpers */
+long imaxabs(long x){ return x<0?-x:x; }
+typedef struct { long quot, rem; } n9_imaxdiv_t;
+n9_imaxdiv_t imaxdiv(long a, long b){ n9_imaxdiv_t r; r.quot=a/b; r.rem=a%b; return r; }
+long strtoimax(const char *s, char **e, int b){ return strtoll(s,e,b); }
+unsigned long strtoumax(const char *s, char **e, int b){ return strtoull(s,e,b); }
 float strtof(const char *s, char **e){ return (float)strtod(s, e); }
-/* minimal snprintf: enough for libc++/json fallbacks (%d %u %ld %lu %lld %s %c %%). */
+/* utoa_ used by strerror above; the printf family (incl. float conv) lives in
+ * cc9/runtime/printf.c now. */
 static char *utoa_(unsigned long long v, char *p, int base){ char t[32]; int i=0; if(!v)t[i++]='0'; while(v){int d=v%base; t[i++]="0123456789abcdef"[d]; v/=base;} while(i)*p++=t[--i]; return p; }
-int vsnprintf(char *out, size_t n, const char *f, __builtin_va_list ap){
-  char buf[512]; char *o=buf;
-  for(; *f; f++){
-    if(*f!='%'){ *o++=*f; continue; }
-    f++; int lng=0; while(*f=='l'){lng++;f++;} if(*f=='z')f++;
-    if(*f=='d'||*f=='i'){ long long v= lng? __builtin_va_arg(ap,long long): __builtin_va_arg(ap,int); if(v<0){*o++='-';v=-v;} o=utoa_((unsigned long long)v,o,10); }
-    else if(*f=='u'){ unsigned long long v= lng? __builtin_va_arg(ap,unsigned long long): __builtin_va_arg(ap,unsigned int); o=utoa_(v,o,10); }
-    else if(*f=='x'){ unsigned long long v= lng? __builtin_va_arg(ap,unsigned long long): __builtin_va_arg(ap,unsigned int); o=utoa_(v,o,16); }
-    else if(*f=='s'){ const char*s=__builtin_va_arg(ap,const char*); while(*s)*o++=*s++; }
-    else if(*f=='c'){ *o++=(char)__builtin_va_arg(ap,int); }
-    else if(*f=='%'){ *o++='%'; }
-    else { *o++='%'; *o++=*f; }
-  }
-  *o=0; size_t len=o-buf, i; for(i=0;i+1<n&&i<len;i++) out[i]=buf[i]; if(n)out[i]=0; return (int)len;
-}
-int snprintf(char *out, size_t n, const char *f, ...){ __builtin_va_list ap; __builtin_va_start(ap,f); int r=vsnprintf(out,n,f,ap); __builtin_va_end(ap); return r; }
-int vasprintf(char **out, const char *f, __builtin_va_list ap){
-	char buf[1024]; int n=vsnprintf(buf,sizeof buf,f,ap);
-	char *s=malloc((size_t)n+1); if(!s){ *out=0; return -1; }
-	int i; for(i=0;i<=n;i++) s[i]=buf[i]; *out=s; return n;
-}
-int asprintf(char **out, const char *f, ...){ __builtin_va_list ap; __builtin_va_start(ap,f); int r=vasprintf(out,f,ap); __builtin_va_end(ap); return r; }
 
 /* libm (sqrt/sin/exp/atan2/... + f/l variants) now comes from libcc9m.a
  * (openlibm) — a real correctly-rounded libm with full inf/nan/signbit

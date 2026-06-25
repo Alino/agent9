@@ -32,6 +32,7 @@ base=(--target=x86_64-unknown-none -nostdlib -fno-exceptions -fno-rtti -nostdinc
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -O2 -c "$CC9/runtime/complex_builtins.c" -o "$O/complex_builtins.o"
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/xlocale.c" -o "$O/xlocale.o"
 "$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/stdio.c" -o "$O/stdio.o"
+"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/printf.c" -o "$O/printf.o"
 "$LLVM/clang++" "${base[@]}" -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
 "$LLVM/clang" "${base[@]}" -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"
 
