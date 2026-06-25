@@ -90,6 +90,12 @@ void *realloc(void*old,size_t n){
 	free(old); return np;
 }
 void abort(void){ n9_exits("cc9: abort\n"); for(;;){} }
+void exit(int code){ n9_exits(code? "cc9: exit nonzero\n" : 0); for(;;){} }
+void _Exit(int code){ exit(code); }
+/* __atomic_is_lock_free(size, ptr): native scalar widths (<=16B) are lock-free
+ * on amd64. Builtin name, so define via an __asm__ label (see __atomic_* below). */
+int cc9_atomic_is_lock_free(size_t n, const volatile void *p) __asm__("__atomic_is_lock_free");
+int cc9_atomic_is_lock_free(size_t n, const volatile void *p){ (void)p; return n<=16; }
 void *memcpy(void*d,const void*s,size_t n){ char*a=d; const char*b=s; for(size_t i=0;i<n;i++)a[i]=b[i]; return d; }
 void *memmove(void*d,const void*s,size_t n){ char*a=d; const char*b=s; if(a<b)for(size_t i=0;i<n;i++)a[i]=b[i]; else for(size_t i=n;i>0;i--)a[i-1]=b[i-1]; return d; }
 void *memset(void*d,int c,size_t n){ char*a=d; for(size_t i=0;i<n;i++)a[i]=(char)c; return d; }
