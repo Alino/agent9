@@ -27,9 +27,10 @@ base=(--target=x86_64-unknown-none -ffreestanding -nostdlib -fno-exceptions -fno
 # targeted libc++ runtime objects
 lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -O2 -w)
-for f in string stdexcept memory; do
+for f in string stdexcept memory hash functional; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
+"$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
 "$LLVM/clang++" "${base[@]}" -D_LIBCXXABI_BUILDING_LIBRARY \
   -I "$LLVMSRC/libcxxabi/include" -I "$LLVMSRC/libcxxabi/src" -I "$LIBCXX" \
   -isystem "$INC" -std=c++23 -O2 -w \

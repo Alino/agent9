@@ -89,3 +89,23 @@ int vsnprintf(char *out, size_t n, const char *f, __builtin_va_list ap){
   *o=0; size_t len=o-buf, i; for(i=0;i+1<n&&i<len;i++) out[i]=buf[i]; if(n)out[i]=0; return (int)len;
 }
 int snprintf(char *out, size_t n, const char *f, ...){ __builtin_va_list ap; __builtin_va_start(ap,f); int r=vsnprintf(out,n,f,ap); __builtin_va_end(ap); return r; }
+
+/* math: hardware sqrt + simple rounding/abs/fmod (enough for typical compute) */
+double sqrt(double x){ double r; __asm__("sqrtsd %1,%0":"=x"(r):"x"(x)); return r; }
+float sqrtf(float x){ float r; __asm__("sqrtss %1,%0":"=x"(r):"x"(x)); return r; }
+double fabs(double x){ return x<0?-x:x; }
+float fabsf(float x){ return x<0?-x:x; }
+double trunc(double x){ return (double)(long long)x; }
+double floor(double x){ long long t=(long long)x; double d=(double)t; return d>x?d-1:d; }
+double ceil(double x){ long long t=(long long)x; double d=(double)t; return d<x?d+1:d; }
+double round(double x){ return x<0?ceil(x-0.5):floor(x+0.5); }
+double nearbyint(double x){ return round(x); }
+double rint(double x){ return round(x); }
+float floorf(float x){ return (float)floor(x); }
+float ceilf(float x){ return (float)ceil(x); }
+float truncf(float x){ return (float)trunc(x); }
+double fmod(double a,double b){ if(b==0)return 0; return a-trunc(a/b)*b; }
+double copysign(double x,double y){ return y<0?-fabs(x):fabs(x); }
+double scalbn(double x,int n){ while(n>0){x*=2;n--;} while(n<0){x*=0.5;n++;} return x; }
+double ldexp(double x,int n){ return scalbn(x,n); }
+double frexp(double x,int*e){ int n=0; if(x!=0){ double a=fabs(x); while(a>=1){a*=0.5;n++;} while(a<0.5){a*=2;n--;} } *e=n; return scalbn(x,-n); }
