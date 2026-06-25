@@ -56,9 +56,7 @@ int vfprintf(FILE *f, const char *fmt, __builtin_va_list ap){
 int fprintf(FILE *f, const char *fmt, ...){ __builtin_va_list ap; __builtin_va_start(ap,fmt); int r=vfprintf(f,fmt,ap); __builtin_va_end(ap); return r; }
 int printf(const char *fmt, ...){ __builtin_va_list ap; __builtin_va_start(ap,fmt); int r=vfprintf(stdout,fmt,ap); __builtin_va_end(ap); return r; }
 int vprintf(const char *fmt, __builtin_va_list ap){ return vfprintf(stdout, fmt, ap); }
-/* sscanf: minimal — enough for the few locale code paths that touch it. */
-int vsscanf(const char *s, const char *f, __builtin_va_list ap){ (void)s;(void)f;(void)ap; return 0; }
-int sscanf(const char *s, const char *f, ...){ (void)s;(void)f; return 0; }
+/* sscanf/vsscanf live in printf.c (real implementation). */
 
 /* real files over Plan 9 (backs std::fstream / basic_filebuf). */
 extern long n9_open(const char *, int);

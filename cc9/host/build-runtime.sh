@@ -47,6 +47,12 @@ for f in string stdexcept memory hash functional bind memory_resource system_err
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
+# float std::to_chars shim (integer to_chars is header-inline; charconv.cpp's
+# from_chars float side needs shared/fp_bits.h, absent from this checkout).
+"$LLVM/clang++" "${lcxx[@]}" -c "$CC9/runtime/tochars.cpp" -o "$O/tochars.o"
+for r in d2s f2s d2fixed; do
+  "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/ryu/$r.cpp" -o "$O/lcx_ryu_$r.o"
+done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/filesystem/filesystem_clock.cpp" -o "$O/lcx_fsclock.o"
 for ff in operations directory_iterator directory_entry path filesystem_error; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/filesystem/$ff.cpp" -o "$O/lcx_fs_$ff.o"
