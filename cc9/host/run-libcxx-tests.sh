@@ -17,8 +17,8 @@ sub="${1:-utilities}"; N="${2:-20}"
 # Spread the sample evenly across the category (not head -N, which clusters in
 # the first subdir) so the parity number is representative.
 all="$(find "$TST/std/$sub" -name '*.pass.cpp' | sort)"
-tot=$(echo "$all" | grep -c .); step=$(( tot > N ? tot / N : 1 ))
-sample="$(echo "$all" | awk -v s="$step" 'NR%s==1')"
+tot=$(echo "$all" | grep -c .)
+sample="$(echo "$all" | awk -v tot="$tot" -v n="$N" 'BEGIN{for(i=0;i<n;i++)w[int(i*tot/n)+1]=1} w[NR]')"
 pass=0 cfail=0 rfail=0 skip=0; failed=""
 for t in $(echo "$sample" | head -"$N"); do
   name="${t#$TST/std/}"
@@ -28,6 +28,9 @@ for t in $(echo "$sample" | head -"$N"); do
         -isystem "$LIBCXX" -isystem "$INC" -I "$TST/support" -I "$(dirname "$t")" \
         -fno-exceptions -fno-rtti -fno-threadsafe-statics -c "$t" -o /tmp/lt.o 2>/dev/null; then
     cfail=$((cfail+1)); failed="$failed C:$name"; continue; fi
+  # *.compile.pass.cpp are compile-only conformance checks (no main): passing ==
+  # compiling. Don't link/run them — they'd fail the link for lack of main.
+  case "$name" in *.compile.pass.cpp) pass=$((pass+1)); continue;; esac
   if ! "$LLD" -o /tmp/lt.elf /tmp/lt.o "$LIB" -T "$LDS" -static -nostdlib 2>/dev/null; then
     cfail=$((cfail+1)); failed="$failed L:$name"; continue; fi
   if ! python3 "$CC9/host/elf2aout.py" /tmp/lt.elf /tmp/lt.aout >/dev/null 2>&1; then

@@ -10,6 +10,7 @@ void *memchr(const void *, int, size_t); size_t strlen(const char *);
 char *strcpy(char *, const char *); char *strncpy(char *, const char *, size_t);
 int strcmp(const char *, const char *); int strncmp(const char *, const char *, size_t);
 char *strchr(const char *, int); const char *strstr(const char *, const char *);
+char *strerror(int);
 #ifdef __cplusplus
 }
 #endif

@@ -1,5 +1,6 @@
 typedef unsigned long size_t;
 extern void n9_exits(const char*);
+static char *utoa_(unsigned long long v, char *p, int base);  /* defined below */
 
 /* Heap over the Plan 9 brk syscall: grows real memory from the kernel (no
  * fixed cap). `end` is the end of bss (linker symbol); the break starts there.
@@ -94,6 +95,29 @@ void *memmove(void*d,const void*s,size_t n){ char*a=d; const char*b=s; if(a<b)fo
 void *memset(void*d,int c,size_t n){ char*a=d; for(size_t i=0;i<n;i++)a[i]=(char)c; return d; }
 int memcmp(const void*x,const void*y,size_t n){ const unsigned char*a=x,*b=y; for(size_t i=0;i<n;i++) if(a[i]!=b[i]) return a[i]-b[i]; return 0; }
 size_t strlen(const char*s){ size_t n=0; while(s[n])n++; return n; }
+
+/* strerror: common POSIX errno messages (enough for <system_error>'s
+ * generic_category().message()). Unknown codes get a generic string. */
+char *strerror(int e){
+	static char buf[32];
+	const char *m = 0;
+	switch(e){
+	case 0: m="Success"; break;       case 1: m="Operation not permitted"; break;
+	case 2: m="No such file or directory"; break; case 3: m="No such process"; break;
+	case 4: m="Interrupted system call"; break;   case 5: m="Input/output error"; break;
+	case 9: m="Bad file descriptor"; break;        case 11: m="Resource temporarily unavailable"; break;
+	case 12: m="Cannot allocate memory"; break;    case 13: m="Permission denied"; break;
+	case 14: m="Bad address"; break;               case 16: m="Device or resource busy"; break;
+	case 17: m="File exists"; break;               case 19: m="No such device"; break;
+	case 20: m="Not a directory"; break;           case 21: m="Is a directory"; break;
+	case 22: m="Invalid argument"; break;          case 24: m="Too many open files"; break;
+	case 28: m="No space left on device"; break;   case 32: m="Broken pipe"; break;
+	case 34: m="Numerical result out of range"; break;
+	}
+	if(m){ char*d=buf; while(*m)*d++=*m++; *d=0; return buf; }
+	char *d=buf; const char*p="Unknown error "; while(*p)*d++=*p++;
+	d=utoa_((unsigned long long)(e<0?-e:e), d, 10); *d=0; return buf;
+}
 
 /* errno + a C locale (always "C": '.' decimal point) for libc++/json */
 static int n9_errno_v = 0;
