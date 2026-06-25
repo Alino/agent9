@@ -30,3 +30,15 @@ n9_exits:
 	addq	$16, %rsp
 	popq	%rbp
 	ret
+
+// long n9_brk(void *addr)  — BRK_ = 24; set the program break. SysV: rdi=addr.
+	.globl n9_brk
+n9_brk:
+	pushq	%rbp
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	$24, %rbp
+	syscall
+	addq	$16, %rsp
+	popq	%rbp
+	ret

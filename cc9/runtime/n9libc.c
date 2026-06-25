@@ -1,8 +1,31 @@
 typedef unsigned long size_t;
 extern void n9_exits(const char*);
-static char arena[1<<20];          /* 1MB bump heap (sbrk-backed later) */
-static size_t apos = 0;
-void *malloc(size_t n){ n=(n+15)&~(size_t)15; if(apos+n>sizeof arena) return 0; void*p=&arena[apos]; apos+=n; return p; }
+
+/* Heap over the Plan 9 brk syscall: grows real memory from the kernel (no
+ * fixed cap). `end` is the end of bss (linker symbol); the break starts there.
+ * Bump allocator that sbrk's more in >=1MB chunks (contiguous, so hend just
+ * grows). free() is a no-op for now (a free-list is the next refinement). */
+extern char end[];
+extern long n9_brk(void *);
+static char *cur_brk = 0, *hp = 0, *hend = 0;
+
+static void *n9_sbrk(long incr){
+	if(!cur_brk) cur_brk = (char*)(((unsigned long)end + 0xfff) & ~0xfffUL);
+	char *old = cur_brk;
+	if(incr && n9_brk(cur_brk + incr) < 0) return (void*)-1;
+	cur_brk += incr;
+	return old;
+}
+void *malloc(size_t n){
+	n = (n + 15) & ~(size_t)15;
+	if(!hp) hp = hend = (char*)n9_sbrk(0);
+	if(hp + n > hend){
+		size_t grow = (n > 0x100000) ? n : 0x100000;
+		if(n9_sbrk((long)grow) == (void*)-1) return 0;
+		hend += grow;
+	}
+	void *r = hp; hp += n; return r;
+}
 void *calloc(size_t a,size_t b){ size_t n=a*b; char*p=malloc(n); if(p) for(size_t i=0;i<n;i++)p[i]=0; return p; }
 void *realloc(void*old,size_t n){ char*p=malloc(n); if(p&&old){ char*o=old; for(size_t i=0;i<n;i++)p[i]=o[i]; } return p; }
 void free(void*p){ (void)p; }

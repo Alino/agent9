@@ -13,5 +13,6 @@ SECTIONS {
 	. = 0x400000;
 	.data : { *(.data) *(.data.*) } :data
 	.bss  : { *(.bss) *(.bss.*) *(COMMON) } :data
+	end = .; _end = .;      /* heap (sbrk) starts here */
 	/DISCARD/ : { *(.comment) *(.note*) *(.eh_frame) *(.eh_frame_hdr) }
 }
