@@ -333,6 +333,18 @@ n9_rfork_thread:                  // rdi=stacktop, rsi=fn, rdx=arg
 	syscall
 2:	jmp	2b
 
+// long n9_alarm(unsigned long ms)  ALARM=6. Posts an "alarm" note after ms.
+	.globl n9_alarm
+n9_alarm:
+	SAVE_CALLEE
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	$6, %rbp
+	syscall
+	addq	$16, %rsp
+	REST_CALLEE
+	ret
+
 // long n9_notify(void *handler)  NOTIFY=28. Registers a Plan 9 note handler.
 	.globl n9_notify
 n9_notify:

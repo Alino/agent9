@@ -58,6 +58,27 @@ void cc9_note_handler(unsigned long framesp)
 	cc9_in_note = 1;
 	const char *msg = (const char *)(framesp + 24);
 	int n = 0; while (n < 200 && msg[n] >= 32 && msg[n] < 127) n++;
+#ifdef CC9_RECURSE_PROBE
+	/* On an alarm note (timer fired mid-recursion, stack not yet blown), walk the
+	 * INTERRUPTED frame chain from the Ureg's saved RBP — amd64 Ureg sits at
+	 * framesp+160 with bp at slot 26 (framesp+208), per the kernel layout. Dumps
+	 * return addresses to fd 2 (the recursion cycle), then exits. */
+	if (msg[0]=='a' && msg[1]=='l' && msg[2]=='a' && msg[3]=='r') {
+		void **fp = *(void ***)(framesp + 26*8);   /* interrupted RBP */
+		n9_pwrite(2, "CC9-ALARM-CHAIN:\n", 17, -1);
+		for (int i = 0; i < 70 && fp; i++) {
+			void *ret = fp[1];
+			char b[20]; int k=0; b[k++]='0'; b[k++]='x';
+			unsigned long v=(unsigned long)ret;
+			for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
+			b[k++]='\n'; n9_pwrite(2, b, k, -1);
+			void **nx=(void**)fp[0];
+			if (nx <= fp) break;
+			fp = nx;
+		}
+		n9_exits("cc9-alarm");
+	}
+#endif
 	if (n > 4) { n9_pwrite(2, "cc9 fault: ", 11, -1); n9_pwrite(2, msg, n, -1); n9_pwrite(2, "\n", 1, -1); }
 }
 
@@ -65,6 +86,9 @@ void __cc9_run(void)
 {
 	cc9_fpmask();
 	n9_notify((void *)cc9_notetramp);   /* report faults instead of dying silently */
+#ifdef CC9_RECURSE_PROBE
+	{ extern long n9_alarm(unsigned long); n9_alarm(1500); }  /* timer to sample a runaway recursion */
+#endif
 	/* Real argc/argv from the kernel entry stack: at SP sits argc, then the
 	 * NULL-terminated argv pointer array (Plan 9 amd64 entry ABI). */
 	static char *fallback[] = { (char *)"a.out", 0 };
