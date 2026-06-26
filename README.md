@@ -33,6 +33,7 @@ up front than leave it to the log.
 | **NetSurf** | Web browser (from [netsurf-plan9](https://github.com/netsurf-plan9)). | C |
 | **python9** | CPython 3.11.14 ported to 9front (kencc/APE), validated at **100% parity** against CPython's own regression suite. Source + parity harness under `python9/`. | C |
 | **node9**   | Node.js-compatible runtime ported to 9front (kencc/APE) on **QuickJS-ng** (not V8), running the **real, unmodified npm 10**. `npm install` from registry.npmjs.org over TLS, SHA-512 SRI-verified; **30/30** popular packages download + run. Source under `node9/`. | C / JS |
+| **cc9**     | **Modern C++ for 9front**, cross-compiled by host **clang/LLVM** → native Plan 9 a.out. Full C++ — exceptions, STL, iostreams, threads, `<regex>`, wide chars, `<filesystem>`, RTTI, `thread_local`, nlohmann/json — runs on a **stock** kernel; **~100%** of applicable libc++ conformance tests pass (`rfail=0`). Optional opt-in **W^X kernel patch** unlocks JIT. Source under `cc9/`. | C++ / LLVM |
 
 ![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
 
@@ -42,7 +43,7 @@ set an API key with `/login`.
 
 ## Try it now
 
-Download `agent9-v0.3.0.qcow2` (555 MB) from the
+Download `agent9-v0.4.0.qcow2` from the
 [Releases page](https://github.com/Alino/agent9/releases),
 drop it next to the runner script for your OS, run.
 
@@ -65,7 +66,12 @@ for details.
 
 ## Status
 
-This is **v0.3.0**. New since v0.2.0: **node9** is baked into the image —
+This is **v0.4.0**. New since v0.3.0: **cc9** — a clang/LLVM cross-toolchain that
+brings **modern C++ to 9front**. The image ships the **W^X kernel patch** (opt-in,
+off by default) and cc9 demo binaries; the toolchain itself runs on your host and
+emits native Plan 9 a.out. Full C++ (exceptions, STL, iostreams, threads, regex,
+wide chars, filesystem, RTTI, nlohmann/json) runs on a stock kernel at ~100% libc++
+conformance parity. v0.3.0 added **node9** —
 a Node.js-compatible runtime running the real npm (`node` / `npm` on
 PATH; `npm install` works from the registry). v0.2.0 added the **python9**
 CPython 3.11 port (`python` / `python3` on PATH) and brought **pi9** to
@@ -113,6 +119,25 @@ cert-chain validation (SRI gates package integrity instead), interpreter-speed. 
 [`node9/DOCUMENTATION.md`](node9/DOCUMENTATION.md) for the full fidelity/limitations
 write-up and [`node9/port/plan9/NOTES.md`](node9/port/plan9/NOTES.md) for the
 kencc/APE port (incl. the floating-point codegen bugs found and fixed).
+
+**cc9** is **modern C++ on 9front**, the platform's longstanding wall: kencc is
+C-only, APE has no C++ runtime, and the only native C++ is 1980s cfront. Rather than
+port a compiler *to* Plan 9, cc9 **cross-compiles** — host **clang/LLVM** targets
+x86_64, a from-source **libc++/libc++abi** + a small runtime bridge supply the
+standard library over Plan 9 syscalls, and an **ELF→a.out converter** repackages the
+output to run on a **stock, unmodified** 9front kernel. The headline: **full modern
+C++ runs on 9front** — C++ exceptions (DWARF unwind), the STL, iostreams, threads
+(over `rfork`), `<regex>`, wide characters, `<filesystem>`, RTTI, `thread_local`, and
+real third-party libraries (nlohmann/json) — validated against **libc++'s own
+conformance suite at ~100% of applicable tests, `rfail=0`** (nothing that compiles
+and links has ever miscompiled or faulted on 9front). The compiler runs on your host
+(`cc9 build foo.cpp` / `cc9 run foo.cpp`); only the emitted static a.out and the
+runtime run on Plan 9. cc9 also ships an **optional, opt-in kernel patch** (`wxallow`
++ a per-segment `SG_EXEC` flag) that unlocks **W^X / JIT** — secure by default (off ⇒
+identical to stock), which makes V8-class JIT *reachable* on a patched kernel while
+leaving stock binaries untouched. See [`cc9/README.md`](cc9/README.md) for the
+architecture, runtime bridge, parity harness, and limitations, and
+[`cc9/kernel/README.md`](cc9/kernel/README.md) for the JIT patch.
 
 ### Installing python9 on a stock 9front (without the agent9 image)
 

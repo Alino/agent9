@@ -12,8 +12,8 @@
 set -e
 cd "$(dirname "$0")"
 
-if [ ! -f agent9-v0.3.0.qcow2 ]; then
-  echo "error: agent9-v0.3.0.qcow2 not found in $(pwd)"
+if [ ! -f agent9-v0.4.0.qcow2 ]; then
+  echo "error: agent9-v0.4.0.qcow2 not found in $(pwd)"
   echo "download it from https://github.com/Alino/agent9/releases"
   exit 1
 fi
@@ -41,7 +41,7 @@ exec qemu-system-x86_64 \
   -m 2048 \
   -smp 2 \
   -cpu max \
-  -drive file=agent9-v0.3.0.qcow2,if=virtio,format=qcow2 \
+  -drive file=agent9-v0.4.0.qcow2,if=virtio,format=qcow2 \
   -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::1717-:17010,hostfwd=tcp::1564-:564,hostfwd=tcp::53692-:53692,hostfwd=tcp::1455-:1455 \
   -device virtio-net-pci,netdev=net0 \
   -device virtio-rng-pci \
