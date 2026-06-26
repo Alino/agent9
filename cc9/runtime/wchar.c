@@ -131,13 +131,21 @@ extern int vsnprintf(char*,size_t,const char*,__builtin_va_list);
 int vswprintf(wchar_t*ws,size_t n,const wchar_t*wf,__builtin_va_list ap){
 	char nf[256]; size_t i; for(i=0;i+1<sizeof nf&&wf[i];i++)nf[i]=(char)wf[i]; nf[i]=0;
 	char nb[512]; int r=vsnprintf(nb,sizeof nb,nf,ap);
-	for(i=0;(int)i<r&&i+1<n;i++)ws[i]=(wchar_t)(unsigned char)nb[i]; if(n)ws[i]=0; return r;
+	if(r<0){ if(n)ws[0]=0; return -1; }
+	int have = r < (int)sizeof nb ? r : (int)sizeof nb - 1;   /* bytes actually in nb (avoid OOB read) */
+	for(i=0;(int)i<have&&i+1<n;i++)ws[i]=(wchar_t)(unsigned char)nb[i]; if(n)ws[i]=0;
+	/* C requires a NEGATIVE return on truncation (unlike snprintf) */
+	if((size_t)r>=n || r>=(int)sizeof nb) return -1;
+	return r;
 }
 int swprintf(wchar_t*ws,size_t n,const wchar_t*wf,...){ __builtin_va_list ap; __builtin_va_start(ap,wf); int r=vswprintf(ws,n,wf,ap); __builtin_va_end(ap); return r; }
 int swscanf(const wchar_t*s,const wchar_t*f,...){ (void)s;(void)f; return 0; }
 size_t wcsftime(wchar_t*ws,size_t n,const wchar_t*wf,const void*tm){
 	char nf[128]; size_t i; for(i=0;i+1<sizeof nf&&wf[i];i++)nf[i]=(char)wf[i]; nf[i]=0;
 	char nb[256]; size_t r=strftime(nb,sizeof nb,nf,tm);
-	for(i=0;i<r&&i+1<n;i++)ws[i]=(wchar_t)(unsigned char)nb[i]; if(n)ws[i]=0; return i;
+	if(r==0){ if(n)ws[0]=0; return 0; }                  /* strftime overflowed its own buffer */
+	for(i=0;i<r&&i+1<n;i++)ws[i]=(wchar_t)(unsigned char)nb[i];
+	if(i<r){ if(n)ws[0]=0; return 0; }                   /* didn't fit ws: C wcsftime returns 0 */
+	if(n)ws[i]=0; return i;
 }
 size_t wcsftime_l(wchar_t*ws,size_t n,const wchar_t*wf,const void*tm,locale_t l){ (void)l; return wcsftime(ws,n,wf,tm); }

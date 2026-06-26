@@ -30,7 +30,10 @@ for t in $(echo "$sample" | head -"$N"); do
   # a c++23-feature test lists UNSUPPORTED: c++03..c++20 and MUST still run), and
   # any header pulling an unsupported subsystem.
   # localization + monotonic-clock are now ON, so those features no longer gate.
-  miss='no-exceptions|no-tzdb|libcpp-has-no-incomplete-pstl|c\+\+23|c\+\+26|availability'
+  # exceptions/rtti/threads/localization/monotonic-clock/wide-chars/filesystem are
+  # all ON now, so those features no longer gate; the genuine gaps remain tzdb,
+  # incomplete-pstl, and availability (host-version markers).
+  miss='no-tzdb|libcpp-has-no-incomplete-pstl|c\+\+23|c\+\+26|availability'
   if grep -qE '#include <(format|syncstream|print|coroutine)>' "$t" \
      || grep -qE "(UNSUPPORTED|XFAIL):[^/]*($miss)" "$t" \
      || grep -qE '// *REQUIRES:' "$t"; then

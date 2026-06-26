@@ -46,7 +46,7 @@ static n9_thread *find_thread(unsigned long pid){
 }
 
 /* Claim a thread's table slot exactly once (returns 1 to the single caller that
- * wins). The winner owns freeing t/stack — prevents the double-free when both
+ * wins). The winner owns reclaiming t/stack — prevents the double-free when both
  * the detached-trampoline path and a detach-after-done both try to reap. */
 static int reap_slot(unsigned long pid){
 	int claimed=0;
@@ -56,11 +56,31 @@ static int reap_slot(unsigned long pid){
 	return claimed;
 }
 
+/* DEFERRED reclamation for detached threads. A detached thread runs ON its own
+ * t->stack, so it must not free that stack itself (it would free the memory it's
+ * returning through into the EXITS syscall). Instead it parks (stack,t) here and
+ * a LATER pthread_create/join frees them — by then the dead thread has long since
+ * EXITS'd and nothing executes on that stack. */
+static struct { void *stack; n9_thread *t; } dead_tab[MAXTH];
+static int dead_n = 0, dead_lock = 1;
+static void dead_park(void *stack, n9_thread *t){
+	n9_semacquire(&dead_lock,1);
+	if(dead_n < MAXTH){ dead_tab[dead_n].stack=stack; dead_tab[dead_n].t=t; dead_n++; }
+	n9_semrelease(&dead_lock,1);   /* table full -> leak rather than free-in-thread */
+}
+static void dead_reap(void){
+	n9_semacquire(&dead_lock,1);
+	for(int i=0;i<dead_n;i++){ free(dead_tab[i].stack); free(dead_tab[i].t); }
+	dead_n=0;
+	n9_semrelease(&dead_lock,1);
+}
+
 /* current "pid" = a stable per-thread id derived from which stack %rsp is in. */
 static unsigned long cur_pid(void){
 	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
 	for(int i=0;i<MAXTH;i++){
-		if(!th_tab[i].used) continue;          /* TSO: used==1 implies stklo/stkhi visible */
+		if(!th_tab[i].used) continue;
+		__asm__ volatile("":::"memory");   /* acquire: don't hoist range reads before used (pairs w/ trampoline) */
 		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return th_tab[i].pid;
 	}
 	return 1;   /* main thread */
@@ -77,6 +97,7 @@ static void trampoline(void *p){
 	n9_semacquire(&th_lock,1);
 	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){
 		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi;
+		__asm__ volatile("":::"memory");   /* release: publish range before used (pairs w/ cur_pid) */
 		th_tab[i].used=1; break;
 	}
 	n9_semrelease(&th_lock,1);
@@ -84,9 +105,9 @@ static void trampoline(void *p){
 	t->ret = t->start(t->arg);
 	t->done = 1;
 	if(t->detached){
-		/* nobody will join: reap now (else it leaks until th_tab fills and
-		 * create starts failing). reap_slot makes the free single-owner. */
-		if(reap_slot(t->pid)){ free(t->stack); free(t); }
+		/* nobody will join. Can't free our own running stack here — park it for a
+		 * later create/join to reclaim. reap_slot makes the park single-owner. */
+		if(reap_slot(t->pid)) dead_park(t->stack, t);
 		return;
 	}
 	n9_semrelease(&t->joinsem, 1);    /* wake any joiner */
@@ -94,6 +115,7 @@ static void trampoline(void *p){
 
 int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(void *), void *arg){
 	(void)attr;
+	dead_reap();   /* reclaim any parked detached-thread stacks (they're long dead now) */
 	n9_thread *t = malloc(sizeof *t);
 	if(!t) return 11;
 	/* Unique thread id, assigned by the parent (the rfork-return pid isn't
@@ -129,9 +151,10 @@ int pthread_join(pthread_t pid, void **ret){
 int pthread_detach(pthread_t pid){
 	n9_thread *t=find_thread(pid); if(!t) return 3;
 	t->detached=1;
-	/* If it already finished, trampoline saw detached==0 and didn't reap, so do
-	 * it here (reap_slot guarantees only one of us frees). */
-	if(t->done && reap_slot(pid)){ free(t->stack); free(t); }
+	/* If it already finished, trampoline saw detached==0 and didn't reap, so park
+	 * it here for deferred reclamation (reap_slot guarantees a single owner; never
+	 * free now — the thread may still be on its stack mid-exit). */
+	if(t->done && reap_slot(pid)) dead_park(t->stack, t);
 	return 0;
 }
 pthread_t pthread_self(void){ return (pthread_t)cur_pid(); }

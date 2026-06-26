@@ -19,16 +19,18 @@ static u128 udivmod(u128 a, u128 b, u128 *rem){
 }
 u128 __udivti3(u128 a, u128 b){ return udivmod(a, b, 0); }
 u128 __umodti3(u128 a, u128 b){ u128 r; udivmod(a, b, &r); return r; }
+/* negate in the UNSIGNED domain (-(u128)a), well-defined even for INT128_MIN —
+ * (u128)(-a) on signed INT128_MIN would be overflow UB. */
 i128 __divti3(i128 a, i128 b){
 	int neg = 0;
-	u128 ua = a < 0 ? (neg ^= 1, (u128)(-a)) : (u128)a;
-	u128 ub = b < 0 ? (neg ^= 1, (u128)(-b)) : (u128)b;
+	u128 ua = a < 0 ? (neg ^= 1, -(u128)a) : (u128)a;
+	u128 ub = b < 0 ? (neg ^= 1, -(u128)b) : (u128)b;
 	u128 q = udivmod(ua, ub, 0);
 	return neg ? -(i128)q : (i128)q;
 }
 i128 __modti3(i128 a, i128 b){
-	u128 ua = a < 0 ? (u128)(-a) : (u128)a;
-	u128 ub = b < 0 ? (u128)(-b) : (u128)b;
+	u128 ua = a < 0 ? -(u128)a : (u128)a;
+	u128 ub = b < 0 ? -(u128)b : (u128)b;
 	u128 r; udivmod(ua, ub, &r);
 	return a < 0 ? -(i128)r : (i128)r;
 }

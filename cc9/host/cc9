@@ -28,8 +28,10 @@ esac
 # NB: no -ffreestanding for user code — it would mangle `main` (the crt0 entry
 # expects the unmangled symbol). -nostdlib + the freestanding libc++ headers
 # still keep it self-contained.
+# thread-safe function-local statics ARE wanted now (threads work; __cxa_guard is
+# thread-safe) — do NOT pass -fno-threadsafe-statics, or magic statics race.
 "$CC" --target=x86_64-unknown-none -nostdlib -DNDEBUG $RUNE \
-  ${STD[@]+"${STD[@]}"} -isystem "$INC" -fexceptions -frtti -fno-threadsafe-statics \
+  ${STD[@]+"${STD[@]}"} -isystem "$INC" -fexceptions -frtti \
   -c "$src" -o "$obj"
 # --start-group: the runtime and libm are mutually dependent (libm needs
 # memcpy/fenv from the runtime; the runtime's math comes from libm).

@@ -18,8 +18,10 @@ SECTIONS {
 		. = ALIGN(8);
 		__eh_frame_start = .; KEEP(*(.eh_frame)) __eh_frame_end = .;
 		. = ALIGN(8);
-		__init_array_start = .; *(.init_array) *(.init_array.*) __init_array_end = .;
-		__fini_array_start = .; *(.fini_array) *(.fini_array.*) __fini_array_end = .;
+		/* prioritized ctors (init_priority, sorted ascending) must run BEFORE the
+		 * default ones; crt0 iterates start->end (fini is reversed by crt0). */
+		__init_array_start = .; KEEP(*(SORT_BY_INIT_PRIORITY(.init_array.*))) KEEP(*(.init_array)) __init_array_end = .;
+		__fini_array_start = .; KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*))) KEEP(*(.fini_array)) __fini_array_end = .;
 	} :text
 	. = ALIGN(0x200000);   /* data at the next 2MB boundary after text */
 	.data : { *(.data) *(.data.*) } :data
