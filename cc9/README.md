@@ -15,6 +15,27 @@ threads, `<regex>`, wide characters, `<filesystem>`, RTTI, `thread_local`,
 `std::filesystem`, and real third-party libraries (nlohmann/json) — validated
 against libc++'s own conformance suite at ~100% of applicable tests.
 
+## Gallery — what cc9 makes possible
+
+A **C++ path tracer** (Peter Shirley's "Ray Tracing in One Weekend" — pure
+`<cmath>` + STL + `std::thread`, ~250 lines, no external libraries) rendering on
+9front. Reflections, refraction through glass, soft shadows from diffuse bounces,
+gamma — all computed by native C++ on a stock Plan 9 kernel. There is no Go
+equivalent that *is* this; native C++ compute is something cc9 uniquely brings to
+Plan 9. (`cc9/test/raytrace.cpp`)
+
+![C++ raytracer rendered on 9front](screenshots/raytrace.png)
+
+The demos running in a vtwin terminal on the agent9 desktop — including the one
+thing that was **truly impossible before**: a **brainfuck JIT** that emits x86-64
+machine code at runtime and executes it (`bfjit: compiled ... 372 bytes of
+x86-64, executed it -> "Hello World!"`). Stock 9front NX-enforces all writable
+memory, and Go can't JIT there either; cc9's opt-in W^X kernel patch is what
+unlocks it. Below it: C++ exceptions and a 100-thread stress test, both passing.
+(`cc9/test/bfjit.cpp`, `cc9/test/suite/`)
+
+![cc9 demos + the brainfuck JIT running on the 9front desktop](screenshots/desktop.png)
+
 ## Quick start
 
 ```sh

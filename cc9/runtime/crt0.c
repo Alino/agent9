@@ -13,14 +13,16 @@ extern cc9_fn __fini_array_end[];
 extern int main(int, char **);
 extern void n9_exits(const char *);
 
-/* atexit registry (libc++ and user code register destructors here). */
-#define CC9_ATEXIT_MAX 64
-static cc9_fn atexit_fns[CC9_ATEXIT_MAX];
+/* atexit registry (libc++ and user code register destructors here). Each entry
+ * is a (fn, arg) pair: __cxa_atexit MUST pass the object pointer back as arg, or
+ * a global/static object's destructor runs with a garbage `this` and faults. A
+ * plain atexit fn takes no arg, so we store arg=0 and the extra (ignored) SysV
+ * register is harmless. */
+#define CC9_ATEXIT_MAX 256
+static struct { void (*fn)(void *); void *arg; } atexit_tab[CC9_ATEXIT_MAX];
 static int atexit_n = 0;
-int atexit(cc9_fn f) { if (atexit_n < CC9_ATEXIT_MAX) { atexit_fns[atexit_n++] = f; return 0; } return -1; }
-/* __cxa_atexit(func, arg, dso): C++ static-dtor registration. We ignore arg/dso
- * (only matters for objects with state-bearing dtors run at exit). */
-int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { (void)arg; (void)dso; if (atexit_n < CC9_ATEXIT_MAX) { atexit_fns[atexit_n++] = (cc9_fn)f; return 0; } return -1; }
+int atexit(cc9_fn f) { if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = (void (*)(void *))f; atexit_tab[atexit_n].arg = 0; atexit_n++; return 0; } return -1; }
+int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { (void)dso; if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = f; atexit_tab[atexit_n].arg = arg; atexit_n++; return 0; } return -1; }
 void *__dso_handle = 0;
 
 /* Mask SSE + x87 FP exceptions. Bare-metal 9front leaves them UNMASKED, so a
@@ -44,7 +46,7 @@ void __cc9_run(void)
 	static char *argv[] = { (char *)"a.out", 0 };
 	int rc = main(1, argv);
 	for (int i = atexit_n; i > 0; --i)
-		(*atexit_fns[i - 1])();
+		atexit_tab[i - 1].fn(atexit_tab[i - 1].arg);
 	for (cc9_fn *p = __fini_array_end; p > __fini_array_start; )
 		(*--p)();
 	n9_exits(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");

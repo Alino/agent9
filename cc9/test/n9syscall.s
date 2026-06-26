@@ -273,6 +273,24 @@ n9_semrelease:
 	REST_CALLEE
 	ret
 
+// void* n9_segattach(int attr, char *class, void *va, ulong len)  SEGATTACH=30
+//   SysV in: edi=attr, rsi=class, rdx=va, rcx=len. Returns the va in rax.
+//   With the W^X kernel patch, attr=SG_EXEC (0x800) requests executable memory
+//   (only honored when plan9.ini wxallow=1) — used for JIT.
+	.globl n9_segattach
+n9_segattach:
+	SAVE_CALLEE
+	subq	$48, %rsp
+	movl	%edi, 8(%rsp)      // attr
+	movq	%rsi, 16(%rsp)     // class
+	movq	%rdx, 24(%rsp)     // va
+	movq	%rcx, 32(%rsp)     // len
+	movq	$30, %rbp
+	syscall
+	addq	$48, %rsp
+	REST_CALLEE
+	ret
+
 // long n9_rfork_thread(void *stacktop, void (*fn)(void*), void *arg)
 //   Creates a thread (RFPROC|RFMEM|RFNOWAIT = 112) running fn(arg) on a fresh
 //   stack. Returns the child pid in the parent; the child never returns.
