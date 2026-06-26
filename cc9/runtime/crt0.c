@@ -38,13 +38,46 @@ void cc9_fpmask(void)
 	__asm__ volatile("fldcw %0" :: "m"(cw));
 }
 
+extern unsigned long __cc9_ksp;
+extern void __cc9_build_environ(void);
+extern long n9_pwrite(int, const void *, long, long long);
+extern long n9_notify(void *);
+extern void cc9_notetramp(void);
+
+/* Note handler: cc9 had none, so a faulting program died silently. Now crt0
+ * registers cc9_notetramp (asm), whose C side writes the kernel's note string —
+ * "sys: trap: fault read addr=0x.. pc=0x.." — to fd 2, then noted(NDFLT) lets the
+ * kernel print its `prog pid: suicide:` line and terminate. The note string sits
+ * inline in the kernel-built note frame on amd64 (empirically at framesp+24); a
+ * reentry guard means a bad read can't loop. (A stack-overflow fault can't be
+ * reported — the kernel can't build the note frame on a blown stack.) */
+static volatile int cc9_in_note;
+void cc9_note_handler(unsigned long framesp)
+{
+	if (cc9_in_note) return;       /* reentrant fault: bail, asm calls noted() */
+	cc9_in_note = 1;
+	const char *msg = (const char *)(framesp + 24);
+	int n = 0; while (n < 200 && msg[n] >= 32 && msg[n] < 127) n++;
+	if (n > 4) { n9_pwrite(2, "cc9 fault: ", 11, -1); n9_pwrite(2, msg, n, -1); n9_pwrite(2, "\n", 1, -1); }
+}
+
 void __cc9_run(void)
 {
 	cc9_fpmask();
+	n9_notify((void *)cc9_notetramp);   /* report faults instead of dying silently */
+	/* Real argc/argv from the kernel entry stack: at SP sits argc, then the
+	 * NULL-terminated argv pointer array (Plan 9 amd64 entry ABI). */
+	static char *fallback[] = { (char *)"a.out", 0 };
+	int argc; char **argv;
+	if (__cc9_ksp) {
+		long *ks = (long *)__cc9_ksp;
+		argc = (int)ks[0];
+		argv = (char **)(ks + 1);
+	} else { argc = 1; argv = fallback; }
+	__cc9_build_environ();
 	for (cc9_fn *p = __init_array_start; p < __init_array_end; ++p)
 		(*p)();
-	static char *argv[] = { (char *)"a.out", 0 };
-	int rc = main(1, argv);
+	int rc = main(argc, argv);
 	for (int i = atexit_n; i > 0; --i)
 		atexit_tab[i - 1].fn(atexit_tab[i - 1].arg);
 	for (cc9_fn *p = __fini_array_end; p > __fini_array_start; )
@@ -58,14 +91,25 @@ void __cc9_run(void)
  * visible across threads unless it lives in a shared segment. BSS is shared, so
  * putting main's stack here makes the ubiquitous `std::thread([&]{...})` pattern
  * work. Thread stacks are heap-allocated (also shared). */
-#define CC9_MAIN_STACK (8*1024*1024)
-__attribute__((aligned(16), used)) char __cc9_main_stack[CC9_MAIN_STACK];
+/* 256 MiB. clang -cc1 recurses deeply (AST/type canonicalization, codegen of
+ * vtables/lambdas); an 8 MiB stack overflows on non-trivial C++ and faults. It's
+ * BSS (zero-filled, demand-paged) so the size is virtual until touched. */
+#define CC9_STACK_BYTES 268435456
+__attribute__((aligned(16), used)) char __cc9_main_stack[CC9_STACK_BYTES];
+#define CC9_STR2(x) #x
+#define CC9_STR(x) CC9_STR2(x)
+
+/* The kernel-provided entry stack (argc + the NULL-terminated argv pointer array
+ * live here). _start saves SP before switching to __cc9_main_stack; __cc9_run
+ * parses argv from it. */
+unsigned long __cc9_ksp = 0;
 
 __attribute__((naked, used)) void _start(void)
 {
 	__asm__ volatile(
+		"movq %rsp, __cc9_ksp(%rip)\n\t"
 		"leaq __cc9_main_stack(%rip), %rsp\n\t"
-		"addq $" "8388608" ", %rsp\n\t"   /* top of the 8 MiB stack */
+		"addq $" CC9_STR(CC9_STACK_BYTES) ", %rsp\n\t"   /* top of the stack */
 		"andq $-16, %rsp\n\t"
 		"call __cc9_run\n\t"
 		/* __cc9_run never returns (n9_exits); spin rather than execute the

@@ -33,6 +33,29 @@ int mkdirat(int, const char *, unsigned int); int faccessat(int, const char *, i
 char *realpath(const char *, char *);
 long pathconf(const char *, int);
 long fpathconf(int, int);
+/* process / misc — LLVM Unix .inc surface. cc9 backs getpid/getpagesize/sysconf
+ * for real; fork/exec/pipe are stubs (not on a compute path) returning -1. */
+pid_t getpid(void); pid_t getppid(void);
+uid_t getuid(void); uid_t geteuid(void); gid_t getgid(void); gid_t getegid(void);
+int getpagesize(void); long sysconf(int);
+unsigned int alarm(unsigned int); unsigned int sleep(unsigned int); int usleep(unsigned int);
+int pipe(int[2]); pid_t fork(void); void _exit(int);
+int execv(const char *, char *const[]); int execve(const char *, char *const[], char *const[]);
+int execvp(const char *, char *const[]);
+int gethostname(char *, unsigned long); int setsid(void); pid_t getsid(pid_t);
+int chown(const char *, uid_t, gid_t); int fchown(int, uid_t, gid_t); int lchown(const char *, uid_t, gid_t);
+int dup3(int, int, int);
+extern char **environ;
+#define _SC_PAGESIZE         30
+#define _SC_PAGE_SIZE        30
+#define _SC_NPROCESSORS_ONLN 84
+#define _SC_PHYS_PAGES       85
+#define _SC_ARG_MAX          0
+#define _SC_CLK_TCK          2
+#define _POSIX_ARG_MAX       4096
+#define ARG_MAX              131072
+#define _SC_GETPW_R_SIZE_MAX 70
+#define _SC_HOST_NAME_MAX    180
 #ifdef __cplusplus
 }
 #endif

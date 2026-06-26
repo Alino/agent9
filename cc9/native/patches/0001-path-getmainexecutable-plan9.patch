@@ -1,0 +1,17 @@
+diff --git a/llvm/lib/Support/Unix/Path.inc b/llvm/lib/Support/Unix/Path.inc
+index fc71ca46d..cfd8bb836 100644
+--- a/llvm/lib/Support/Unix/Path.inc
++++ b/llvm/lib/Support/Unix/Path.inc
+@@ -339,7 +339,11 @@ std::string getMainExecutable(const char *argv0, void *MainAddr) {
+   if (realpath(DLInfo.dli_fname, link_path))
+     return link_path;
+ #else
+-#error GetMainExecutable is not implemented on this host yet.
++  // cc9/Plan 9: no /proc/self/exe or dladdr. Best effort from argv0 (LLVM
++  // resolves the resource dir relative to this); the native cc passes an
++  // absolute or PATH-resolvable argv0.
++  if (argv0 && *argv0)
++    return std::string(argv0);
+ #endif
+   return "";
+ }

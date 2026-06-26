@@ -233,3 +233,26 @@ char *getenv(const char *name){
 }
 int setenv(const char *n, const char *v, int o){ (void)n;(void)v;(void)o; return 0; }
 int unsetenv(const char *n){ (void)n; return 0; }
+
+/* POSIX `environ`. Plan 9 keeps the environment as files under /env (no env
+ * array on the entry stack), so crt0 calls this once at startup to materialize
+ * a NULL-terminated "name=value" array from /env. getenv() still reads /env
+ * directly (authoritative); this is only for code that walks `environ`. */
+char **environ = 0;
+void __cc9_build_environ(void){
+	/* ponytail: 512-entry cap; /env rarely holds more. Grow if it ever does. */
+	static char *tab[512];
+	DIR *d = opendir("/env"); if(!d){ tab[0]=0; environ=tab; return; }
+	int n=0; struct dirent *e;
+	while(n < 511 && (e=readdir(d))){
+		char name[256]; int i=0; for(; e->d_name[i] && i<255; i++) name[i]=e->d_name[i]; name[i]=0;
+		if(name[0]=='.' && (name[1]==0 || (name[1]=='.'&&name[2]==0))) continue;
+		char *v = getenv(name);          /* shared static — consume before next readdir/getenv */
+		int vl = 0; while(v && v[vl]) vl++;
+		char *kv = (char*)malloc(i + 1 + vl + 1); if(!kv) break;
+		int k=0; for(int j=0;j<i;j++) kv[k++]=name[j]; kv[k++]='=';
+		for(int j=0;j<vl;j++) kv[k++]=v[j]; kv[k]=0;
+		tab[n++]=kv;
+	}
+	tab[n]=0; closedir(d); environ=tab;
+}

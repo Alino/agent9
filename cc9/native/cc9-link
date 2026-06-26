@@ -1,0 +1,32 @@
+#!/bin/bash
+# cc9-link — link cc9 objects/libs into a runnable 9front amd64 a.out.
+# Used as CMake's CMAKE_{C,CXX}_LINK_EXECUTABLE. Runs ld.lld with the cc9 runtime
+# archives + plan9.ld, then elf2aout. Args: <objects and .a libs...> -o <target>
+# (anything not -o and not a recognized flag is treated as a link input).
+set -euo pipefail
+CC9="$(cd "$(dirname "$0")/.." && pwd)"
+LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
+LLD="${CC9_LLD:-$(brew --prefix lld)/bin/ld.lld}"
+LDS="$CC9/test/plan9.ld"; LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"
+
+out=""; inputs=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2;;
+    # Drop the host's standard -l libs (m/pthread/dl/rt/c/util/z/...) and -L
+    # paths: cc9 provides all of libc/libm/pthreads inside libcc9cxx.a+libcc9m.a,
+    # which are added below. lld would otherwise fail to find e.g. -lm.
+    -l*|-L*) shift;;
+    # Drop host driver/linker flags that don't apply to a static Plan 9 a.out
+    # (rpath, shared, soname, pie, gc-sections passthroughs, etc.).
+    -Wl,*|-rpath|-shared|-pie|-no-pie|-rdynamic|-Wl) shift;;
+    *) inputs+=("$1"); shift;;
+  esac
+done
+[ -n "$out" ] || { echo "cc9-link: no -o <target>" >&2; exit 2; }
+elf="${out}.elf"
+# One big --start-group: LLVM's static libs are mutually recursive, and the cc9
+# runtime/libm are too. Objects inside a group are harmless.
+"$LLD" -o "$elf" --start-group "${inputs[@]}" "$LIB" "$LIBM" --end-group \
+  -T "$LDS" -static -nostdlib
+python3 "$CC9/host/elf2aout.py" "$elf" "$out"

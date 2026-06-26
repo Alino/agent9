@@ -2,9 +2,6 @@
 #define _SYS_STAT_H
 #include <sys/types.h>
 #include <time.h>
-typedef unsigned int mode_t; typedef unsigned long ino_t; typedef unsigned long dev_t;
-typedef unsigned int nlink_t; typedef long off_t; typedef unsigned int uid_t; typedef unsigned int gid_t;
-typedef long blksize_t; typedef long blkcnt_t;
 struct stat {
   dev_t st_dev; ino_t st_ino; mode_t st_mode; nlink_t st_nlink;
   uid_t st_uid; gid_t st_gid; dev_t st_rdev; off_t st_size;
@@ -34,10 +31,20 @@ struct stat {
 #define S_IWUSR 0200
 #define S_IXUSR 0100
 #define S_IRWXG 0070
+#define S_IRGRP 0040
+#define S_IWGRP 0020
+#define S_IXGRP 0010
 #define S_IRWXO 0007
+#define S_IROTH 0004
+#define S_IWOTH 0002
+#define S_IXOTH 0001
+#define S_ISUID 04000
+#define S_ISGID 02000
+#define S_ISVTX 01000
 #ifdef __cplusplus
 extern "C" {
 #endif
+mode_t umask(mode_t);
 int stat(const char *, struct stat *);
 int fstat(int, struct stat *);
 int lstat(const char *, struct stat *);

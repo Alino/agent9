@@ -332,3 +332,40 @@ n9_rfork_thread:                  // rdi=stacktop, rsi=fn, rdx=arg
 	movq	$8, %rbp           // EXITS
 	syscall
 2:	jmp	2b
+
+// long n9_notify(void *handler)  NOTIFY=28. Registers a Plan 9 note handler.
+	.globl n9_notify
+n9_notify:
+	SAVE_CALLEE
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	$28, %rbp
+	syscall
+	addq	$16, %rsp
+	REST_CALLEE
+	ret
+
+// long n9_noted(int disposition)  NOTED=29. Returns from a note (NDFLT=1 dies,
+// NCONT=0 resumes). Does not return to the caller on NDFLT.
+	.globl n9_noted
+n9_noted:
+	subq	$16, %rsp
+	movl	%edi, 8(%rsp)
+	movq	$29, %rbp
+	syscall
+	addq	$16, %rsp
+	ret
+
+// cc9_notetramp — the registered note handler. The kernel enters here (Plan 9
+// note frame on the stack) when a note is posted. We don't know the exact amd64
+// frame offsets without the kernel source, so we hand the raw entry %rsp to a
+// SysV C scanner that dumps the note string (it contains pc=/addr=) to fd 2,
+// then terminate with noted(NDFLT). Never returns.
+	.globl cc9_notetramp
+cc9_notetramp:
+	movq	%rsp, %rdi         // raw note-frame base -> SysV arg0
+	andq	$-16, %rsp         // align for the SysV call (we never return here)
+	call	cc9_note_handler
+	movl	$1, %edi           // NDFLT
+	call	n9_noted
+3:	jmp	3b

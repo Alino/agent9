@@ -18,6 +18,8 @@ time_t time(time_t *); clock_t clock(void);
 double difftime(time_t, time_t); time_t mktime(struct tm *);
 char *asctime(const struct tm *); char *ctime(const time_t *);
 struct tm *gmtime(const time_t *); struct tm *localtime(const time_t *);
+struct tm *gmtime_r(const time_t *, struct tm *); struct tm *localtime_r(const time_t *, struct tm *);
+char *asctime_r(const struct tm *, char *); char *ctime_r(const time_t *, char *);
 size_t strftime(char *, size_t, const char *, const struct tm *);
 int timespec_get(struct timespec *, int);
 int clock_gettime(clockid_t, struct timespec *);

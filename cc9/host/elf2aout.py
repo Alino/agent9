@@ -66,6 +66,14 @@ def main():
     else:
         data, bss = b'', 0
 
+    # The a.out header packs text/data/bss as 32-bit big-endian. clang (~150 MB)
+    # is well under 4 GB, but a segment that overflows would silently truncate and
+    # produce a corrupt binary — fail loudly instead.
+    for nm, val in (('text', len(text)), ('data', len(data)), ('bss', bss)):
+        if val >= (1 << 32):
+            sys.exit(f"{nm} segment 0x{val:x} >= 4 GB: does not fit the 32-bit "
+                     f"a.out size field (would truncate)")
+
     hdr  = struct.pack('>8I', S_MAGIC, len(text), len(data), bss, 0,
                        e_entry & 0xffffffff, 0, 0)
     hdr += struct.pack('>Q', e_entry)

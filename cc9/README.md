@@ -107,7 +107,7 @@ int main() {
 | Piece | What it provides |
 |---|---|
 | `n9syscall.s` | SysV→Plan9 syscall thunks (pwrite/pread/open/brk/rfork/sem*/stat/wstat/…). **Saves/restores all SysV callee-saved regs around `SYSCALL`** — the Plan 9 kernel clobbers rbx/rbp/r13. |
-| `crt0.c` | `_start`, `.init_array`/`.fini_array`, `atexit`/`__cxa_atexit`, an 8 MiB BSS main stack (shared via RFMEM so thread captures work), and **FP-exception masking** (bare-metal 9front traps on div-by-zero otherwise). |
+| `crt0.c` | `_start`, **real `argc`/`argv`** (from the Plan 9 entry stack) + **`environ`** (from `/env`), `.init_array`/`.fini_array`, `atexit`/`__cxa_atexit`, an 8 MiB BSS main stack (shared via RFMEM so thread captures work), and **FP-exception masking** (bare-metal 9front traps on div-by-zero otherwise). |
 | `n9libc.c` | freestanding libc: a K&R heap over the `brk` syscall (overflow-guarded `malloc`/`calloc`/`realloc`/`aligned_alloc`), `mem*`/`str*`, `strto*` (base/0x/sign/exponent), ctype, `strftime`, time over `/dev/bintime`, GCC atomic/fenv shims. |
 | `printf.c` | real `vsnprintf`/`vsscanf` incl. float conversion (long-double digit extraction over openlibm) and precision. |
 | `stdio.c` | `FILE` layer over Plan 9 fds (stdio + real files; short-transfer-safe `fwrite`/`fread`). |
@@ -180,7 +180,8 @@ Environment: `CC9_LLVM` (brew llvm bin), `CC9_LLD` (ld.lld), `CC9_LIBCXX`
 - **Bare-metal FP** is masked at startup but only fully verifiable on real hardware
   (QEMU TCG doesn't trap on FP exceptions regardless).
 - Minor documented gaps: `getenv` returns a shared static buffer; wide numeric
-  parsing caps at 127 chars; `crt0` provides a stub `argv`/no `environ`.
+  parsing caps at 127 chars. (`crt0` now passes the real kernel `argc`/`argv` and
+  populates `environ` from `/env`.)
 
 The runtime has been through two adversarial multi-agent review rounds; see the
 git history (`cc9: fix … from a full runtime review`).

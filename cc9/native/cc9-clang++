@@ -1,0 +1,17 @@
+#!/bin/bash
+# cc9-clang++ — C++ compile wrapper for the cc9 cross-toolchain (CMAKE_CXX_COMPILER).
+# Transparent: forwards every arg to host clang++, injecting only the cc9
+# freestanding target + the from-source libc++ headers. Does NOT force
+# -fexceptions/-frtti: LLVM builds -fno-exceptions -fno-rtti and controls that
+# itself; the runtime archive supports either.
+set -euo pipefail
+CC9="$(cd "$(dirname "$0")/.." && pwd)"
+LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
+LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-thr/include/c++/v1}"
+# The from-source libc++ header tree is configured to use its own rune table and
+# clock_gettime path — these defines must match how it was built (cf. host/cc9,
+# build-runtime.sh), or headers like <__locale> fail to declare __regex_word etc.
+exec "$LLVM/clang++" --target=x86_64-unknown-none -nostdlib -fno-pic -femulated-tls \
+  -funwind-tables -nostdinc++ \
+  -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME \
+  -isystem "$LIBCXX" -isystem "$CC9/runtime/include" "$@"
