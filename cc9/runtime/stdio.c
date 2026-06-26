@@ -5,6 +5,8 @@
 typedef unsigned long size_t;
 extern long n9_pwrite(int, const void *, long, long long);
 extern long n9_pread(int, void *, long, long long);
+extern void *malloc(size_t);
+extern void free(void *);
 
 struct _CC9_FILE { int fd; int ungot; int eof; int err; };
 typedef struct _CC9_FILE FILE;
@@ -13,20 +15,28 @@ FILE *stdin = &_stdin, *stdout = &_stdout, *stderr = &_stderr;
 
 size_t fwrite(const void *p, size_t sz, size_t n, FILE *f){
 	if(!sz || !n) return 0;
-	long total = (long)(sz * n);
-	long w = n9_pwrite(f->fd, p, total, -1);
-	if(w < 0){ f->err = 1; return 0; }
-	return (size_t)w / sz;
+	size_t total = sz * n, done = 0;
+	const char *s = p;
+	/* loop: one pwrite can short-write on pipes/devices/9P mounts; keep going
+	 * until everything is written or an error, else the tail is silently lost. */
+	while(done < total){
+		long w = n9_pwrite(f->fd, s + done, (long)(total - done), -1);
+		if(w <= 0){ f->err = 1; break; }
+		done += (size_t)w;
+	}
+	return done / sz;
 }
 size_t fread(void *p, size_t sz, size_t n, FILE *f){
 	if(!sz || !n) return 0;
-	char *d = p; size_t got = 0;
-	if(f->ungot >= 0){ *d++ = (char)f->ungot; f->ungot = -1; got = 1; }
-	long want = (long)(sz*n) - (long)got;
-	if(want > 0){
-		long r = n9_pread(f->fd, d, want, -1);
-		if(r < 0){ f->err = 1; }
-		else { if(r == 0) f->eof = 1; got += (size_t)r; }
+	char *d = p; size_t total = sz * n, got = 0;
+	if(f->ungot >= 0){ d[got++] = (char)f->ungot; f->ungot = -1; }
+	/* loop until the request is satisfied or EOF/error (a single pread can return
+	 * short on pipes/devices even when more data is coming). */
+	while(got < total){
+		long r = n9_pread(f->fd, d + got, (long)(total - got), -1);
+		if(r < 0){ f->err = 1; break; }
+		if(r == 0){ f->eof = 1; break; }
+		got += (size_t)r;
 	}
 	return got / sz;
 }
@@ -49,9 +59,19 @@ int fileno(FILE *f){ return f->fd; }
 /* printf family over vsnprintf (n9libc) + fwrite. */
 extern int vsnprintf(char *, size_t, const char *, __builtin_va_list);
 int vfprintf(FILE *f, const char *fmt, __builtin_va_list ap){
-	char buf[1024]; int n = vsnprintf(buf, sizeof buf, fmt, ap);
-	if(n > (int)sizeof buf - 1) n = sizeof buf - 1;
-	return (int)fwrite(buf, 1, (size_t)n, f);
+	char buf[1024];
+	__builtin_va_list ap2; __builtin_va_copy(ap2, ap);
+	int n = vsnprintf(buf, sizeof buf, fmt, ap);
+	if(n < 0){ __builtin_va_end(ap2); return n; }
+	if(n < (int)sizeof buf){ __builtin_va_end(ap2); return (int)fwrite(buf, 1, (size_t)n, f); }
+	/* didn't fit: reformat into an exact-size heap buffer so nothing is dropped. */
+	char *big = malloc((size_t)n + 1);
+	if(!big){ __builtin_va_end(ap2); return (int)fwrite(buf, 1, sizeof buf - 1, f); }   /* fall back */
+	int n2 = vsnprintf(big, (size_t)n + 1, fmt, ap2);
+	__builtin_va_end(ap2);
+	int w = (int)fwrite(big, 1, (size_t)(n2 < 0 ? 0 : n2), f);
+	free(big);
+	return w;
 }
 int fprintf(FILE *f, const char *fmt, ...){ __builtin_va_list ap; __builtin_va_start(ap,fmt); int r=vfprintf(f,fmt,ap); __builtin_va_end(ap); return r; }
 int printf(const char *fmt, ...){ __builtin_va_list ap; __builtin_va_start(ap,fmt); int r=vfprintf(stdout,fmt,ap); __builtin_va_end(ap); return r; }

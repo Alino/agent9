@@ -72,6 +72,11 @@ for a in stdlib_exception stdlib_typeinfo private_typeinfo cxa_aux_runtime abort
          cxa_vector fallback_malloc; do
   "$LLVM/clang++" "${abix[@]}" -c "$LLVMSRC/libcxxabi/src/$a.cpp" -o "$O/abi_$a.o"
 done
+# std::exception_ptr + current/rethrow_exception + nested_exception (delegating to
+# the __cxa_* primary-exception API). A focused shim — NOT libc++ exception.cpp,
+# which would also redefine terminate/unexpected/bad_cast/bad_typeid and clash
+# with the libcxxabi objects above. Needed by std::promise/future/call_once.
+"$LLVM/clang++" "${lcxx[@]}" -I "$LLVMSRC/libcxxabi/include" -c "$CC9/runtime/exception_ptr.cpp" -o "$O/exception_ptr.o"
 # libunwind DWARF core: the cursor+CFI interpreter, level-1 API, register save/restore.
 uwf=(--target=x86_64-unknown-none -nostdlib -I "$LLVMSRC/libunwind/include" -I "$LLVMSRC/libunwind/src"
      -isystem "$INC" -D_LIBUNWIND_IS_NATIVE_ONLY -D_LIBUNWIND_IS_BAREMETAL -D_LIBUNWIND_SUPPORT_DWARF_UNWIND

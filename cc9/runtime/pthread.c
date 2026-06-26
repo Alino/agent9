@@ -13,6 +13,8 @@ extern long n9_pread(int, void *, long, long long);
 extern long n9_close(int);
 extern void *malloc(size_t);
 extern void free(void *);
+extern void cc9_fpmask(void);   /* mask FP exceptions for this rfork'd thread (crt0.c) */
+extern void n9_exits(const char *);
 
 #include <pthread.h>
 
@@ -28,36 +30,65 @@ static int create_lock = 1;       /* serializes the rfork handoff */
 static int handoff_sem = 0;       /* child signals it has consumed the handoff */
 
 #define MAXTH 1024
-static struct { int used; unsigned long pid; n9_thread *t; } th_tab[MAXTH];
+/* stklo/stkhi are SCALARS (not derived from t->stack at scan time) so cur_pid
+ * never dereferences t — t/stack may be freed by a concurrent join. On amd64
+ * (TSO) the lock-free scan is safe: the writer sets stklo/stkhi/pid BEFORE used,
+ * and a cleared slot (used=0) is skipped, so no stale match and no use-after-free. */
+static struct { int used; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; } th_tab[MAXTH];
 static int th_lock = 1;
 
 static n9_thread *find_thread(unsigned long pid){
-	for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==pid) return th_tab[i].t;
-	return 0;
+	n9_thread *t=0;
+	n9_semacquire(&th_lock,1);
+	for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==pid){ t=th_tab[i].t; break; }
+	n9_semrelease(&th_lock,1);
+	return t;
+}
+
+/* Claim a thread's table slot exactly once (returns 1 to the single caller that
+ * wins). The winner owns freeing t/stack — prevents the double-free when both
+ * the detached-trampoline path and a detach-after-done both try to reap. */
+static int reap_slot(unsigned long pid){
+	int claimed=0;
+	n9_semacquire(&th_lock,1);
+	for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==pid){ th_tab[i].used=0; claimed=1; break; }
+	n9_semrelease(&th_lock,1);
+	return claimed;
 }
 
 /* current "pid" = a stable per-thread id derived from which stack %rsp is in. */
 static unsigned long cur_pid(void){
 	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
 	for(int i=0;i<MAXTH;i++){
-		if(!th_tab[i].used) continue;
-		unsigned long lo=(unsigned long)th_tab[i].t->stack;
-		if(sp>=lo && sp<lo+STACKSIZE) return th_tab[i].pid;
+		if(!th_tab[i].used) continue;          /* TSO: used==1 implies stklo/stkhi visible */
+		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return th_tab[i].pid;
 	}
 	return 1;   /* main thread */
 }
 
 static void trampoline(void *p){
 	n9_thread *t = (n9_thread *)p;
-	/* Register (tid, t, stack) BEFORE releasing the handoff the creator waits on,
-	 * so by the time pthread_create returns the thread is findable AND cur_pid()
-	 * (stack-range scan) resolves this thread — both before start() runs. */
+	cc9_fpmask();   /* this rfork child has fresh FP state — mask FP exceptions */
+	/* Register (tid, t, stack-range) BEFORE releasing the handoff the creator
+	 * waits on, so by the time pthread_create returns the thread is findable AND
+	 * cur_pid() resolves this thread — both before start() runs. The scalar range
+	 * + used-set-last ordering is what makes the lock-free cur_pid scan safe. */
+	unsigned long lo = (unsigned long)t->stack, hi = lo + STACKSIZE;
 	n9_semacquire(&th_lock,1);
-	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){ th_tab[i].used=1; th_tab[i].pid=t->pid; th_tab[i].t=t; break; }
+	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){
+		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi;
+		th_tab[i].used=1; break;
+	}
 	n9_semrelease(&th_lock,1);
 	n9_semrelease(&handoff_sem, 1);   /* signal the rfork globals are consumed + registered */
 	t->ret = t->start(t->arg);
 	t->done = 1;
+	if(t->detached){
+		/* nobody will join: reap now (else it leaks until th_tab fills and
+		 * create starts failing). reap_slot makes the free single-owner. */
+		if(reap_slot(t->pid)){ free(t->stack); free(t); }
+		return;
+	}
 	n9_semrelease(&t->joinsem, 1);    /* wake any joiner */
 }
 
@@ -77,9 +108,11 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	void *top = (void *)(((unsigned long)(stk+STACKSIZE)) & ~15UL);
 	n9_semacquire(&create_lock, 1);
 	long pid = n9_rfork_thread(top, trampoline, t);
+	if(pid < 0){   /* rfork failed: no child will ever release handoff_sem */
+		n9_semrelease(&create_lock, 1); free(stk); free(t); return 11;
+	}
 	n9_semacquire(&handoff_sem, 1);   /* wait until the child registered + copied the handoff */
 	n9_semrelease(&create_lock, 1);
-	if(pid < 0){ free(stk); free(t); return 11; }
 	*th = (pthread_t)tid;
 	return 0;
 }
@@ -89,14 +122,18 @@ int pthread_join(pthread_t pid, void **ret){
 	if(!t) return 3;   /* ESRCH */
 	n9_semacquire(&t->joinsem, 1);
 	if(ret) *ret = t->ret;
-	n9_semacquire(&th_lock,1);
-	for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==pid){ th_tab[i].used=0; break; }
-	n9_semrelease(&th_lock,1);
-	free(t->stack); free(t);
+	if(reap_slot(pid)){ free(t->stack); free(t); }
 	return 0;
 }
 
-int pthread_detach(pthread_t pid){ n9_thread *t=find_thread(pid); if(t) t->detached=1; return 0; }
+int pthread_detach(pthread_t pid){
+	n9_thread *t=find_thread(pid); if(!t) return 3;
+	t->detached=1;
+	/* If it already finished, trampoline saw detached==0 and didn't reap, so do
+	 * it here (reap_slot guarantees only one of us frees). */
+	if(t->done && reap_slot(pid)){ free(t->stack); free(t); }
+	return 0;
+}
 pthread_t pthread_self(void){ return (pthread_t)cur_pid(); }
 int pthread_equal(pthread_t a, pthread_t b){ return a==b; }
 void pthread_exit(void *ret){ unsigned long pid=cur_pid(); n9_thread *t=find_thread(pid); if(t){ t->ret=ret; t->done=1; n9_semrelease(&t->joinsem,1);} for(;;) n9_sleep(1000); }
@@ -120,6 +157,8 @@ int pthread_mutex_trylock(pthread_mutex_t *m){
 	m->owner=self; m->count=1; return 0;
 }
 int pthread_mutex_unlock(pthread_mutex_t *m){
+	if((m->kind==PTHREAD_MUTEX_RECURSIVE || m->kind==PTHREAD_MUTEX_ERRORCHECK)
+	   && m->owner != cur_pid()) return 1 /*EPERM*/;   /* only the owner may unlock */
 	if(m->kind==PTHREAD_MUTEX_RECURSIVE && m->count>1){ m->count--; return 0; }
 	m->owner=0; m->count=0; n9_semrelease(&m->sem, 1); return 0;
 }
@@ -149,12 +188,19 @@ int pthread_cond_broadcast(pthread_cond_t *c){
 }
 
 /* ---- once ---- */
+/* 3-state once: 0=unstarted, 1=in-progress, 2=done. fn() runs WITHOUT the lock
+ * held (so nested pthread_once on a different flag can't deadlock); concurrent
+ * callers spin-yield until the initializer that set 1 finishes and sets 2. */
 int pthread_once(pthread_once_t *o, void (*fn)(void)){
 	static int once_lock = 1;
-	n9_semacquire(&once_lock,1);
-	if(*o==0){ *o=1; n9_semrelease(&once_lock,1); fn(); }
-	else n9_semrelease(&once_lock,1);
-	return 0;
+	for(;;){
+		n9_semacquire(&once_lock,1);
+		if(*o==2){ n9_semrelease(&once_lock,1); return 0; }
+		if(*o==0){ *o=1; n9_semrelease(&once_lock,1); fn();
+			n9_semacquire(&once_lock,1); *o=2; n9_semrelease(&once_lock,1); return 0; }
+		n9_semrelease(&once_lock,1);   /* *o==1: another caller is running fn() */
+		n9_sleep(0);
+	}
 }
 
 /* ---- TLS, keyed by pid (RFMEM shares memory, so no real per-thread storage) ---- */
@@ -186,16 +232,20 @@ void *__emutls_get_address(void *control){
 	size_t size = c[0];
 	void *init = ((void **)control)[3];
 	unsigned long pid = cur_pid();
+	/* Hold the lock across the whole find-or-create (malloc uses a DIFFERENT
+	 * lock, so no deadlock). Dropping it between search and insert let a
+	 * reentrant same-(pid,ctrl) call create a duplicate block (TOCTOU). */
 	n9_semacquire(&emutls_lock,1);
 	for(int i=0;i<MAXEMUTLS;i++)
 		if(emutls_tab[i].used && emutls_tab[i].pid==pid && emutls_tab[i].ctrl==control){
 			void *m=emutls_tab[i].mem; n9_semrelease(&emutls_lock,1); return m; }
-	n9_semrelease(&emutls_lock,1);
 	void *m = malloc(size ? size : 1);
+	if(!m){ n9_semrelease(&emutls_lock,1); n9_exits("cc9: emutls OOM\n"); }
 	if(init) memcpy(m, init, size); else memset(m, 0, size);
-	n9_semacquire(&emutls_lock,1);
-	for(int i=0;i<MAXEMUTLS;i++) if(!emutls_tab[i].used){ emutls_tab[i].used=1; emutls_tab[i].pid=pid; emutls_tab[i].ctrl=control; emutls_tab[i].mem=m; break; }
+	int placed=0;
+	for(int i=0;i<MAXEMUTLS;i++) if(!emutls_tab[i].used){ emutls_tab[i].used=1; emutls_tab[i].pid=pid; emutls_tab[i].ctrl=control; emutls_tab[i].mem=m; placed=1; break; }
 	n9_semrelease(&emutls_lock,1);
+	if(!placed) n9_exits("cc9: emutls table full\n");   /* would silently lose thread_local identity */
 	return m;
 }
 

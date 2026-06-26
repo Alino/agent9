@@ -17,11 +17,34 @@ extern "C" void __cxa_pure_virtual()
 // (__abort_message, __cxa_bad_typeid, __cxa_bad_cast now come from the real
 // libcxxabi runtime — exceptions are enabled.)
 
-// Thread-safe-static init guards (Itanium ABI). cc9 is single-threaded, so the
-// guard's first byte is just an "initialized" flag — the classic minimal impl.
-extern "C" int __cxa_guard_acquire(unsigned long long *g) { return !*(char *)g; }
-extern "C" void __cxa_guard_release(unsigned long long *g) { *(char *)g = 1; }
-extern "C" void __cxa_guard_abort(unsigned long long *g) { (void)g; }
+// Thread-safe-static init guards (Itanium ABI). cc9 now runs real threads (and
+// libc++ is built with threading), so two threads first-touching the same
+// function-local static must NOT both construct. byte[0] = initialized (the flag
+// the compiler's fast path reads); byte[1] = in-progress. A global lock makes
+// the check-and-claim atomic; the constructor runs WITHOUT the lock (so nested
+// static init can't deadlock) while other threads spin-yield until byte[0] is set.
+extern "C" int n9_semacquire(int *, int);
+extern "C" int n9_semrelease(int *, int);
+extern "C" long n9_sleep(long);
+static int cc9_guard_lock = 1;
+extern "C" int __cxa_guard_acquire(unsigned long long *g) {
+	unsigned char *b = (unsigned char *)g;
+	for (;;) {
+		n9_semacquire(&cc9_guard_lock, 1);
+		if (b[0]) { n9_semrelease(&cc9_guard_lock, 1); return 0; }        // already done
+		if (!b[1]) { b[1] = 1; n9_semrelease(&cc9_guard_lock, 1); return 1; } // we construct
+		n9_semrelease(&cc9_guard_lock, 1);                               // another thread is constructing
+		n9_sleep(0);
+	}
+}
+extern "C" void __cxa_guard_release(unsigned long long *g) {
+	unsigned char *b = (unsigned char *)g;
+	n9_semacquire(&cc9_guard_lock, 1); b[0] = 1; b[1] = 0; n9_semrelease(&cc9_guard_lock, 1);
+}
+extern "C" void __cxa_guard_abort(unsigned long long *g) {
+	unsigned char *b = (unsigned char *)g;
+	n9_semacquire(&cc9_guard_lock, 1); b[1] = 0; n9_semrelease(&cc9_guard_lock, 1);
+}
 
 // operator new/delete over the C allocator. delete MUST call free — a no-op
 // leaks every realloc until brk runs out (found via the test suite). free()
@@ -32,8 +55,18 @@ extern "C" void __cxa_guard_abort(unsigned long long *g) { (void)g; }
 // with a duplicate symbol. Weak makes ours the default only.
 #define CC9_WEAK __attribute__((weak))
 
-CC9_WEAK void *operator new(unsigned long n) { void *p = malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
-CC9_WEAK void *operator new[](unsigned long n) { void *p = malloc(n ? n : 1); if (!p) throw std::bad_alloc(); return p; }
+// On failure, run the installed new_handler and retry; throw bad_alloc only when
+// no handler is set ([new.delete.single]).
+static void *cc9_new(unsigned long n) {
+	for (;;) {
+		if (void *p = malloc(n ? n : 1)) return p;
+		std::new_handler h = std::get_new_handler();
+		if (!h) throw std::bad_alloc();
+		h();
+	}
+}
+CC9_WEAK void *operator new(unsigned long n) { return cc9_new(n); }
+CC9_WEAK void *operator new[](unsigned long n) { return cc9_new(n); }
 // (placement new/delete come from <new>, inline — don't redefine.)
 CC9_WEAK void operator delete(void *p) noexcept { free(p); }
 CC9_WEAK void operator delete(void *p, unsigned long) noexcept { free(p); }
@@ -42,29 +75,40 @@ CC9_WEAK void operator delete[](void *p, unsigned long) noexcept { free(p); }
 
 // nothrow variants — same allocator (malloc returns 0 on failure, which is the
 // nothrow contract).
-CC9_WEAK void *operator new(unsigned long n, const std::nothrow_t &) noexcept { return malloc(n); }
-CC9_WEAK void *operator new[](unsigned long n, const std::nothrow_t &) noexcept { return malloc(n); }
+// nothrow: try the throwing path, return null instead of propagating bad_alloc.
+// (also fixes n==0 returning a unique non-null pointer via cc9_new's n?n:1.)
+CC9_WEAK void *operator new(unsigned long n, const std::nothrow_t &) noexcept { try { return cc9_new(n); } catch (...) { return nullptr; } }
+CC9_WEAK void *operator new[](unsigned long n, const std::nothrow_t &) noexcept { try { return cc9_new(n); } catch (...) { return nullptr; } }
 CC9_WEAK void operator delete(void *p, const std::nothrow_t &) noexcept { free(p); }
 CC9_WEAK void operator delete[](void *p, const std::nothrow_t &) noexcept { free(p); }
 
 // over-aligned (C++17) — honor the requested alignment via aligned_alloc (NOT
 // plain malloc, which only guarantees 16 bytes). free() recovers the base.
-CC9_WEAK void *operator new(unsigned long n, std::align_val_t a) { return aligned_alloc((unsigned long)a, n); }
-CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a) { return aligned_alloc((unsigned long)a, n); }
+static void *cc9_new_aligned(unsigned long n, unsigned long a) {
+	for (;;) {
+		if (void *p = aligned_alloc(a, n ? n : 1)) return p;
+		std::new_handler h = std::get_new_handler();
+		if (!h) throw std::bad_alloc();
+		h();
+	}
+}
+CC9_WEAK void *operator new(unsigned long n, std::align_val_t a) { return cc9_new_aligned(n, (unsigned long)a); }
+CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a) { return cc9_new_aligned(n, (unsigned long)a); }
 CC9_WEAK void operator delete(void *p, std::align_val_t) noexcept { free(p); }
 CC9_WEAK void operator delete[](void *p, std::align_val_t) noexcept { free(p); }
 CC9_WEAK void operator delete(void *p, unsigned long, std::align_val_t) noexcept { free(p); }
 CC9_WEAK void operator delete[](void *p, unsigned long, std::align_val_t) noexcept { free(p); }
-CC9_WEAK void *operator new(unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { return aligned_alloc((unsigned long)a, n); }
-CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { return aligned_alloc((unsigned long)a, n); }
+CC9_WEAK void *operator new(unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { try { return cc9_new_aligned(n, (unsigned long)a); } catch (...) { return nullptr; } }
+CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { try { return cc9_new_aligned(n, (unsigned long)a); } catch (...) { return nullptr; } }
 CC9_WEAK void operator delete(void *p, std::align_val_t, const std::nothrow_t &) noexcept { free(p); }
 CC9_WEAK void operator delete[](void *p, std::align_val_t, const std::nothrow_t &) noexcept { free(p); }
 
 // The std::nothrow object (set/get_new_handler now come from libcxxabi).
 namespace std { const nothrow_t nothrow{}; }
 
-// std::uncaught_exceptions (was in libc++ exception.cpp, which libcxxabi
-// replaces) + a __cxa_demangle stub (only used to prettify terminate messages).
+// std::uncaught_exceptions (libc++'s exception.cpp isn't linked — it would clash
+// with the libcxxabi runtime; exception_ptr comes from runtime/exception_ptr.cpp)
+// + a __cxa_demangle stub (only used to prettify terminate messages).
 extern "C" unsigned __cxa_uncaught_exceptions() noexcept;
 namespace std {
 int uncaught_exceptions() noexcept { return (int)__cxa_uncaught_exceptions(); }

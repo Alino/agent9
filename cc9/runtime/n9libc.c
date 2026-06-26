@@ -45,6 +45,9 @@ static void free_u(void *ap){
 }
 static Header *kr_morecore(size_t nu){
 	if(nu < 4096) nu = 4096;
+	/* nu*sizeof(Header) must fit in a positive long for n9_sbrk (else the cast
+	 * goes negative and shrinks the break / corrupts the heap). */
+	if(nu > 0x7fffffffffffffffUL / sizeof(Header)) return 0;
 	void *cp = n9_sbrk((long)(nu * sizeof(Header)));
 	if(cp == (void*)-1) return 0;
 	Header *up = (Header*)cp; up->s.size = nu;
@@ -53,6 +56,8 @@ static Header *kr_morecore(size_t nu){
 }
 static void *malloc_u(size_t nbytes){
 	if(nbytes == 0) return 0;
+	/* guard the nunits round-up + the +1 header against size_t overflow */
+	if(nbytes > (size_t)-1 - 2*sizeof(Header)) return 0;
 	size_t nunits = (nbytes + sizeof(Header) - 1) / sizeof(Header) + 1;
 	Header *p, *prevp;
 	if((prevp = kr_freep) == 0){ kr_base.s.ptr = kr_freep = prevp = &kr_base; kr_base.s.size = 0; }
@@ -79,6 +84,8 @@ void free(void *p){ if(!p) return; n9_semacquire(&malloc_lock,1); free_u(p); n9_
  * + sentinel so plain free() reclaims it (see free above). */
 void *aligned_alloc(size_t al, size_t size){
 	if(al <= 16) return malloc(size);
+	if(al & (al - 1)) return 0;                    /* alignment must be a power of two */
+	if(size > (size_t)-1 - al - 16) return 0;      /* size+al+16 overflow guard */
 	char *base = malloc(size + al + 16);
 	if(!base) return 0;
 	unsigned long a = ((unsigned long)base + 16 + al - 1) & ~(al - 1);
@@ -90,14 +97,26 @@ int posix_memalign(void **out, size_t al, size_t size){
 	void *p = aligned_alloc(al < 16 ? 16 : al, size);
 	if(!p) return 12 /*ENOMEM*/; *out = p; return 0;
 }
-void *calloc(size_t a,size_t b){ size_t n=a*b; char*p=malloc(n); if(p) for(size_t i=0;i<n;i++)p[i]=0; return p; }
+void *calloc(size_t a,size_t b){
+	if(a && b > (size_t)-1 / a) return 0;            /* multiply-overflow guard */
+	size_t n=a*b; char*p=malloc(n); if(p) for(size_t i=0;i<n;i++)p[i]=0; return p;
+}
 void *realloc(void*old,size_t n){
 	if(!old) return malloc(n);
 	if(n==0){ free(old); return 0; }
+	/* An aligned_alloc'd pointer carries the sentinel at old[-1] and its real
+	 * malloc base at old[-2]; size/free must use the base, not old-1. */
+	void *base = old; size_t oldsz;
+	if(((unsigned long*)old)[-1] == CC9_ALIGN_MAGIC){
+		base = *(void**)((char*)old - 16);
+		Header *bp=(Header*)base-1; size_t blk=(bp->s.size-1)*sizeof(Header);
+		oldsz = blk - (size_t)((char*)old - (char*)base);   /* usable bytes from `old` */
+	} else {
+		Header *bp=(Header*)old-1; oldsz=(bp->s.size-1)*sizeof(Header);
+	}
 	n9_semacquire(&malloc_lock,1);
-	Header *bp=(Header*)old-1; size_t oldsz=(bp->s.size-1)*sizeof(Header);
 	char *np=malloc_u(n);
-	if(np){ size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i]; free_u(old); }
+	if(np){ size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i]; free_u(base); }
 	n9_semrelease(&malloc_lock,1);
 	return np;
 }
@@ -228,8 +247,48 @@ float strtof_l(const char *s, char **e, void *l){ (void)l; return strtof(s,e); }
 long double strtold_l(const char *s, char **e, void *l){ (void)l; return strtold(s,e); }
 long strtol_l(const char *s, char **e, int b, void *l){ (void)l; return strtol(s,e,b); }
 unsigned long strtoul_l(const char *s, char **e, int b, void *l){ (void)l; return strtoul(s,e,b); }
-double strtod(const char *s, char **e){ double r=0; int neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){r=r*10+(*s-'0');s++;} if(*s=='.'){s++;double f=0.1; while(*s>='0'&&*s<='9'){r+=(*s-'0')*f;f*=0.1;s++;}} if(e)*e=(char*)s; return neg?-r:r; }
-long strtol(const char *s, char **e, int b){ (void)b; long r=0; int neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){r=r*10+(*s-'0');s++;} if(e)*e=(char*)s; return neg?-r:r; }
+/* shared integer parser: skip whitespace, optional +/-, 0x/0 base autodetect,
+ * honor `base`. *neg set on '-'. endptr per C (== nptr if no digits consumed). */
+static unsigned long long n9_ustrto(const char *nptr, char **e, int base, int *neg){
+	const char *s = nptr;
+	while(*s==' '||*s=='\t'||*s=='\n'||*s=='\r'||*s=='\v'||*s=='\f') s++;
+	*neg = 0; if(*s=='+') s++; else if(*s=='-'){ *neg=1; s++; }
+	if((base==0||base==16) && s[0]=='0' && (s[1]=='x'||s[1]=='X') &&
+	   ((s[2]>='0'&&s[2]<='9')||((s[2]|32)>='a'&&(s[2]|32)<='f'))){ s+=2; base=16; }
+	else if(base==0 && s[0]=='0'){ base=8; }
+	else if(base==0) base=10;
+	unsigned long long r=0; int any=0;
+	for(;; s++){
+		unsigned char c=*s; int d;
+		if(c>='0'&&c<='9') d=c-'0';
+		else if((c|32)>='a'&&(c|32)<='z') d=(c|32)-'a'+10;
+		else break;
+		if(d>=base) break;
+		r = r*(unsigned)base + (unsigned)d; any=1;
+	}
+	if(e) *e=(char*)(any?s:nptr);
+	return r;
+}
+double strtod(const char *nptr, char **e){
+	const char *s=nptr;
+	while(*s==' '||*s=='\t'||*s=='\n'||*s=='\r'||*s=='\v'||*s=='\f') s++;
+	int neg=0; if(*s=='+')s++; else if(*s=='-'){neg=1;s++;}
+	double r=0; int any=0;
+	while(*s>='0'&&*s<='9'){ r=r*10+(*s-'0'); s++; any=1; }
+	if(*s=='.'){ s++; double f=0.1; while(*s>='0'&&*s<='9'){ r+=(*s-'0')*f; f*=0.1; s++; any=1; } }
+	if(any && (*s=='e'||*s=='E')){
+		const char *es=s; s++;
+		int eneg=0; if(*s=='+')s++; else if(*s=='-'){eneg=1;s++;}
+		if(*s>='0'&&*s<='9'){
+			int ex=0; while(*s>='0'&&*s<='9'){ if(ex<100000) ex=ex*10+(*s-'0'); s++; }
+			double p=1.0; for(int i=0;i<ex;i++) p*=10.0;
+			if(eneg) r/=p; else r*=p;
+		} else s=es;   /* lone 'e': not part of the number */
+	}
+	if(e)*e=(char*)(any?s:nptr);
+	return neg?-r:r;
+}
+long strtol(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-(long)r:(long)r; }
 
 /* ctype + strtold for libc++/json */
 int isdigit(int c){ return c>='0'&&c<='9'; }
@@ -248,9 +307,9 @@ int isblank(int c){ return c==' '||c=='\t'; }
 int ispunct(int c){ return isgraph(c)&&!isalnum(c); }
 long double strtold(const char *s, char **e){ return (long double)strtod(s, e); }
 
-unsigned long long strtoull(const char *s, char **e, int b){ (void)b; unsigned long long r=0; while(*s==' ')s++; while(*s>='0'&&*s<='9'){r=r*10+(*s-'0');s++;} if(e)*e=(char*)s; return r; }
-long long strtoll(const char *s, char **e, int b){ (void)b; long long r=0; int neg=0; if(*s=='-'){neg=1;s++;} while(*s>='0'&&*s<='9'){r=r*10+(*s-'0');s++;} if(e)*e=(char*)s; return neg?-r:r; }
-unsigned long strtoul(const char *s, char **e, int b){ return (unsigned long)strtoull(s,e,b); }
+unsigned long long strtoull(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-r:r; }
+long long strtoll(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-(long long)r:(long long)r; }
+unsigned long strtoul(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?(unsigned long)-r:(unsigned long)r; }
 
 void *memchr(const void *s, int c, size_t n){ const unsigned char *p=s; for(size_t i=0;i<n;i++) if(p[i]==(unsigned char)c) return (void*)(p+i); return 0; }
 /* <inttypes.h> intmax helpers */

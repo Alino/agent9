@@ -23,8 +23,22 @@ int atexit(cc9_fn f) { if (atexit_n < CC9_ATEXIT_MAX) { atexit_fns[atexit_n++] =
 int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { (void)arg; (void)dso; if (atexit_n < CC9_ATEXIT_MAX) { atexit_fns[atexit_n++] = (cc9_fn)f; return 0; } return -1; }
 void *__dso_handle = 0;
 
+/* Mask SSE + x87 FP exceptions. Bare-metal 9front leaves them UNMASKED, so a
+ * divide-by-zero / 0.0÷0.0 / overflow raises a fault and the process suicides
+ * (QEMU TCG hides this — same hazard class as the node9 FP-divzero trap). Each
+ * process needs this: main here, and every rfork(RFMEM) thread (which starts
+ * with fresh FP state) calls it from the pthread trampoline. */
+void cc9_fpmask(void)
+{
+	unsigned int mxcsr = 0x1F80;    /* all SSE exception masks set, round-nearest */
+	unsigned short cw = 0x037F;     /* x87 control word: all masks, 64-bit precision */
+	__asm__ volatile("ldmxcsr %0" :: "m"(mxcsr));
+	__asm__ volatile("fldcw %0" :: "m"(cw));
+}
+
 void __cc9_run(void)
 {
+	cc9_fpmask();
 	for (cc9_fn *p = __init_array_start; p < __init_array_end; ++p)
 		(*p)();
 	static char *argv[] = { (char *)"a.out", 0 };
@@ -52,5 +66,7 @@ __attribute__((naked, used)) void _start(void)
 		"addq $" "8388608" ", %rsp\n\t"   /* top of the 8 MiB stack */
 		"andq $-16, %rsp\n\t"
 		"call __cc9_run\n\t"
-		"hlt");
+		/* __cc9_run never returns (n9_exits); spin rather than execute the
+		 * privileged HLT if it somehow does. */
+		"1: jmp 1b");
 }

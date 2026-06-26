@@ -49,9 +49,22 @@ int open(const char *path, int flags, ...){
 	if(streq(path,"/dev/urandom")) path="/dev/random";   /* Plan 9 entropy source */
 	int omode = flags & O_ACCMODE;        /* OREAD/OWRITE/ORDWR == 0/1/2 */
 	if(flags & O_TRUNC) omode |= OTRUNC;
+	unsigned long perm = (flags & O_DIRECTORY) ? (DMDIR|0777) : 0666;
 	long fd;
-	if(flags & O_CREAT) fd = n9_create(path, omode, (flags & O_DIRECTORY) ? (DMDIR|0777) : 0666);
-	else fd = n9_open(path, omode);
+	if(flags & O_CREAT){
+		/* Plan 9 create() ALWAYS truncates an existing file, so using it for a
+		 * bare O_CREAT would silently destroy data. Only create() when the file
+		 * must be made/truncated; otherwise open the existing file in place. */
+		if(flags & O_EXCL){
+			struct stat st; if(stat(path,&st)==0){ errno=EEXIST; return -1; }   /* must not exist */
+			fd = n9_create(path, omode, perm);
+		} else if(flags & O_TRUNC){
+			fd = n9_create(path, omode, perm);
+		} else {
+			fd = n9_open(path, omode);                 /* keep existing contents */
+			if(fd < 0) fd = n9_create(path, omode, perm);   /* absent -> create */
+		}
+	} else fd = n9_open(path, omode);
 	if(fd < 0){ errno = (flags & O_CREAT) ? EACCES : ENOENT; return -1; }
 	return (int)fd;
 }
@@ -74,7 +87,7 @@ int fstat(int fd, struct stat *st){
 int lstat(const char *path, struct stat *st){ return stat(path, st); }   /* no symlink follow distinction */
 int fstatat(int dfd, const char *path, struct stat *st, int flag){ (void)dfd;(void)flag; return stat(path, st); }
 
-int mkdir(const char *path, mode_t m){ long fd=n9_create(path, 0/*OREAD*/, DMDIR|(m&0777)); if(fd<0){errno=EEXIST;return -1;} n9_close((int)fd); return 0; }
+int mkdir(const char *path, mode_t m){ long fd=n9_create(path, 0/*OREAD*/, DMDIR|(m&0777)); if(fd<0){ struct stat st; errno=(stat(path,&st)==0)?EEXIST:EACCES; return -1; } n9_close((int)fd); return 0; }
 int mkdirat(int dfd, const char *path, unsigned int m){ (void)dfd; return mkdir(path,m); }
 
 extern long n9_wstat(const char *, unsigned char *, int);
@@ -135,7 +148,11 @@ int rename(const char *old, const char *neu){
 	if(!same_dir(old,neu)){ errno=EXDEV; return -1; }
 	const char *nb=neu; for(const char *p=neu;*p;p++) if(*p=='/') nb=p+1;
 	unsigned char b[256]; int n=build_wstat(b,nb,0xFFFFFFFF,~0ULL);
-	return n9_wstat(old,b,n)<0?(errno=EEXIST,-1):0;
+	if(n9_wstat(old,b,n)>=0) return 0;
+	/* POSIX rename replaces an existing target; Plan 9 wstat-rename refuses if it
+	 * exists, so remove it and retry (not atomic, but matches POSIX visibility). */
+	struct stat st; if(stat(neu,&st)==0 && n9_remove(neu)>=0 && n9_wstat(old,b,n)>=0) return 0;
+	errno=EACCES; return -1;
 }
 int renameat(int d1,const char*a,int d2,const char*b){ (void)d1;(void)d2; return rename(a,b); }
 int link(const char *a, const char *b){ (void)a;(void)b; errno=ENOSYS; return -1; }
@@ -149,22 +166,39 @@ char *getcwd(char *buf, size_t n){ long fd=n9_open(".",0); if(fd<0)return 0; lon
 
 /* ---- directories ---- */
 struct __cc9_dir { int fd; unsigned char buf[8192]; int len; int pos; struct dirent de; };
+/* readdir parses raw bytes from a pread, so it MUST be a real directory; a
+ * regular file's contents would be misparsed as Dir entries (and walk OOB). */
+static int is_dir_fd(int fd){
+	unsigned char sb[512];
+	if(n9_fstat(fd, sb, sizeof sb) < 0) return 0;
+	return ((unsigned long)le(sb+21,4) & DMDIR) != 0;
+}
 DIR *opendir(const char *path){
 	long fd=n9_open(path, 0); if(fd<0){ errno=ENOENT; return 0; }
+	if(!is_dir_fd((int)fd)){ n9_close((int)fd); errno=ENOTDIR; return 0; }
 	struct __cc9_dir *d = malloc(sizeof *d); if(!d){ n9_close((int)fd); return 0; }
 	d->fd=(int)fd; d->len=0; d->pos=0; return d;
 }
-DIR *fdopendir(int fd){ struct __cc9_dir *d=malloc(sizeof *d); if(!d)return 0; d->fd=fd; d->len=0; d->pos=0; return d; }
+DIR *fdopendir(int fd){
+	if(!is_dir_fd(fd)){ errno=ENOTDIR; return 0; }
+	struct __cc9_dir *d=malloc(sizeof *d); if(!d)return 0; d->fd=fd; d->len=0; d->pos=0; return d;
+}
 struct dirent *readdir(DIR *d){
 	if(d->pos >= d->len){
 		long n=n9_pread(d->fd, d->buf, (long)sizeof d->buf, -1);
 		if(n<=0) return 0;
 		d->len=(int)n; d->pos=0;
 	}
+	/* bounds-check every field against the read length so a short/garbage read
+	 * can't drive an out-of-bounds parse (size[2]@0, mode[4]@21, namelen[2]@41,
+	 * name@43). A Dir entry must fit entirely within d->len. */
+	if(d->pos + 43 > d->len){ d->pos = d->len; return 0; }
 	unsigned char *p = d->buf + d->pos;
 	int sz = (int)le(p,2) + 2;                 /* size[2] + body */
-	unsigned long mode = (unsigned long)le(p+21,4);
+	if(sz < 43 || d->pos + sz > d->len){ d->pos = d->len; return 0; }
 	int namelen = (int)le(p+41,2);
+	if(43 + namelen > sz){ d->pos = d->len; return 0; }   /* name overruns the entry */
+	unsigned long mode = (unsigned long)le(p+21,4);
 	int i; for(i=0;i<namelen && i<255;i++) d->de.d_name[i]=(char)p[43+i];
 	d->de.d_name[i]=0;
 	d->de.d_ino = le(p+13,8);

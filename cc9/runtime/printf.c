@@ -148,11 +148,19 @@ int vsnprintf(char *out, size_t n, const char *f, va_list ap){
 		}
 		else { bput(&b,'%'); if(c)bput(&b,c); continue; }
 
-		/* integer/char/%/p: apply sign, width, zero-pad */
-		int total = tlen + (sign?1:0); int pad = width-total;
+		/* integer/char/%/p: precision = minimum digits (C); pad with leading 0s.
+		 * The '0' flag is ignored when a precision is given for an integer. */
+		int zpad = 0;
+		if((c=='d'||c=='i'||c=='u'||c=='o'||c=='x'||c=='X') && prec>=0){
+			if(prec==0 && tlen==1 && tmp[0]=='0') tlen=0;   /* %.0d of 0 -> empty */
+			if(tlen < prec) zpad = prec - tlen;
+			zero = 0;
+		}
+		int total = tlen + zpad + (sign?1:0); int pad = width-total;
 		if(!left && !zero) while(pad-->0) bput(&b,' ');
 		if(sign) bput(&b, sign);
 		if(!left && zero) while(pad-->0) bput(&b,'0');
+		while(zpad-->0) bput(&b,'0');
 		bputs(&b, body, tlen);
 		if(left) while(pad-->0) bput(&b,' ');
 	}
@@ -160,13 +168,25 @@ int vsnprintf(char *out, size_t n, const char *f, va_list ap){
 	return (int)b.len;
 }
 int snprintf(char *out, size_t n, const char *f, ...){ va_list ap; __builtin_va_start(ap,f); int r=vsnprintf(out,n,f,ap); __builtin_va_end(ap); return r; }
-int vasprintf(char **out, const char *f, va_list ap){ char buf[1024]; int n=vsnprintf(buf,sizeof buf,f,ap); char*s=malloc((size_t)n+1); if(!s){*out=0;return -1;} for(int i=0;i<=n&&i<(int)sizeof buf;i++)s[i]=buf[i]; s[n<(int)sizeof buf?n:(int)sizeof buf-1]=0; *out=s; return n; }
+int vasprintf(char **out, const char *f, va_list ap){
+	char buf[256];
+	va_list ap2; __builtin_va_copy(ap2, ap);
+	int n = vsnprintf(buf, sizeof buf, f, ap);
+	if(n < 0){ __builtin_va_end(ap2); *out=0; return -1; }
+	char *s = malloc((size_t)n + 1);
+	if(!s){ __builtin_va_end(ap2); *out=0; return -1; }
+	if(n < (int)sizeof buf){ for(int i=0;i<=n;i++) s[i]=buf[i]; }       /* fit: copy */
+	else vsnprintf(s, (size_t)n + 1, f, ap2);                          /* reformat exact */
+	__builtin_va_end(ap2);
+	*out=s; return n;
+}
 int asprintf(char **out, const char *f, ...){ va_list ap; __builtin_va_start(ap,f); int r=vasprintf(out,f,ap); __builtin_va_end(ap); return r; }
 
 /* sscanf — %d/i/u/x/o (+l/ll), %f/e/g (+l), %s, %c, %%, width, * suppression. */
 extern int isspace(int);
 extern long long strtoll(const char*,char**,int); extern unsigned long long strtoull(const char*,char**,int);
 extern double strtod(const char*,char**);
+extern long double strtold(const char*,char**);
 int vsscanf(const char *s, const char *f, va_list ap){
 	int count=0;
 	for(; *f; f++){
@@ -175,7 +195,7 @@ int vsscanf(const char *s, const char *f, va_list ap){
 		f++;
 		int suppress=0; if(*f=='*'){ suppress=1; f++; }
 		int width=0; while(*f>='0'&&*f<='9'){ width=width*10+(*f-'0'); f++; }
-		int lng=0; while(*f=='l'){lng++;f++;} if(*f=='h')f++; if(*f=='L')f++; if(*f=='z'||*f=='j')f++;
+		int lng=0; while(*f=='l'){lng++;f++;} if(*f=='h')f++; int isL=0; if(*f=='L'){isL=1;f++;} if(*f=='z'||*f=='j')f++;
 		char c=*f;
 		if(c!='c' && c!='%') while(isspace((unsigned char)*s)) s++;
 		if(c=='d'||c=='i'||c=='u'||c=='x'||c=='X'||c=='o'){
@@ -186,8 +206,9 @@ int vsscanf(const char *s, const char *f, va_list ap){
 			if(!suppress){ void*p=__builtin_va_arg(ap,void*); if(lng>=2)*(long long*)p=(long long)v; else if(lng==1)*(long*)p=(long)v; else *(int*)p=(int)v; }
 			s=end; count++;
 		} else if(c=='f'||c=='e'||c=='g'||c=='F'||c=='E'||c=='G'||c=='a'){
-			char *end; double v=strtod(s,&end); if(end==s)break;
-			if(!suppress){ void*p=__builtin_va_arg(ap,void*); if(lng)*(double*)p=v; else *(float*)p=(float)v; }
+			char *end;
+			if(isL){ long double v=strtold(s,&end); if(end==s)break; if(!suppress)*(long double*)__builtin_va_arg(ap,void*)=v; }
+			else { double v=strtod(s,&end); if(end==s)break; if(!suppress){ void*p=__builtin_va_arg(ap,void*); if(lng)*(double*)p=v; else *(float*)p=(float)v; } }
 			s=end; count++;
 		} else if(c=='s'){
 			char *out=suppress?0:__builtin_va_arg(ap,char*); int n=0;
