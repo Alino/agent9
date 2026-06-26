@@ -77,7 +77,36 @@ static void *malloc_u(size_t nbytes){
 extern int n9_semacquire(int *, int);
 extern int n9_semrelease(int *, int);
 static int malloc_lock = 1;
-void *malloc(size_t n){ n9_semacquire(&malloc_lock,1); void *r=malloc_u(n); n9_semrelease(&malloc_lock,1); return r; }
+#ifdef CC9_RECURSE_PROBE
+/* DEBUG: malloc is THE allocator (clang's libc++ operator new calls it). If hit
+ * with the stack already deep (runaway recursion), walk our frame chain and dump
+ * return addresses to fd 2, then exit — catches the recursion cycle in-process. */
+extern char __cc9_main_stack[];
+extern long n9_pwrite(int, const void *, long, long long);
+extern void n9_exits(const char *);
+static int cc9_probe_armed = 1;
+static void cc9_dump_chain_malloc(void){
+	cc9_probe_armed = 0;
+	n9_pwrite(2, "CC9-RECURSE-CHAIN:\n", 19, -1);
+	void **fp = (void **)__builtin_frame_address(0);
+	for (int i = 0; i < 60 && fp; i++){
+		void *ret = fp[1];
+		char b[20]; int k = 0; b[k++]='0'; b[k++]='x';
+		unsigned long v = (unsigned long)ret;
+		for (int j = 15; j >= 0; j--){ int d = (v>>(j*4))&0xf; b[k++] = d<10?'0'+d:'a'+d-10; }
+		b[k++]='\n'; n9_pwrite(2, b, k, -1);
+		void **nx = (void **)fp[0];
+		if (nx <= fp) break;
+		fp = nx;
+	}
+	n9_exits("cc9-recurse");
+}
+#endif
+void *malloc(size_t n){
+#ifdef CC9_RECURSE_PROBE
+	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + 232UL*1024*1024) cc9_dump_chain_malloc(); }
+#endif
+	n9_semacquire(&malloc_lock,1); void *r=malloc_u(n); n9_semrelease(&malloc_lock,1); return r; }
 void free(void *p){ if(!p) return; n9_semacquire(&malloc_lock,1); free_u(p); n9_semrelease(&malloc_lock,1); }
 /* aligned_alloc(alignment, size) (C11). malloc is 16-byte aligned, so small
  * alignments are free; larger ones over-allocate and align, recording the base
@@ -137,7 +166,11 @@ int raise(int s){ if(s<0||s>=32) return -1; n9_sigh h=n9_sigtab[s]; if(h&&h!=(n9
  * on amd64. Builtin name, so define via an __asm__ label (see __atomic_* below). */
 int cc9_atomic_is_lock_free(size_t n, const volatile void *p) __asm__("__atomic_is_lock_free");
 int cc9_atomic_is_lock_free(size_t n, const volatile void *p){ (void)p; return n<=16; }
-void *memcpy(void*d,const void*s,size_t n){ char*a=d; const char*b=s; for(size_t i=0;i<n;i++)a[i]=b[i]; return d; }
+void *memcpy(void*d,const void*s,size_t n){
+#ifdef CC9_RECURSE_PROBE
+	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + 232UL*1024*1024) cc9_dump_chain_malloc(); }
+#endif
+	char*a=d; const char*b=s; for(size_t i=0;i<n;i++)a[i]=b[i]; return d; }
 void *memmove(void*d,const void*s,size_t n){ char*a=d; const char*b=s; if(a<b)for(size_t i=0;i<n;i++)a[i]=b[i]; else for(size_t i=n;i>0;i--)a[i-1]=b[i-1]; return d; }
 void *memset(void*d,int c,size_t n){ char*a=d; for(size_t i=0;i<n;i++)a[i]=(char)c; return d; }
 int memcmp(const void*x,const void*y,size_t n){ const unsigned char*a=x,*b=y; for(size_t i=0;i<n;i++) if(a[i]!=b[i]) return a[i]-b[i]; return 0; }

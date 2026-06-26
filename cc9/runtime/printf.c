@@ -106,7 +106,34 @@ static void fmt_float(struct buf *b, long double x, int prec, char conv, int alt
 	(void)sfx_exp;
 }
 
+#ifdef CC9_RECURSE_PROBE
+/* DEBUG: if vsnprintf is entered with the stack already deep (runaway recursion),
+ * walk our own frame chain and dump return addresses to fd 2, then exit. Catches
+ * the recursion cycle in-process (no debugger). Requires -fno-omit-frame-pointer. */
+extern char __cc9_main_stack[];
+extern long n9_pwrite(int, const void *, long, long long);
+extern void n9_exits(const char *);
+static void cc9_dump_chain(void){
+	n9_pwrite(2, "CC9-RECURSE-CHAIN:\n", 19, -1);
+	void **fp = (void **)__builtin_frame_address(0);
+	for (int i = 0; i < 40 && fp; i++){
+		void *ret = fp[1];
+		char b[20]; int k = 0; b[k++]='0'; b[k++]='x';
+		unsigned long v = (unsigned long)ret;
+		for (int j = 15; j >= 0; j--){ int d = (v>>(j*4))&0xf; b[k++] = d<10?'0'+d:'a'+d-10; }
+		b[k++]='\n'; n9_pwrite(2, b, k, -1);
+		void **nx = (void **)fp[0];
+		if (nx <= fp) break;
+		fp = nx;
+	}
+	n9_exits("cc9-recurse");
+}
+#endif
+
 int vsnprintf(char *out, size_t n, const char *f, va_list ap){
+#ifdef CC9_RECURSE_PROBE
+	{ char probe; if ((unsigned long)&probe < (unsigned long)__cc9_main_stack + 224UL*1024*1024) cc9_dump_chain(); }
+#endif
 	struct buf b = { out, n, 0 };
 	for(; *f; f++){
 		if(*f != '%'){ bput(&b, *f); continue; }

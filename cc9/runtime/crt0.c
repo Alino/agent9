@@ -91,11 +91,13 @@ void __cc9_run(void)
  * visible across threads unless it lives in a shared segment. BSS is shared, so
  * putting main's stack here makes the ubiquitous `std::thread([&]{...})` pattern
  * work. Thread stacks are heap-allocated (also shared). */
-/* 256 MiB. clang -cc1 recurses deeply (AST/type canonicalization, codegen of
- * vtables/lambdas); an 8 MiB stack overflows on non-trivial C++ and faults. It's
- * BSS (zero-filled, demand-paged) so the size is virtual until touched. */
+/* clang -cc1 recurses deeply (AST/type canonicalization, codegen); an 8 MiB
+ * stack overflows on non-trivial C++. In a dedicated NOLOAD section so lld keeps
+ * it NOBITS — otherwise lld file-backs this huge array (p_filesz == p_memsz) and
+ * the a.out balloons by the full stack size. NOLOAD ⇒ zero file bytes; the kernel
+ * zero-fills it as bss, demand-paged, so the size is virtual until touched. */
 #define CC9_STACK_BYTES 268435456
-__attribute__((aligned(16), used)) char __cc9_main_stack[CC9_STACK_BYTES];
+__attribute__((section(".cc9stack"), aligned(16), used)) char __cc9_main_stack[CC9_STACK_BYTES];
 #define CC9_STR2(x) #x
 #define CC9_STR(x) CC9_STR2(x)
 

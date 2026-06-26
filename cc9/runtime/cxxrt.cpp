@@ -57,7 +57,33 @@ extern "C" void __cxa_guard_abort(unsigned long long *g) {
 
 // On failure, run the installed new_handler and retry; throw bad_alloc only when
 // no handler is set ([new.delete.single]).
+#ifdef CC9_RECURSE_PROBE
+extern "C" char __cc9_main_stack[];
+extern "C" long n9_pwrite(int, const void *, long, long long);
+extern "C" void n9_exits(const char *);
+// DEBUG: if operator new is hit with the stack already deep (runaway recursion),
+// walk our own frame chain and dump return addresses to fd 2, then exit. Catches
+// the recursion cycle in-process (operator new is allocated per recursion level).
+static void cc9_dump_chain_new() {
+	n9_pwrite(2, "CC9-RECURSE-CHAIN:\n", 19, -1);
+	void **fp = (void **)__builtin_frame_address(0);
+	for (int i = 0; i < 50 && fp; i++) {
+		void *ret = fp[1];
+		char b[20]; int k = 0; b[k++]='0'; b[k++]='x';
+		unsigned long v = (unsigned long)ret;
+		for (int j = 15; j >= 0; j--) { int d = (v>>(j*4))&0xf; b[k++] = d<10?'0'+d:'a'+d-10; }
+		b[k++]='\n'; n9_pwrite(2, b, k, -1);
+		void **nx = (void **)fp[0];
+		if (nx <= fp) break;
+		fp = nx;
+	}
+	n9_exits("cc9-recurse");
+}
+#endif
 static void *cc9_new(unsigned long n) {
+#ifdef CC9_RECURSE_PROBE
+	{ char probe; if ((unsigned long)&probe < (unsigned long)__cc9_main_stack + 236UL*1024*1024) cc9_dump_chain_new(); }
+#endif
 	for (;;) {
 		if (void *p = malloc(n ? n : 1)) return p;
 		std::new_handler h = std::get_new_handler();

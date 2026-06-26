@@ -24,8 +24,18 @@ SECTIONS {
 		__fini_array_start = .; KEEP(*(SORT_BY_INIT_PRIORITY(.fini_array.*))) KEEP(*(.fini_array)) __fini_array_end = .;
 	} :text
 	. = ALIGN(0x200000);   /* data at the next 2MB boundary after text */
-	.data : { *(.data) *(.data.*) } :data
+	/* catch .got/.data.rel.ro too, else lld places them AFTER .cc9stack by vaddr
+	 * and must file-back the whole stack gap (a.out balloons by the stack size). */
+	.data : {
+		*(.data) *(.data.*)
+		*(.data.rel.ro) *(.data.rel.ro.*)
+		*(.got) *(.got.plt) *(.igot.plt)
+	} :data
 	.bss  : { *(.bss) *(.bss.*) *(COMMON) } :data
+	/* cc9 main stack: huge, NOLOAD so lld keeps it NOBITS (no file bytes) and the
+	 * a.out doesn't balloon by the stack size. Trailing, so elf2aout counts it as
+	 * bss (kernel zero-fills it). */
+	.cc9stack (NOLOAD) : { *(.cc9stack) } :data
 	end = .; _end = .;      /* heap (sbrk) starts here */
 	/* No .eh_frame_hdr index — libunwind scans .eh_frame linearly. */
 	__eh_frame_hdr_start = 0;
