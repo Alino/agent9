@@ -26,15 +26,29 @@ Plan 9. (`cc9/test/raytrace.cpp`)
 
 ![C++ raytracer rendered on 9front](screenshots/raytrace.png)
 
-The demos running in a vtwin terminal on the agent9 desktop — including the one
-thing that was **truly impossible before**: a **brainfuck JIT** that emits x86-64
-machine code at runtime and executes it (`bfjit: compiled ... 372 bytes of
-x86-64, executed it -> "Hello World!"`). Stock 9front NX-enforces all writable
-memory, and Go can't JIT there either; cc9's opt-in W^X kernel patch is what
-unlocks it. Below it: C++ exceptions and a 100-thread stress test, both passing.
-(`cc9/test/bfjit.cpp`, `cc9/test/suite/`)
+*The image above is the binary's actual output: it ran on the 9front VM and wrote
+a 270,015-byte `P6` PPM (15-byte header + 400×225×3 pixels); that file was pulled
+off the VM with `xd` (listen1 corrupts raw binary) and re-encoded to PNG. The
+grain is the 24-sample path tracing.*
 
-![cc9 demos + the brainfuck JIT running on the 9front desktop](screenshots/desktop.png)
+And the demo the existing Go runtime **cannot** match on Plan 9 — a **brainfuck
+JIT** that emits x86-64 machine code at runtime and executes it. Stock 9front
+NX-enforces all writable memory; cc9's opt-in W^X kernel patch is what unlocks it:
+
+```text
+$ bfjit            # gate off (wxallow=0): NX blocks it
+bfjit 584: suicide: sys: trap: fault read addr=0x7ffffeffe000
+
+$ bfjit            # gate on (wxallow=1): runs the JIT'd code
+bfjit: compiled BF to 372 bytes of x86-64, executed it -> "Hello World!"
+
+$ exceptions       # throw/catch, RAII unwinding across frames, rethrow
+unwind=3 base=ok rethrow=ok custom=7 what=too big PASS
+
+$ threads          # 100 std::threads + thread_local + std::call_once
+sum=4950 tls=ok once=1 staticctor=1 PASS
+```
+(`cc9/test/bfjit.cpp`, `cc9/test/suite/`)
 
 ## Quick start
 
