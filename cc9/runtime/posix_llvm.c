@@ -22,16 +22,22 @@ extern void  n9_exits(const char *);
  * no-ops. Read-only consumers (the compiler's MemoryBuffer) are satisfied. */
 void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
 	(void)addr; (void)prot;
-	void *p = malloc(len ? len : 1);
+	/* Allocate len+1 and zero the trailing byte. Real mmap zero-pads the file's
+	 * last page past EOF; clang's MemoryBuffer maps exactly FileSize bytes and then
+	 * asserts the byte AT [FileSize] is 0 (its null terminator). A bare malloc(len)
+	 * leaves that byte OOB/garbage -> "Buffer is not null terminated!". The +1 NUL
+	 * provides the page-padding terminator clang relies on. */
+	void *p = malloc((len ? len : 1) + 1);
 	if (!p) return (void *)-1;
 	if (flags & 0x20) {           /* MAP_ANON(YMOUS) */
-		memset(p, 0, len);
+		memset(p, 0, len + 1);
 	} else if (fd >= 0) {         /* file-backed: read the region in */
 		long got = n9_pread(fd, p, (long)len, off);
 		if (got < 0) got = 0;
 		if ((n9size_t)got < len) memset((char *)p + got, 0, len - (n9size_t)got);
+		((char *)p)[len] = 0;     /* the null terminator clang expects past EOF */
 	} else {
-		memset(p, 0, len);
+		memset(p, 0, len + 1);
 	}
 	return p;
 }

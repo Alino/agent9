@@ -1,0 +1,12 @@
+host baseline: 8/8 compile
+  stl_algorithm          compile=OK   run=PASS
+  stl_lambda_stl         compile=OK   run=PASS
+  stl_map                compile=OK   run=PASS
+  stl_optional           compile=OK   run=PASS
+  stl_string             compile=OK   run=PASS
+  stl_tuple              compile=OK   run=PASS
+  stl_typetraits         compile=OK   run=PASS
+  stl_vector             compile=OK   run=PASS
+
+=== RESULTS (native cc9 clang + real libc++ on 9front) ===
+applicable: 8/8; native COMPILE 8/8 (100%); native RUN 8/8 (100%)
