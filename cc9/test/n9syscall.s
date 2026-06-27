@@ -357,6 +357,20 @@ n9_notify:
 	REST_CALLEE
 	ret
 
+// long n9_errstr(char *buf, int nbuf)  ERRSTR=41. Reads the calling thread's last
+// kernel error string into buf (and swaps buf's prior content in as the new err).
+	.globl n9_errstr
+n9_errstr:
+	SAVE_CALLEE
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)      // buf
+	movl	%esi, 16(%rsp)     // nbuf
+	movq	$41, %rbp
+	syscall
+	addq	$32, %rsp
+	REST_CALLEE
+	ret
+
 // long n9_dup(int old, int new)  DUP=5. Dups `old` onto `new` (new>=0, returns
 // new) or to the lowest free fd (new<0). Returns the new fd / -1.
 	.globl n9_dup

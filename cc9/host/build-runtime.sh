@@ -56,9 +56,14 @@ for f in string stdexcept memory hash functional bind memory_resource system_err
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
-# float std::to_chars shim (integer to_chars is header-inline; charconv.cpp's
-# from_chars float side needs shared/fp_bits.h, absent from this checkout).
-"$LLVM/clang++" "${lcxx[@]}" -c "$CC9/runtime/tochars.cpp" -o "$O/tochars.o"
+# Full charconv (to_chars + from_chars, float + integer). The float from_chars
+# side pulls LLVM-libc's correctly-rounded parser via shared/{fp_bits,str_to_float,
+# str_to_integer}.h — materialize those trees from the (sparse) llvm checkout:
+#   git -C "$LLVMSRC" sparse-checkout add libc/shared libc/src/__support libc/hdr \
+#       libc/include/llvm-libc-macros libc/include/llvm-libc-types
+# then -I libc makes the quoted includes resolve. Replaces the old to_chars-only
+# shim (runtime/tochars.cpp) — charconv.cpp defines both sides.
+"$LLVM/clang++" "${lcxx[@]}" -I "$LLVMSRC/libc" -c "$LLVMSRC/libcxx/src/charconv.cpp" -o "$O/charconv.o"
 "$LLVM/clang++" "${lcxx[@]}" -D_LIBCPP_USING_DEV_RANDOM -c "$LLVMSRC/libcxx/src/random.cpp" -o "$O/lcx_random.o"
 for r in d2s f2s d2fixed; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/ryu/$r.cpp" -o "$O/lcx_ryu_$r.o"

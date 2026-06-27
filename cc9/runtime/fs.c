@@ -91,9 +91,33 @@ long pread(int fd, void *buf, size_t n, long off){ return n9_pread(fd,buf,(long)
 long pwrite(int fd, const void *buf, size_t n, long off){ return n9_pwrite(fd,buf,(long)n,off); }
 long lseek(int fd, long off, int whence){ long long r=0; if(n9_seek(&r,fd,off,whence)<0){errno=EIO;return -1;} return (long)r; }
 
+extern long n9_errstr(char *, int);
+static int cc9_contains(const char *h, const char *n){
+	for(; *h; h++){ const char *a=h,*b=n; while(*b && *a==*b){a++;b++;} if(!*b) return 1; }
+	return 0;
+}
+/* Map the Plan 9 last-error string (errors are text on Plan 9) to a POSIX errno.
+ * Substring-matches the common kernel messages; falls back to ENOENT for the
+ * unrecognized (the historical cc9 default). std::filesystem error_code checks
+ * (e.g. temp_directory_path expecting permission_denied) depend on this. */
+int cc9_errno_from_errstr(void){
+	/* errstr fills the buffer (kernel NUL-terminates) but its return value is not
+	 * the length — read the buffer directly. */
+	char e[160]; e[0]=0; e[sizeof e-1]=0;
+	n9_errstr(e, sizeof e - 1);
+	if(e[0] == 0) return ENOENT;
+	if(cc9_contains(e, "permission")) return EACCES;
+	if(cc9_contains(e, "exists"))     return EEXIST;
+	if(cc9_contains(e, "not empty"))  return ENOTEMPTY;
+	if(cc9_contains(e, "not a directory") || cc9_contains(e, "not a dir")) return ENOTDIR;
+	if(cc9_contains(e, "is a directory")) return EISDIR;
+	if(cc9_contains(e, "i/o error"))  return EIO;
+	if(cc9_contains(e, "does not exist") || cc9_contains(e, "not found") || cc9_contains(e, "no such")) return ENOENT;
+	return ENOENT;
+}
 int stat(const char *path, struct stat *st){
 	unsigned char b[512]; long n=n9_stat(path,b,sizeof b);
-	if(n<0){ errno=ENOENT; return -1; } dir_to_stat(b,st); return 0;
+	if(n<0){ errno=cc9_errno_from_errstr(); return -1; } dir_to_stat(b,st); return 0;
 }
 int fstat(int fd, struct stat *st){
 	unsigned char b[512]; long n=n9_fstat(fd,b,sizeof b);

@@ -148,9 +148,23 @@ static void trampoline(void *p){
 	n9_semrelease(&t->joinsem, 1);    /* wake any joiner */
 }
 
+/* RLIMIT_NPROC emulation: 9front has no per-process thread cap, but the suite's
+ * thread_create_failure test sets the limit to 1 and expects creation to throw.
+ * setrlimit (posix_llvm.c) routes the cap here; pthread_create honors it. */
+static long cc9_nproc_limit = 0x7fffffff;
+void cc9_set_nproc_limit(long n){ cc9_nproc_limit = n > 0 ? n : 1; }
+long cc9_get_nproc_limit(void){ return cc9_nproc_limit; }
+
 int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(void *), void *arg){
 	(void)attr;
 	dead_reap();   /* reclaim any parked detached-thread stacks (they're long dead now) */
+	if(cc9_nproc_limit < 0x7fffffff){
+		int live = 1;   /* the main thread counts toward the limit */
+		n9_semacquire(&th_lock,1);
+		for(int i=0;i<MAXTH;i++) if(th_tab[i].used) live++;
+		n9_semrelease(&th_lock,1);
+		if(live >= cc9_nproc_limit) return 11;   /* EAGAIN: would exceed RLIMIT_NPROC */
+	}
 	n9_thread *t = malloc(sizeof *t);
 	if(!t) return 11;
 	/* Unique thread id, assigned by the parent (the rfork-return pid isn't

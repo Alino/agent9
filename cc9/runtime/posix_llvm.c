@@ -324,8 +324,19 @@ int sigaction(int sig, const void *act, void *old) {
 }
 
 /* rlimit / rusage: report "unlimited" / zero. */
-int getrlimit(int r, void *rl) { (void)r; if (rl) { unsigned long *p = rl; p[0] = p[1] = ~0ul; } return 0; }
-int setrlimit(int r, const void *rl) { (void)r; (void)rl; return 0; }
+extern void cc9_set_nproc_limit(long);
+extern long cc9_get_nproc_limit(void);
+int getrlimit(int r, void *rl) {
+	if (rl) { unsigned long *p = rl;
+		if (r == 6 /*RLIMIT_NPROC*/) { p[0] = p[1] = (unsigned long)cc9_get_nproc_limit(); }
+		else { p[0] = p[1] = ~0ul; }
+	}
+	return 0;
+}
+int setrlimit(int r, const void *rl) {
+	if (r == 6 /*RLIMIT_NPROC*/ && rl) { const unsigned long *p = rl; cc9_set_nproc_limit((long)p[0]); }
+	return 0;
+}
 int getrusage(int who, void *ru) { (void)who; (void)ru; return 0; }
 
 /* passwd db: none. getpwuid* return failure so LLVM falls back to $HOME/cwd. */

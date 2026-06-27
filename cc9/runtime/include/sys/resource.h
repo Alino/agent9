@@ -9,6 +9,7 @@ typedef unsigned long rlim_t;
 #define RLIMIT_DATA    2
 #define RLIMIT_STACK   3
 #define RLIMIT_CORE    4
+#define RLIMIT_NPROC   6
 #define RLIMIT_NOFILE  7
 #define RLIMIT_AS      9
 #define RUSAGE_SELF     0
