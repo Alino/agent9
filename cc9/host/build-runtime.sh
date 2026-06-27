@@ -56,6 +56,10 @@ for f in string stdexcept memory hash functional bind memory_resource system_err
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"
+# deprecated std::random_shuffle (__rs_default/__rs_get) — needs the removed-feature opt-in
+"$LLVM/clang++" "${lcxx[@]}" -D_LIBCPP_ENABLE_CXX17_REMOVED_RANDOM_SHUFFLE -c "$LLVMSRC/libcxx/src/random_shuffle.cpp" -o "$O/lcx_random_shuffle.o"
+# std::__log_hardening_failure (default hardening-assertion logger)
+"$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/experimental/log_hardening_failure.cpp" -o "$O/lcx_log_hardening.o"
 # Full charconv (to_chars + from_chars, float + integer). The float from_chars
 # side pulls LLVM-libc's correctly-rounded parser via shared/{fp_bits,str_to_float,
 # str_to_integer}.h — materialize those trees from the (sparse) llvm checkout:

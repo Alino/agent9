@@ -439,6 +439,10 @@ static unsigned long long n9_ustrto(const char *nptr, char **e, int base, int *n
 long double powl(long double, long double);
 long double scalbnl(long double, int);
 long double fmal(long double, long double, long double);
+/* nexttowardl(x,y) with both args long double is identical to nextafterl;
+ * openlibm ships nextafterl but not nexttowardl. */
+extern long double nextafterl(long double, long double);
+long double nexttowardl(long double x, long double y){ return nextafterl(x, y); }
 
 /* Correctly-rounded decimal scaling: mant * 10^exp10. 10^0..10^27 are exact in
  * 80-bit long double, so the power is accumulated from exact chunks with Dekker
@@ -595,6 +599,14 @@ void *memchr(const void *s, int c, size_t n){ const unsigned char *p=s; for(size
 long imaxabs(long x){ return x<0?-x:x; }
 typedef struct { long quot, rem; } n9_imaxdiv_t;
 n9_imaxdiv_t imaxdiv(long a, long b){ n9_imaxdiv_t r; r.quot=a/b; r.rem=a%b; return r; }
+/* div/ldiv/lldiv: stdlib integer division returning quot+rem (stdlib.h declares
+ * div_t/ldiv_t/lldiv_t as {quot,rem}). */
+typedef struct { int quot, rem; } n9_div_t;
+typedef struct { long quot, rem; } n9_ldiv_t;
+typedef struct { long long quot, rem; } n9_lldiv_t;
+n9_div_t   div(int a, int b){ n9_div_t r; r.quot=a/b; r.rem=a%b; return r; }
+n9_ldiv_t  ldiv(long a, long b){ n9_ldiv_t r; r.quot=a/b; r.rem=a%b; return r; }
+n9_lldiv_t lldiv(long long a, long long b){ n9_lldiv_t r; r.quot=a/b; r.rem=a%b; return r; }
 long strtoimax(const char *s, char **e, int b){ return strtoll(s,e,b); }
 unsigned long strtoumax(const char *s, char **e, int b){ return strtoull(s,e,b); }
 float strtof(const char *s, char **e){

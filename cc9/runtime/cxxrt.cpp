@@ -26,6 +26,12 @@ extern "C" void __cxa_pure_virtual()
 	n9_exits("cc9: pure virtual call\n");
 }
 
+// Called if a deleted virtual function is ever invoked (a bug); abort.
+extern "C" void __cxa_deleted_virtual()
+{
+	n9_exits("cc9: deleted virtual call\n");
+}
+
 // (__abort_message, __cxa_bad_typeid, __cxa_bad_cast now come from the real
 // libcxxabi runtime — exceptions are enabled.)
 
