@@ -34,6 +34,7 @@ void cc9_fpmask(void)
 {
 	unsigned int mxcsr = 0x1F80;    /* all SSE exception masks set, round-nearest */
 	unsigned short cw = 0x037F;     /* x87 control word: all masks, 64-bit precision */
+	__asm__ volatile("fninit");     /* reset x87 to a known-clean state first */
 	__asm__ volatile("ldmxcsr %0" :: "m"(mxcsr));
 	__asm__ volatile("fldcw %0" :: "m"(cw));
 }
@@ -58,6 +59,28 @@ void cc9_note_handler(unsigned long framesp)
 	cc9_in_note = 1;
 	const char *msg = (const char *)(framesp + 24);
 	int n = 0; while (n < 200 && msg[n] >= 32 && msg[n] < 127) n++;
+#ifdef CC9_FAULT_FILE
+	/* Write the note + a 46-slot frame dump to a FILE — survives the listener
+	 * connection dying on a bare-metal fault (where fd 2 is the dead socket). */
+	{ extern long n9_create(const char *, int, int);
+	  int ffd = n9_create("/tmp/cc9fault", 1 /*OWRITE*/, 0666);
+	  if (ffd >= 0) {
+		if (n > 4) { n9_pwrite(ffd, "note: ", 6, -1); n9_pwrite(ffd, msg, n, -1); n9_pwrite(ffd, "\n", 1, -1); }
+		unsigned long *f = (unsigned long *)framesp;
+		n9_pwrite(ffd, "frame:\n", 7, -1);
+		for (int i = 0; i < 46; i++) {
+			unsigned long v = f[i];
+			char b[36]; int k=0;
+			b[k++]='['; if(i>=10)b[k++]='0'+i/10; b[k++]='0'+i%10; b[k++]=']'; b[k++]=' ';
+			b[k++]='0'; b[k++]='x';
+			for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
+			b[k++]=' ';
+			for (int j=0;j<8;j++){ char c=(char)(v>>(j*8)); b[k++]=(c>=32&&c<127)?c:'.'; }
+			b[k++]='\n'; n9_pwrite(ffd, b, k, -1);
+		}
+	  }
+	}
+#endif
 #ifdef CC9_RECURSE_PROBE
 	/* On an alarm note (timer fired mid-recursion, stack not yet blown), walk the
 	 * INTERRUPTED frame chain from the Ureg's saved RBP — amd64 Ureg sits at
@@ -80,12 +103,33 @@ void cc9_note_handler(unsigned long framesp)
 	}
 #endif
 	if (n > 4) { n9_pwrite(2, "cc9 fault: ", 11, -1); n9_pwrite(2, msg, n, -1); n9_pwrite(2, "\n", 1, -1); }
+#ifdef CC9_RECURSE_PROBE
+	/* robust fallback: the note-frame layout varies by kernel build, so msg may not
+	 * be at framesp+24. Dump 46 frame slots (hex + inline ASCII) so the note string
+	 * + Ureg PC are recoverable regardless of offset. */
+	else {
+		unsigned long *f = (unsigned long *)framesp;
+		n9_pwrite(2, "cc9 note frame:\n", 16, -1);
+		for (int i = 0; i < 46; i++) {
+			unsigned long v = f[i];
+			char b[36]; int k=0;
+			b[k++]='['; if(i>=10)b[k++]='0'+i/10; b[k++]='0'+i%10; b[k++]=']'; b[k++]=' ';
+			b[k++]='0'; b[k++]='x';
+			for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
+			b[k++]=' ';
+			for (int j=0;j<8;j++){ char c=(char)(v>>(j*8)); b[k++]=(c>=32&&c<127)?c:'.'; }
+			b[k++]='\n'; n9_pwrite(2, b, k, -1);
+		}
+	}
+#endif
 }
 
 void __cc9_run(void)
 {
 	cc9_fpmask();
+#ifndef CC9_NO_NOTE
 	n9_notify((void *)cc9_notetramp);   /* report faults instead of dying silently */
+#endif
 #ifdef CC9_RECURSE_PROBE
 	{ extern long n9_alarm(unsigned long); n9_alarm(1500); }  /* timer to sample a runaway recursion */
 #endif
@@ -99,6 +143,13 @@ void __cc9_run(void)
 		argv = (char **)(ks + 1);
 	} else { argc = 1; argv = fallback; }
 	__cc9_build_environ();
+#ifdef CC9_PAUSE_ATTACH
+	/* sleep at startup so a debugger can attach by pid (acid <pid>) — the process
+	 * is kernel-exec'd so its bss stack is valid (unlike acid's own new()), and it
+	 * sits in the SLEEP syscall (a note-point) so acid can cleanly stop it. */
+	{ extern char *getenv(const char *); extern long n9_sleep(long);
+	  if (getenv("CC9_PAUSE")) { for (int s = 0; s < 25; s++) n9_sleep(1000); } }
+#endif
 	for (cc9_fn *p = __init_array_start; p < __init_array_end; ++p)
 		(*p)();
 	int rc = main(argc, argv);
