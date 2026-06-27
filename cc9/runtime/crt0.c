@@ -185,8 +185,15 @@ void __cc9_run(void)
 	STAGE('g');
 	int rc = main(argc, argv);
 	STAGE('h');
-	for (int i = atexit_n; i > 0; --i)
-		atexit_tab[i - 1].fn(atexit_tab[i - 1].arg);
+	/* Run atexit/__cxa_atexit handlers LIFO, RE-READING atexit_n each step so a
+	 * handler that registers a new one (e.g. a thread_local/static object whose
+	 * destructor constructs another) has it run NEXT — [basic.start.term]: an
+	 * object whose construction completes later is destroyed first. Decrement
+	 * before calling so the new registration appends past the current entry. */
+	while (atexit_n > 0) {
+		int i = --atexit_n;
+		atexit_tab[i].fn(atexit_tab[i].arg);
+	}
 	for (cc9_fn *p = __fini_array_end; p > __fini_array_start; )
 		(*--p)();
 	n9_exits(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");
