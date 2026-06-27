@@ -21,8 +21,18 @@
 #include "dat.h"
 #include "fns.h"
 #include "cells.h"
-#include "parser.h"
+#include "engine.h"
 #include "session.h"
+
+/* libvterm output sink: terminal replies (DA/DSR/cursor reports) are written
+ * to the shell's stdin, exactly as if the user had typed them. No-op until
+ * rc is spawned (keyin_wfd<0). */
+static void
+engine_out(void *ctx, const uchar *bytes, int n)
+{
+	Session *s = (Session*)ctx;
+	session_feed_keystrokes(s, (uchar*)bytes, n);
+}
 
 /* Reader proc: blocks on shellout pipe, feeds parser, keeps doing it
  * forever or until rc dies. */
@@ -43,7 +53,7 @@ shellout_reader(void *arg)
 			break;
 		}
 		qlock(&s->lock);
-		parser_feed(&s->parser, buf, (int)n);
+		engine_feed(&s->engine, buf, (int)n);
 		qunlock(&s->lock);
 	}
 	/* rc is gone — reclaim the shellout read end. */
@@ -74,6 +84,7 @@ shellout_reader(void *arg)
 void
 session_free(Session *s)
 {
+	engine_free(&s->engine);
 	cellbuf_free(&s->buf);
 	free(s->name);
 	s->name = nil;
@@ -159,7 +170,7 @@ session_init(Session *s, char *name, int rows, int cols)
 {
 	s->name = strdup(name);
 	cellbuf_init(&s->buf, rows, cols);
-	parser_init(&s->parser, &s->buf);
+	engine_init(&s->engine, &s->buf, rows, cols, engine_out, s);
 	lined_init(&s->editor);
 	/* Default: line editor enabled. mxio's cell-grid terminal (vtwin)
 	 * is the only client we ship; it expects local echo + line editing

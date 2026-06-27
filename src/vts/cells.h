@@ -43,6 +43,11 @@ struct Buffer {
 	int cur_row, cur_col;
 	uchar cur_visible;
 
+	/* Alternate-screen active (DECSET 1049). Mirrored to the cell-diff
+	 * wire so clients can tell a full-screen app is running (vtwin uses
+	 * it to layer ^C: kill the app first, exit only at the bare shell). */
+	uchar alt_screen;
+
 	/* Current rendition (applied to written cells) */
 	uchar cur_fg, cur_bg, cur_attrs;
 
@@ -87,6 +92,11 @@ void cellbuf_erase_display(Buffer *b, int mode);
 void cellbuf_save_cursor(Buffer *b);
 void cellbuf_restore_cursor(Buffer *b);
 void cellbuf_set_attrs(Buffer *b, int fg, int bg, int attrs);
+
+/* Engine bridge (engine.c): write one cell at an absolute position and mark
+ * it dirty; push a pre-rendered UTF-8 line into the scrollback ring. */
+void cellbuf_set(Buffer *b, int row, int col, int rune, int fg, int bg, int attrs);
+void cellbuf_push_scroll(Buffer *b, const char *utf8line);
 
 int cellbuf_dirty_count(Buffer *b);
 int cellbuf_drain_dirty(Buffer *b, int *idxs, Cell *out, int maxcells);

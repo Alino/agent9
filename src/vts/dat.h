@@ -4,6 +4,6 @@
 #ifndef VT_DAT_H
 #define VT_DAT_H
 
-#define VTBUILD "2026-05-16.phase5"
+#define VTBUILD "2026-06-28.libvterm"
 
 #endif

@@ -8,7 +8,7 @@ OFILES=\
 	session.$O\
 	cells.$O\
 	celldiff.$O\
-	parser.$O\
+	engine.$O\
 	lined.$O\
 
 HFILES=dat.h\
@@ -16,10 +16,10 @@ HFILES=dat.h\
 	cells.h\
 	celldiff.h\
 	compat.h\
-	parser.h\
+	engine.h\
 	session.h\
 	lined.h\
 
 </sys/src/cmd/mkone
 
-$O.out:	/$objtype/lib/lib9p.a /$objtype/lib/libthread.a /$objtype/lib/libc.a
+$O.out:	/$objtype/lib/libvterm.a /$objtype/lib/lib9p.a /$objtype/lib/libthread.a /$objtype/lib/libc.a

@@ -18,10 +18,14 @@ void
 threadmain(int argc, char **argv)
 {
 	int spawn_rc = 1;
+	extern char *vts_srvname;
 
 	ARGBEGIN{
 	case 'n':
 		spawn_rc = 0;
+		break;
+	case 's':
+		vts_srvname = EARGF(sysfatal("usage: vts [-n] [-s srvname]"));
 		break;
 	}ARGEND;
 	USED(argc); USED(argv);

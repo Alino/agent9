@@ -266,6 +266,7 @@ struct CellState {
 };
 CellState *gridstate;   /* rows × cols */
 int gridcur_row, gridcur_col, gridcur_vis;
+int gridalt;   /* alt-screen active (header byte 19): a full-screen app is running */
 
 Channel *frameschan;    /* chan(int): notifies main thread of new frame */
 uchar lastframe[131072];
@@ -658,6 +659,7 @@ process_frame(uchar *buf, int n)
 	cur_row = ldu16(buf + 14);
 	cur_col = ldu16(buf + 16);
 	vis = buf[18];
+	gridalt = buf[19];   /* alt-screen flag from vts (see celldiff.c) */
 
 	if(dbgfd >= 0 && (frame_n < 5 || ncells > 0))
 		fprint(dbgfd, "f%d: rows=%d cols=%d ncells=%d cur=(%d,%d) cellw=%d cellh=%d sR=(%d,%d)-(%d,%d)\n",
@@ -1075,6 +1077,20 @@ threadmain(int argc, char **argv)
 					 * left-clicks don't break the Cmd+C quit shortcut. */
 					selection_to_snarf();
 					break;
+				}
+				if(r == 0x03 && !gridalt){
+					/* ^C with no selection, at the bare shell (primary
+					 * screen): quit vtwin, returning to the window that
+					 * spawned it (e.g. the drawterm rc). The vts session
+					 * keeps running, so re-running vtwin reattaches.
+					 *
+					 * When a full-screen app is running (alt-screen, e.g.
+					 * pi9 / vi), gridalt is set, so ^C instead falls
+					 * through and is forwarded to the app — which quits
+					 * back to the shell. A second ^C (now at the shell)
+					 * then exits vtwin. ^C thus always "goes up one
+					 * level". */
+					threadexitsall(nil);
 				}
 				if(r == 0x2229){  /* ∩ = Mac Option+C (rare) */
 					selection_to_snarf();

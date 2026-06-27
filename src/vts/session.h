@@ -15,7 +15,7 @@
 #include "compat.h"
 
 #include "cells.h"
-#include "parser.h"
+#include "engine.h"
 #include "lined.h"
 
 /* QLock from thread.h. Forward declaration is enough since we only use
@@ -31,7 +31,7 @@ typedef struct Session Session;
 struct Session {
 	char *name;
 	Buffer buf;
-	Parser parser;
+	Engine engine;
 	LineEditor editor;
 
 	/* Cast as QLock; using opaque size from the include order. */

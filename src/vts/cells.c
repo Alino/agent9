@@ -39,6 +39,7 @@ cellbuf_init(Buffer *b, int rows, int cols)
 	b->cur_row = 0;
 	b->cur_col = 0;
 	b->cur_visible = 1;
+	b->alt_screen = 0;
 	b->wrap = 1;  /* DECAWM default: auto-wrap on (VT100 standard) */
 	b->saved_row = 0;
 	b->saved_col = 0;
@@ -416,6 +417,47 @@ cellbuf_set_attrs(Buffer *b, int fg, int bg, int attrs)
 	b->cur_fg = fg;
 	b->cur_bg = bg;
 	b->cur_attrs = attrs;
+}
+
+/*
+ * Engine bridge: write one cell at an absolute (row,col) and mark it dirty.
+ * Used by engine.c's damage callback — libvterm owns the screen model, this
+ * just mirrors changed cells into our wire buffer.
+ */
+void
+cellbuf_set(Buffer *b, int row, int col, int rune, int fg, int bg, int attrs)
+{
+	Cell *c;
+	if(row < 0 || row >= b->rows || col < 0 || col >= b->cols)
+		return;
+	c = &b->cells[cell_idx(b, row, col)];
+	c->rune = rune;
+	c->fg = (uchar)fg;
+	c->bg = (uchar)bg;
+	c->attrs = (uchar)attrs;
+	mark_dirty(b, row, col);
+}
+
+/*
+ * Engine bridge: push a pre-rendered, NUL-terminated UTF-8 line into the
+ * scrollback ring (libvterm's sb_pushline callback).
+ */
+void
+cellbuf_push_scroll(Buffer *b, const char *utf8line)
+{
+	char *line;
+	int n;
+
+	if(b->scroll_lines == nil)
+		return;
+	line = b->scroll_lines + b->scroll_head * SCROLL_LINE_BYTES;
+	n = strlen(utf8line);
+	if(n > SCROLL_LINE_BYTES - 1)
+		n = SCROLL_LINE_BYTES - 1;
+	memmove(line, utf8line, n);
+	line[n] = 0;
+	b->scroll_head = (b->scroll_head + 1) % SCROLL_MAX_LINES;
+	b->scroll_count++;
 }
 
 int

@@ -90,7 +90,7 @@ celldiff_encode(Buffer *b, uchar *out, int max)
 	put_u16(out + 14, b->cur_row);
 	put_u16(out + 16, b->cur_col);
 	out[18] = b->cur_visible;
-	out[19] = 0;
+	out[19] = b->alt_screen;   /* reserved[0]: alt-screen active flag */
 	out[20] = 0;
 	out[21] = 0;
 

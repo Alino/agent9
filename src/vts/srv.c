@@ -21,12 +21,16 @@
 #include "dat.h"
 #include "fns.h"
 #include "cells.h"
-#include "parser.h"
+#include "engine.h"
 #include "celldiff.h"
 #include "session.h"
 
 Session *gsessions[MAXSESS];
 int nsessions = 0;
+
+/* /srv name to post under; overridable via `vts -s name` (default "vts").
+ * Lets a freshly-built vts be smoke-tested alongside a running one. */
+char *vts_srvname = "vts";
 
 /* Flag set by main.c via -n (no rc) for testing. */
 int vts_spawn_rc_at_start = 1;
@@ -303,6 +307,7 @@ fswrite(Req *r)
 					if(newrows > 0 && newcols > 0 &&
 					   newrows < 1000 && newcols < 1000){
 						qlock(&s->lock);
+						engine_resize(&s->engine, newrows, newcols);
 						cellbuf_resize(&s->buf, newrows, newcols);
 						qunlock(&s->lock);
 					}
@@ -340,7 +345,7 @@ fswrite(Req *r)
 					redraw, sizeof redraw, &rl);
 				if(rl > 0){
 					qlock(&s->lock);
-					parser_feed(&s->parser, redraw, rl);
+					engine_feed(&s->engine, redraw, rl);
 					qunlock(&s->lock);
 				}
 				if(rc == LINEED_COMPLETE){
@@ -350,8 +355,8 @@ fswrite(Req *r)
 						session_feed_keystrokes(s, &nl, 1);
 					} else {
 						qlock(&s->lock);
-						parser_feed(&s->parser, line_out, line_len);
-						parser_feed(&s->parser, (uchar*)"\r\n", 2);
+						engine_feed(&s->engine, line_out, line_len);
+						engine_feed(&s->engine, (uchar*)"\r\n", 2);
 						qunlock(&s->lock);
 					}
 				} else if(rc == LINEED_PASSTHROUGH){
@@ -365,7 +370,7 @@ fswrite(Req *r)
 			session_feed_keystrokes(s, (uchar*)r->ifcall.data, n);
 		} else {
 			qlock(&s->lock);
-			parser_feed(&s->parser, (uchar*)r->ifcall.data, n);
+			engine_feed(&s->engine, (uchar*)r->ifcall.data, n);
 			qunlock(&s->lock);
 		}
 		/* Record recent input for read-back via fsread cons. Bound
@@ -602,6 +607,6 @@ srvinit(int spawn_rc)
 void
 srvstart(void)
 {
-	threadpostsrv(&vts_srv, "vts");
-	print("vts: posted at /srv/vts\n");
+	threadpostsrv(&vts_srv, vts_srvname);
+	print("vts: posted at /srv/%s\n", vts_srvname);
 }
