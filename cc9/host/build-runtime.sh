@@ -83,7 +83,7 @@ abix=("${base[@]}" $INSTR -D_LIBCXXABI_BUILDING_LIBRARY -D_LIBCPP_ENABLE_CXX17_R
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O1 -w)
 for a in stdlib_exception stdlib_typeinfo private_typeinfo cxa_aux_runtime abort_message \
          cxa_exception cxa_exception_storage cxa_personality cxa_handlers cxa_default_handlers \
-         cxa_vector fallback_malloc; do
+         cxa_vector fallback_malloc cxa_demangle; do
   "$LLVM/clang++" "${abix[@]}" -c "$LLVMSRC/libcxxabi/src/$a.cpp" -o "$O/abi_$a.o"
 done
 # std::exception_ptr + current/rethrow_exception + nested_exception (delegating to

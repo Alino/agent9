@@ -158,13 +158,14 @@ namespace std { const nothrow_t nothrow{}; }
 
 // std::uncaught_exceptions (libc++'s exception.cpp isn't linked — it would clash
 // with the libcxxabi runtime; exception_ptr comes from runtime/exception_ptr.cpp)
-// + a __cxa_demangle stub (only used to prettify terminate messages).
 extern "C" unsigned __cxa_uncaught_exceptions() noexcept;
 namespace std {
 int uncaught_exceptions() noexcept { return (int)__cxa_uncaught_exceptions(); }
 bool uncaught_exception() noexcept { return uncaught_exceptions() > 0; }
 }
-extern "C" char *__cxa_demangle(const char *, char *, unsigned long *, int *status) { if (status) *status = -2; return nullptr; }
+/* __cxa_demangle comes from the real libcxxabi demangler (cxa_demangle.cpp,
+ * built in build-runtime.sh) — it makes terminate/backtrace messages readable
+ * and passes the demangler conformance suite. (Was a -2 stub.) */
 
 // libc++ hardening / error paths.
 namespace std { inline namespace __1 {
