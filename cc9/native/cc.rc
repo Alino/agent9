@@ -1,0 +1,29 @@
+#!/bin/rc
+# cc — faithful on-box C++ compiler driver for 9front (cc9). Takes a normal command
+# line; compiles + links + converts entirely on the box via clang + ld.lld + elf2aout.
+# Internally each tool is invoked through a response file (@file), the standard driver
+# pattern, which also keeps each kernel exec at argc=2 (large-binary exec limit).
+# Usage: cc src.cpp [-o out]      (defaults out = a.out)
+rfork e
+bin=/tmp                # tool + staging dir (clang, ld.lld, elf2aout, libs, headers)
+src=(); out=a.out
+while(! ~ $#* 0){
+	switch($1){
+	case -o; out=$2; shift; shift
+	case *; src=($src $1); shift
+	}
+}
+if(~ $#src 0){ echo 'usage: cc src.cpp [-o out]' >[1=2]; exit usage }
+s=$src(1)
+base=`{echo $s | sed 's,\.[^./]*$,,'}
+sbase=`{basename $s}
+obj=$base^.o; elf=$base^.elf
+# 1. compile (clang -cc1, args from the template with src/obj filled in)
+sed 's,@SRC@,'$s',g; s,@OBJ@,'$obj',g; s,@SRCBASE@,'$sbase',' $bin/cc1.template > $bin/_cc.rsp
+$bin/clang @$bin/_cc.rsp || { echo 'cc: compile failed' >[1=2]; exit compile }
+# 2. link with native lld (--mmap-output-file is load-bearing on cc9)
+echo '--mmap-output-file -o '$elf' --start-group '$obj' '$bin'/libcc9cxx.a '$bin'/libcc9m.a --end-group -T '$bin'/plan9.ld -static -nostdlib' > $bin/_ld.rsp
+$bin/ld.lld @$bin/_ld.rsp || { echo 'cc: link failed' >[1=2]; exit link }
+# 3. ELF -> Plan 9 a.out
+$bin/elf2aout $elf $out || { echo 'cc: elf2aout failed' >[1=2]; exit elf2aout }
+chmod +x $out
