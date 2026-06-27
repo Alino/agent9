@@ -160,19 +160,46 @@ extern long n9_create(const char *, int, int);
 extern long n9_pwrite(int, const void *, long, long long);
 #define CC9_RING 256
 static void *cc9_ring[CC9_RING];
+static unsigned long cc9_sp[CC9_RING];
 static int cc9_depth;
 __attribute__((no_instrument_function))
 static void cc9_hexw(int fd, unsigned long v){ char b[19]; int k=0; b[k++]='0'; b[k++]='x'; for(int j=15;j>=0;j--){int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10;} b[k++]='\n'; n9_pwrite(fd,b,k,-1); }
+extern char __cc9_main_stack[];
+#ifndef CC9_STACK_BYTES
+#define CC9_STACK_BYTES 268435456
+#endif
+static volatile int cc9_dumped;
+static int cc9_lastfd = -2;
 __attribute__((no_instrument_function))
 void __cyg_profile_func_enter(void *this_fn, void *call_site){
 	(void)call_site;
-	cc9_ring[cc9_depth & (CC9_RING-1)] = this_fn;
-	if(++cc9_depth > 60000){
+	unsigned long sp = (unsigned long)__builtin_frame_address(0);
+	int slot = cc9_depth++ & (CC9_RING-1);
+	cc9_ring[slot] = this_fn; cc9_sp[slot] = sp;
+	unsigned long top0 = (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES;
+	/* Once the stack is already deep (>1MB used), record each function to /tmp/cc9last
+	 * (overwrite). Cheap (shallow calls skip it); after an uncatchable crash the file
+	 * names the last deep function — close to the culprit. */
+	if((top0 - sp) > 1024UL*1024){
+		if(cc9_lastfd == -2) cc9_lastfd = n9_create("/tmp/cc9last", 1, 0666);
+		if(cc9_lastfd >= 0){
+			char b[40]; int k=0; b[k++]='f'; b[k++]='=';
+			for(int j=15;j>=0;j--){int d=((unsigned long)this_fn>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10;}
+			b[k++]=' '; b[k++]='s'; b[k++]='p'; b[k++]='=';
+			for(int j=15;j>=0;j--){int d=(sp>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10;}
+			b[k++]='\n'; n9_pwrite(cc9_lastfd, b, k, 0);
+		}
+	}
+	/* trigger on STACK USAGE (catches huge-frame recursion). Stack grows down from
+	 * __cc9_main_stack + CC9_STACK_BYTES; dump when >50MB used. Dump pairs (this_fn, sp)
+	 * so monotonic sp growth proves recursion and identifies the growing function. */
+	unsigned long top = (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES;
+	if(!cc9_dumped && (top - sp) > 50UL*1024*1024){
+		cc9_dumped = 1;
 		int fd = n9_create("/tmp/cc9fault", 1, 0666);
 		if(fd>=0){
-			n9_pwrite(fd,"CC9 RUNAWAY RECURSION; deepest call-chain (this_fn):\n",52,-1);
-			/* dump the ring in call order (oldest of the window first) */
-			for(int i=0;i<CC9_RING;i++){ void*p=cc9_ring[(cc9_depth+i)&(CC9_RING-1)]; if(p) cc9_hexw(fd,(unsigned long)p); }
+			n9_pwrite(fd,"CC9 RUNAWAY (stack>50MB); recent (this_fn sp):\n",47,-1);
+			for(int i=0;i<CC9_RING;i++){ int s=(cc9_depth+i)&(CC9_RING-1); if(cc9_ring[s]){ cc9_hexw(fd,(unsigned long)cc9_ring[s]); cc9_hexw(fd,cc9_sp[s]); } }
 		}
 		n9_exits("cc9-recurse-dump");
 	}

@@ -25,24 +25,31 @@ O="/tmp/cc9-rt"; rm -rf "$O"; mkdir -p "$O" "$CC9/lib"  # clean: stale .o would 
 # for the `main` symbol), else std::string's out-of-line ABI mismatches the
 # header-instantiated one and over-SSO strings corrupt.
 base=(--target=x86_64-unknown-none -nostdlib -fexceptions -frtti -funwind-tables -fno-pic -nostdinc++ -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls)
+# debug builds: 2GB main stack so a huge single frame doesn't overflow before its body
+# calls instrumented code (the SP-usage trigger then fires). crt0 + n9libc must agree.
+[ -n "${CC9_INSTRUMENT:-}" ] && base+=(-DCC9_STACK_BYTES=1073741824)
 
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/test/n9syscall.s" -o "$O/n9syscall.o"
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/runtime/setjmp.s" -o "$O/setjmp.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/n9libc.c" -o "$O/n9libc.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/posix_llvm.c" -o "$O/posix_llvm.o"  # POSIX surface LLVM's Unix .inc needs
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -O2 -c "$CC9/runtime/complex_builtins.c" -o "$O/complex_builtins.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/xlocale.c" -o "$O/xlocale.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/stdio.c" -o "$O/stdio.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/printf.c" -o "$O/printf.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/pthread.c" -o "$O/pthread.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/wchar.c" -o "$O/wchar.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
-"$LLVM/clang" "${base[@]}" -isystem "$INC" -O2 -c "$CC9/runtime/int128.c" -o "$O/int128.o"
-"$LLVM/clang++" "${base[@]}" -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
-"$LLVM/clang" "${base[@]}" -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"
+INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/n9libc.c" -o "$O/n9libc.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/posix_llvm.c" -o "$O/posix_llvm.o"  # POSIX surface LLVM's Unix .inc needs
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -O2 -c "$CC9/runtime/complex_builtins.c" -o "$O/complex_builtins.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/xlocale.c" -o "$O/xlocale.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/stdio.c" -o "$O/stdio.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/printf.c" -o "$O/printf.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/pthread.c" -o "$O/pthread.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/wchar.c" -o "$O/wchar.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -O2 -c "$CC9/runtime/int128.c" -o "$O/int128.o"
+"$LLVM/clang++" "${base[@]}" $INSTR -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
+"$LLVM/clang" "${base[@]}" ${CC9_INSTRUMENT:+-DCC9_FAULT_FILE -DCC9_PAUSE_ATTACH} -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"  # crt0 NOT instrumented (naked _start); fault->file + pause-for-acid when debugging
 
 # targeted libc++ runtime objects
-lcxx=("${base[@]}" -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
+# CC9_INSTRUMENT: -finstrument-functions on the out-of-line libc++ runtime so the
+# __cyg_profile hooks (n9libc.c) catch a runaway recursion living in libc++ .cpp code.
+INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
+lcxx=("${base[@]}" $INSTR -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O1 -w)
 for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected locale ios iostream ostream regex thread mutex mutex_destructor condition_variable condition_variable_destructor shared_mutex future atomic barrier; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
@@ -65,7 +72,7 @@ done
 # exception.cpp). DWARF (clang's well-supported x86_64 path; SJLJ codegen is
 # buggy on x86_64). The bare-metal unwinder finds .eh_frame via linker symbols
 # __eh_frame_start/end (no dynamic loader), so a.out works. ---
-abix=("${base[@]}" -D_LIBCXXABI_BUILDING_LIBRARY -D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS
+abix=("${base[@]}" $INSTR -D_LIBCXXABI_BUILDING_LIBRARY -D_LIBCPP_ENABLE_CXX17_REMOVED_UNEXPECTED_FUNCTIONS
       -I "$LLVMSRC/libcxxabi/include" -I "$LLVMSRC/libcxxabi/src" -I "$LLVMSRC/libunwind/include"
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O1 -w)
 for a in stdlib_exception stdlib_typeinfo private_typeinfo cxa_aux_runtime abort_message \
