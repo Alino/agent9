@@ -2,3 +2,7 @@ host/__pycache__/
 
 # regenerable C++23 module BMIs (host/build-modules.sh)
 lib/modules/
+
+# regenerable build archives (build-runtime.sh / build-libm.sh) — too big for git
+lib/libcc9cxx.a
+lib/libcc9m.a
