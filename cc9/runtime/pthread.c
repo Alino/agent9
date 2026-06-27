@@ -86,6 +86,36 @@ static unsigned long cur_pid(void){
 	return 1;   /* main thread */
 }
 
+/* Per-thread __cxa_thread_atexit: thread_local destructors + promise::
+ * set_value_at_thread_exit must run when THIS thread exits, not at process exit.
+ * Keyed by cur_pid(); the trampoline runs the current thread's list (LIFO) after
+ * start() returns. Main thread (pid 1) routes to the process atexit, as before. */
+extern int __cxa_atexit(void (*)(void *), void *, void *);
+struct n9_tae { unsigned long pid; void (*fn)(void *); void *arg; int used; };
+#define MAXTAE 4096
+static struct n9_tae tae_tab[MAXTAE];
+static int tae_lock = 1;
+int __cxa_thread_atexit(void (*fn)(void *), void *arg, void *dso){
+	unsigned long pid = cur_pid();
+	if(pid == 1) return __cxa_atexit(fn, arg, dso);   /* main: run at process exit */
+	n9_semacquire(&tae_lock,1);
+	for(int i=0;i<MAXTAE;i++) if(!tae_tab[i].used){ tae_tab[i].pid=pid; tae_tab[i].fn=fn; tae_tab[i].arg=arg; tae_tab[i].used=1; break; }
+	n9_semrelease(&tae_lock,1);
+	return 0;
+}
+int __cxa_thread_atexit_impl(void (*fn)(void *), void *arg, void *dso){ return __cxa_thread_atexit(fn, arg, dso); }
+static void run_thread_keys(unsigned long pid);   /* defined with the TLS table below */
+static void run_thread_atexit(unsigned long pid){
+	for(;;){   /* LIFO: highest-index entry for this pid first */
+		void (*fn)(void *)=0; void *arg=0; int idx=-1;
+		n9_semacquire(&tae_lock,1);
+		for(int i=MAXTAE-1;i>=0;i--) if(tae_tab[i].used && tae_tab[i].pid==pid){ fn=tae_tab[i].fn; arg=tae_tab[i].arg; tae_tab[i].used=0; idx=i; break; }
+		n9_semrelease(&tae_lock,1);
+		if(idx<0) break;
+		fn(arg);
+	}
+}
+
 static void trampoline(void *p){
 	n9_thread *t = (n9_thread *)p;
 	cc9_fpmask();   /* this rfork child has fresh FP state — mask FP exceptions */
@@ -102,7 +132,12 @@ static void trampoline(void *p){
 	}
 	n9_semrelease(&th_lock,1);
 	n9_semrelease(&handoff_sem, 1);   /* signal the rfork globals are consumed + registered */
-	t->ret = t->start(t->arg);
+	/* via a C++ shim that turns an escaped exception into std::terminate (cc9's
+	 * unwinder can't unwind off the top of this C trampoline) — [thread.constr]. */
+	extern void *cc9_thread_invoke(void *(*)(void *), void *);
+	t->ret = cc9_thread_invoke(t->start, t->arg);
+	run_thread_atexit(t->pid);   /* thread_local dtors + set_value_at_thread_exit */
+	run_thread_keys(t->pid);     /* POSIX TSD destructors (frees __thread_struct etc.) */
 	t->done = 1;
 	if(t->detached){
 		/* nobody will join. Can't free our own running stack here — park it for a
@@ -200,7 +235,33 @@ int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m){
 	pthread_mutex_lock(m);
 	return 0;
 }
-int pthread_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *ts){ (void)ts; return pthread_cond_wait(c,m); }
+/* Real timed wait: block on the condvar semaphore with a deadline (ts is an
+ * absolute CLOCK_REALTIME time, as pthread/libc++ pass it). Without this every
+ * condition_variable::wait_for / timed_mutex::try_lock_for / future::wait_for
+ * that should expire would block forever (libc++ builds them on the condvar). */
+extern long n9_tsemacquire(int *, long);
+extern int clock_gettime(int, struct timespec *);
+int pthread_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *ts){
+	if(c->lk==0 && c->waiters==0) c->lk=1;     /* lazy init for PTHREAD_COND_INITIALIZER */
+	n9_semacquire(&c->lk,1); c->waiters++; n9_semrelease(&c->lk,1);
+	pthread_mutex_unlock(m);
+	struct timespec now; clock_gettime(0 /*CLOCK_REALTIME*/, &now);
+	long ms = (long)(ts->tv_sec - now.tv_sec)*1000 + (ts->tv_nsec - now.tv_nsec)/1000000;
+	if(ms < 0) ms = 0;
+	long r = n9_tsemacquire(&c->sem, ms);
+	if(r != 1){
+		/* timed out — but a signal may have raced just after; re-check the sem
+		 * under c->lk (mutually exclusive with signal/broadcast). If it released
+		 * for us, consume it (signal already dropped our waiter slot); otherwise
+		 * drop our own slot. Race-free, no lost wakeup. */
+		n9_semacquire(&c->lk,1);
+		r = n9_tsemacquire(&c->sem, 0);                 /* 0ms = non-blocking poll */
+		if(r != 1 && c->waiters>0) c->waiters--;
+		n9_semrelease(&c->lk,1);
+	}
+	pthread_mutex_lock(m);
+	return r==1 ? 0 : 110 /*ETIMEDOUT*/;
+}
 int pthread_cond_signal(pthread_cond_t *c){
 	if(c->lk==0) c->lk=1;
 	n9_semacquire(&c->lk,1); if(c->waiters>0){ c->waiters--; n9_semrelease(&c->sem,1);} n9_semrelease(&c->lk,1); return 0;
@@ -228,10 +289,37 @@ int pthread_once(pthread_once_t *o, void (*fn)(void)){
 
 /* ---- TLS, keyed by pid (RFMEM shares memory, so no real per-thread storage) ---- */
 #define MAXTLS 4096
+#define MAXKEYS 256
 static struct { int used; unsigned long pid; int key; void *val; } tls_tab[MAXTLS];
 static int tls_lock = 1;
 static int next_key = 1;
-int pthread_key_create(pthread_key_t *k, void (*dtor)(void *)){ (void)dtor; n9_semacquire(&tls_lock,1); *k=next_key++; n9_semrelease(&tls_lock,1); return 0; }
+static void (*key_dtor[MAXKEYS])(void *);   /* TSD destructor per key (POSIX) */
+int pthread_key_create(pthread_key_t *k, void (*dtor)(void *)){ n9_semacquire(&tls_lock,1); int key=next_key++; if(key>0&&key<MAXKEYS) key_dtor[key]=dtor; *k=key; n9_semrelease(&tls_lock,1); return 0; }
+/* Run TSD destructors for a thread at its exit: for each key with a non-null
+ * value and a registered destructor, null the value and call the destructor;
+ * repeat (a destructor may set new values) for a few rounds, then free the
+ * thread's slots. Without this, __thread_specific_ptr-held data (e.g. libc++'s
+ * per-thread __thread_struct) leaks on every std::thread — tripping the suite's
+ * new==delete leak checks. */
+static void run_thread_keys(unsigned long pid){
+	for(int round=0; round<4; round++){
+		int any=0;
+		for(int i=0;i<MAXTLS;i++){
+			void *v=0; void (*d)(void*)=0;
+			n9_semacquire(&tls_lock,1);
+			if(tls_tab[i].used && tls_tab[i].pid==pid && tls_tab[i].val){
+				int key=tls_tab[i].key;
+				if(key>0 && key<MAXKEYS && key_dtor[key]){ v=tls_tab[i].val; d=key_dtor[key]; tls_tab[i].val=0; }
+			}
+			n9_semrelease(&tls_lock,1);
+			if(d){ d(v); any=1; }
+		}
+		if(!any) break;
+	}
+	n9_semacquire(&tls_lock,1);
+	for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].pid==pid) tls_tab[i].used=0;
+	n9_semrelease(&tls_lock,1);
+}
 int pthread_key_delete(pthread_key_t k){ n9_semacquire(&tls_lock,1); for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].key==k) tls_tab[i].used=0; n9_semrelease(&tls_lock,1); return 0; }
 void *pthread_getspecific(pthread_key_t k){ unsigned long pid=cur_pid(); for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].pid==pid && tls_tab[i].key==k) return tls_tab[i].val; return 0; }
 int pthread_setspecific(pthread_key_t k, const void *v){
@@ -280,4 +368,23 @@ int pthread_rwlock_wrlock(pthread_rwlock_t *l){ return pthread_mutex_lock(l); }
 int pthread_rwlock_unlock(pthread_rwlock_t *l){ return pthread_mutex_unlock(l); }
 
 int sched_yield(void){ n9_sleep(0); return 0; }
-int nanosleep(const struct timespec *req, struct timespec *rem){ (void)rem; if(req) n9_sleep(req->tv_sec*1000 + req->tv_nsec/1000000); return 0; }
+int nanosleep(const struct timespec *req, struct timespec *rem){
+	(void)rem;
+	if(!req) return 0;
+	long total_ms = req->tv_sec*1000 + req->tv_nsec/1000000;
+	if(total_ms <= 0){ if(req->tv_nsec) n9_sleep(1); return 0; }
+	/* Sleep against a wall-clock deadline so a note (e.g. SIGALRM from setitimer)
+	 * that interrupts the SLEEP syscall doesn't cut the sleep short — std::thread
+	 * sleep_for must honor the full duration across signals. */
+	extern int clock_gettime(int, struct timespec*);
+	struct timespec t; clock_gettime(0 /*CLOCK_REALTIME*/, &t);
+	long long deadline = (long long)t.tv_sec*1000 + t.tv_nsec/1000000 + total_ms;
+	for(;;){
+		clock_gettime(0, &t);
+		long long now = (long long)t.tv_sec*1000 + t.tv_nsec/1000000;
+		long remms = (long)(deadline - now);
+		if(remms <= 0) break;
+		n9_sleep(remms);
+	}
+	return 0;
+}

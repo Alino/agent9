@@ -23,10 +23,9 @@ static struct { void (*fn)(void *); void *arg; } atexit_tab[CC9_ATEXIT_MAX];
 static int atexit_n = 0;
 int atexit(cc9_fn f) { if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = (void (*)(void *))f; atexit_tab[atexit_n].arg = 0; atexit_n++; return 0; } return -1; }
 int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { (void)dso; if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = f; atexit_tab[atexit_n].arg = arg; atexit_n++; return 0; } return -1; }
-/* thread_local destructor registration (used by lld). cc9 threads (rfork) exit
- * together with the process, so running these at process exit is correct here. */
-int __cxa_thread_atexit(void (*f)(void *), void *arg, void *dso) { return __cxa_atexit(f, arg, dso); }
-int __cxa_thread_atexit_impl(void (*f)(void *), void *arg, void *dso) { return __cxa_atexit(f, arg, dso); }
+/* __cxa_thread_atexit / _impl now live in pthread.c: they run per-thread on
+ * THREAD exit (not process exit), so thread_local dtors and
+ * promise::set_value_at_thread_exit fire correctly. */
 void *__dso_handle = 0;
 
 /* Mask SSE + x87 FP exceptions. Bare-metal 9front leaves them UNMASKED, so a
@@ -57,11 +56,23 @@ extern void cc9_notetramp(void);
  * reentry guard means a bad read can't loop. (A stack-overflow fault can't be
  * reported — the kernel can't build the note frame on a blown stack.) */
 static volatile int cc9_in_note;
-void cc9_note_handler(unsigned long framesp)
+int cc9_note_handler(unsigned long framesp)
 {
-	if (cc9_in_note) return;       /* reentrant fault: bail, asm calls noted() */
-	cc9_in_note = 1;
 	const char *msg = (const char *)(framesp + 24);
+#ifndef CC9_RECURSE_PROBE
+	/* "alarm" note (Plan 9 alarm(2)/setitimer): the SIGALRM analogue. Run the
+	 * registered handler and resume (NCONT) — don't kill the process. Checked
+	 * before the in-note guard so repeated timers keep working. Resuming after a
+	 * note that interrupted a SLEEP syscall returns to user code past the syscall
+	 * (the syscall reports interrupted); nanosleep re-sleeps the remaining time. */
+	if (msg[0]=='a' && msg[1]=='l' && msg[2]=='a' && msg[3]=='r' && msg[4]=='m') {
+		extern void cc9_run_sigalrm(void);
+		cc9_run_sigalrm();
+		return 0;   /* NCONT */
+	}
+#endif
+	if (cc9_in_note) return 1;     /* reentrant fault: NDFLT (die) */
+	cc9_in_note = 1;
 	int n = 0; while (n < 200 && msg[n] >= 32 && msg[n] < 127) n++;
 #ifdef CC9_FAULT_FILE
 	/* Write the note + a 46-slot frame dump to a FILE — survives the listener
@@ -126,6 +137,7 @@ void cc9_note_handler(unsigned long framesp)
 		}
 	}
 #endif
+	return 1;   /* NDFLT: report done, let the kernel terminate */
 }
 
 #ifdef CC9_STAGE_MARK

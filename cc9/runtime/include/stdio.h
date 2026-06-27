@@ -20,6 +20,11 @@ typedef struct { long __pos; } fpos_t;
 extern "C" {
 #endif
 extern FILE *stdin; extern FILE *stdout; extern FILE *stderr;
+/* C requires stdin/stdout/stderr to be macros (libc++'s cstdio.pass.cpp checks
+ * #ifndef); self-referential macros expand to the extern objects above. */
+#define stdin stdin
+#define stdout stdout
+#define stderr stderr
 int printf(const char *, ...); int fprintf(FILE *, const char *, ...);
 int sprintf(char *, const char *, ...); int snprintf(char *, size_t, const char *, ...);
 int vprintf(const char *, va_list); int vfprintf(FILE *, const char *, va_list);
@@ -29,6 +34,7 @@ int scanf(const char *, ...); int fscanf(FILE *, const char *, ...); int sscanf(
 int vscanf(const char *, va_list); int vfscanf(FILE *, const char *, va_list); int vsscanf(const char *, const char *, va_list);
 FILE *fopen(const char *, const char *); FILE *freopen(const char *, const char *, FILE *);
 FILE *fdopen(int, const char *); int fileno(FILE *);
+FILE *fmemopen(void *, size_t, const char *);
 int fseeko(FILE *, long, int); long ftello(FILE *);
 int fclose(FILE *); int fflush(FILE *);
 size_t fread(void *, size_t, size_t, FILE *); size_t fwrite(const void *, size_t, size_t, FILE *);

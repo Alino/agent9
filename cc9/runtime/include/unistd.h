@@ -56,6 +56,7 @@ extern char **environ;
 #define ARG_MAX              131072
 #define _SC_GETPW_R_SIZE_MAX 70
 #define _SC_HOST_NAME_MAX    180
+int mkstemp(char *);                /* POSIX temp file; libc++ test framework uses it */
 #ifdef __cplusplus
 }
 #endif

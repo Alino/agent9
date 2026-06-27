@@ -49,6 +49,7 @@ _CC9_M3(log); _CC9_M3(log2); _CC9_M3(log10); _CC9_M3(log1p); _CC9_M3(logb);
 _CC9_M3(sqrt); _CC9_M3(cbrt); _CC9_M3(fabs);
 _CC9_M3(ceil); _CC9_M3(floor); _CC9_M3(trunc); _CC9_M3(round); _CC9_M3(nearbyint); _CC9_M3(rint);
 _CC9_M3(erf); _CC9_M3(erfc); _CC9_M3(tgamma); _CC9_M3(lgamma);
+double nan(const char *); float nanf(const char *); long double nanl(const char *);
 _CC9_M3_2(atan2); _CC9_M3_2(pow); _CC9_M3_2(hypot); _CC9_M3_2(fmod);
 _CC9_M3_2(copysign); _CC9_M3_2(nextafter); _CC9_M3_2(fdim); _CC9_M3_2(fmax); _CC9_M3_2(fmin);
 double scalbn(double,int); float scalbnf(float,int); long double scalbnl(long double,int);

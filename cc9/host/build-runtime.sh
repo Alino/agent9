@@ -41,6 +41,7 @@ INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/pthread.c" -o "$O/pthread.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/wchar.c" -o "$O/wchar.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/fenv.c" -o "$O/fenv.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -O2 -c "$CC9/runtime/int128.c" -o "$O/int128.o"
 "$LLVM/clang++" "${base[@]}" $INSTR -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
 "$LLVM/clang" "${base[@]}" ${CC9_INSTRUMENT:+-DCC9_FAULT_FILE -DCC9_PAUSE_ATTACH} -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"  # crt0 NOT instrumented (naked _start); fault->file + pause-for-acid when debugging
@@ -51,7 +52,7 @@ INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
 INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
 lcxx=("${base[@]}" $INSTR -D_LIBCPP_BUILDING_LIBRARY -D_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER
       -I "$LLVMSRC/libcxx/src" -I "$LIBCXX" -isystem "$INC" -std=c++23 -DNDEBUG -O1 -w)
-for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected locale ios iostream ostream regex thread mutex mutex_destructor condition_variable condition_variable_destructor shared_mutex future atomic barrier; do
+for f in string stdexcept memory hash functional bind memory_resource system_error error_category valarray chrono expected locale ios iostream ostream regex thread mutex mutex_destructor condition_variable condition_variable_destructor shared_mutex future atomic barrier strstream variant any optional; do
   "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/$f.cpp" -o "$O/lcx_$f.o"
 done
 "$LLVM/clang++" "${lcxx[@]}" -c "$LLVMSRC/libcxx/src/algorithm.cpp" -o "$O/lcx_algorithm.o"

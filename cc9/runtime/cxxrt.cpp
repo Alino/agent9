@@ -7,6 +7,18 @@ extern "C" void free(void *);
 extern "C" void *aligned_alloc(unsigned long, unsigned long);
 
 #include <new>   // std::align_val_t, nothrow_t, new_handler, bad_alloc decls
+#include <exception>   // std::terminate
+
+// Runs a worker thread's start function. [thread.thread.constr]/5: if it exits
+// via an exception, std::terminate is called. cc9's DWARF unwinder can't unwind
+// off the top of a worker stack (the C trampoline in pthread.c has no landing
+// pad), so the exception would otherwise hang the thread; catch it here so the
+// installed terminate handler runs. Called from pthread.c's trampoline.
+extern "C" void *cc9_thread_invoke(void *(*start)(void *), void *arg)
+{
+	try { return start(arg); }
+	catch (...) { std::terminate(); }
+}
 
 // Called if a pure-virtual function is ever invoked (a bug); abort the program.
 extern "C" void __cxa_pure_virtual()
@@ -92,21 +104,32 @@ static void *cc9_new(unsigned long n) {
 	}
 }
 CC9_WEAK void *operator new(unsigned long n) { return cc9_new(n); }
-CC9_WEAK void *operator new[](unsigned long n) { return cc9_new(n); }
+// Array new is NOT a separate allocator: its default behavior is to call the
+// (replaceable) scalar ::operator new — so a TU that replaces only operator new
+// still wins for `new T[]`. [new.delete.array] / libcxxabi stdlib_new_delete.cpp.
+CC9_WEAK void *operator new[](unsigned long n) { return ::operator new(n); }
 // (placement new/delete come from <new>, inline — don't redefine.)
+// Only the two CORE forms call free(); ALL other forms (sized, nothrow) delegate
+// to the core, per [new.delete]. This keeps operator delete REPLACEABLE: a TU
+// that replaces only `operator delete(void*)` (e.g. libc++'s count_new.h leak
+// checker) still catches deallocations the compiler routes through sized-delete
+// (-fsized-deallocation, the C++14+ default). Calling free() directly here would
+// bypass the user's replacement and falsely report leaks.
 CC9_WEAK void operator delete(void *p) noexcept { free(p); }
-CC9_WEAK void operator delete(void *p, unsigned long) noexcept { free(p); }
-CC9_WEAK void operator delete[](void *p) noexcept { free(p); }
-CC9_WEAK void operator delete[](void *p, unsigned long) noexcept { free(p); }
+// Array delete forwards to the (replaceable) scalar ::operator delete — NOT free
+// directly — so a TU that replaces only operator delete catches `delete[]` too.
+CC9_WEAK void operator delete[](void *p) noexcept { ::operator delete(p); }
+CC9_WEAK void operator delete(void *p, unsigned long) noexcept { ::operator delete(p); }
+CC9_WEAK void operator delete[](void *p, unsigned long) noexcept { ::operator delete[](p); }
 
 // nothrow variants — same allocator (malloc returns 0 on failure, which is the
 // nothrow contract).
 // nothrow: try the throwing path, return null instead of propagating bad_alloc.
 // (also fixes n==0 returning a unique non-null pointer via cc9_new's n?n:1.)
-CC9_WEAK void *operator new(unsigned long n, const std::nothrow_t &) noexcept { try { return cc9_new(n); } catch (...) { return nullptr; } }
-CC9_WEAK void *operator new[](unsigned long n, const std::nothrow_t &) noexcept { try { return cc9_new(n); } catch (...) { return nullptr; } }
-CC9_WEAK void operator delete(void *p, const std::nothrow_t &) noexcept { free(p); }
-CC9_WEAK void operator delete[](void *p, const std::nothrow_t &) noexcept { free(p); }
+CC9_WEAK void *operator new(unsigned long n, const std::nothrow_t &) noexcept { try { return ::operator new(n); } catch (...) { return nullptr; } }
+CC9_WEAK void *operator new[](unsigned long n, const std::nothrow_t &) noexcept { try { return ::operator new[](n); } catch (...) { return nullptr; } }
+CC9_WEAK void operator delete(void *p, const std::nothrow_t &) noexcept { ::operator delete(p); }
+CC9_WEAK void operator delete[](void *p, const std::nothrow_t &) noexcept { ::operator delete[](p); }
 
 // over-aligned (C++17) — honor the requested alignment via aligned_alloc (NOT
 // plain malloc, which only guarantees 16 bytes). free() recovers the base.
@@ -119,15 +142,16 @@ static void *cc9_new_aligned(unsigned long n, unsigned long a) {
 	}
 }
 CC9_WEAK void *operator new(unsigned long n, std::align_val_t a) { return cc9_new_aligned(n, (unsigned long)a); }
-CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a) { return cc9_new_aligned(n, (unsigned long)a); }
+CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a) { return ::operator new(n, a); }
+// aligned core forms call free(); aligned sized/nothrow delegate to them.
 CC9_WEAK void operator delete(void *p, std::align_val_t) noexcept { free(p); }
-CC9_WEAK void operator delete[](void *p, std::align_val_t) noexcept { free(p); }
-CC9_WEAK void operator delete(void *p, unsigned long, std::align_val_t) noexcept { free(p); }
-CC9_WEAK void operator delete[](void *p, unsigned long, std::align_val_t) noexcept { free(p); }
-CC9_WEAK void *operator new(unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { try { return cc9_new_aligned(n, (unsigned long)a); } catch (...) { return nullptr; } }
-CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { try { return cc9_new_aligned(n, (unsigned long)a); } catch (...) { return nullptr; } }
-CC9_WEAK void operator delete(void *p, std::align_val_t, const std::nothrow_t &) noexcept { free(p); }
-CC9_WEAK void operator delete[](void *p, std::align_val_t, const std::nothrow_t &) noexcept { free(p); }
+CC9_WEAK void operator delete[](void *p, std::align_val_t a) noexcept { ::operator delete(p, a); }
+CC9_WEAK void operator delete(void *p, unsigned long, std::align_val_t a) noexcept { ::operator delete(p, a); }
+CC9_WEAK void operator delete[](void *p, unsigned long, std::align_val_t a) noexcept { ::operator delete[](p, a); }
+CC9_WEAK void *operator new(unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { try { return ::operator new(n, a); } catch (...) { return nullptr; } }
+CC9_WEAK void *operator new[](unsigned long n, std::align_val_t a, const std::nothrow_t &) noexcept { try { return ::operator new[](n, a); } catch (...) { return nullptr; } }
+CC9_WEAK void operator delete(void *p, std::align_val_t a, const std::nothrow_t &) noexcept { ::operator delete(p, a); }
+CC9_WEAK void operator delete[](void *p, std::align_val_t a, const std::nothrow_t &) noexcept { ::operator delete[](p, a); }
 
 // The std::nothrow object (set/get_new_handler now come from libcxxabi).
 namespace std { const nothrow_t nothrow{}; }
@@ -144,7 +168,8 @@ extern "C" char *__cxa_demangle(const char *, char *, unsigned long *, int *stat
 
 // libc++ hardening / error paths.
 namespace std { inline namespace __1 {
-__attribute__((noreturn)) void __libcpp_verbose_abort(const char *, ...) noexcept {
+// weak: tests (check_assertion.h) replace this with their own interceptor.
+__attribute__((noreturn, weak)) void __libcpp_verbose_abort(const char *, ...) noexcept {
 	n9_exits("cc9: libcxx abort\n"); __builtin_unreachable();
 }
 }}

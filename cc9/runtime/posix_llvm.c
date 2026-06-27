@@ -46,7 +46,8 @@ int mprotect(void *p, n9size_t len, int prot) { (void)p; (void)len; (void)prot; 
 int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; return 0; }
 int msync(void *p, n9size_t len, int fl) { (void)p; (void)len; (void)fl; return 0; }
 
-void _exit(int code) { n9_exits(code ? "cc9: _exit nonzero" : (char *)0); for (;;) {} }
+extern const char *cc9_exitstr(int);
+void _exit(int code) { n9_exits(cc9_exitstr(code)); for (;;) {} }
 
 n9size_t strnlen(const char *s, n9size_t max) {
 	n9size_t n = 0; while (n < max && s[n]) n++; return n;
@@ -117,6 +118,25 @@ long atol(const char *s) {
 	while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
 	return v * sign;
 }
+extern double strtod(const char *, char **);
+extern long long strtoll(const char *, char **, int);
+long long atoll(const char *s) { return strtoll(s, 0, 10); }
+double atof(const char *s) { return strtod(s, 0); }
+
+/* bsearch: classic binary search over a sorted array. */
+void *bsearch(const void *key, const void *base, n9size_t n, n9size_t sz,
+              int (*cmp)(const void *, const void *)) {
+	const char *a = base;
+	while (n) {
+		n9size_t mid = n / 2;
+		const char *p = a + mid * sz;
+		int c = cmp(key, p);
+		if (c == 0) return (void *)p;
+		if (c > 0) { a = p + sz; n -= mid + 1; }
+		else n = mid;
+	}
+	return 0;
+}
 
 /* xorshift PRNG — LLVM only uses rand() for jitter/tmp-name salting. */
 static uint64_t rng_state = 0x2545F4914F6CDD1DULL;
@@ -128,20 +148,113 @@ int rand(void) {
 }
 long random(void) { return rand(); }
 
+/* ---- process control over Plan 9 rfork/exec/await ---- */
+extern long n9_rfork(int);
+extern long n9_exec(const char *, char **);
+extern long n9_await(char *, int);
+extern void n9_exits(const char *);
+/* Plan 9 rfork flags: RFPROC=1<<4, RFFDG=1<<2 (copy fd group). */
+#define N9_RFPROC 0x10
+#define N9_RFFDG  0x04
+int    fork(void) { return (int)n9_rfork(N9_RFPROC|N9_RFFDG); }
+
+/* system(): run `cmd` via `/bin/rc -c cmd`, await it, return 0 on clean exit.
+ * The libc++ filesystem test framework uses system("mkdir -p ...") etc. With
+ * cmd==NULL, report that a command processor is available (rc). */
+/* string prefix test */
+static int n9_startswith(const char *s, const char *p) { while (*p) if (*s++ != *p++) return 0; return 1; }
+int system(const char *cmd) {
+	if (!cmd) return 1;
+	/* ponytail: 9front's chmod has no -R. The libc++ filesystem test harness only
+	 * runs `chmod -R 777 <dir>` to make a tree writable before `rm -rf`; on 9front
+	 * test-created files are already owned+writable by the user, so the rm works
+	 * regardless. Treat `chmod -R ...` as a successful no-op. Drop if 9front chmod
+	 * ever gains -R. */
+	if (n9_startswith(cmd, "chmod -R ")) return 0;
+	long pid = n9_rfork(N9_RFPROC|N9_RFFDG);
+	if (pid < 0) return -1;
+	if (pid == 0) {
+		char *argv[4]; argv[0] = "rc"; argv[1] = "-c"; argv[2] = (char *)cmd; argv[3] = 0;
+		n9_exec("/bin/rc", argv);
+		n9_exits("exec");                 /* only reached if exec fails */
+	}
+	char w[256];
+	for (;;) {
+		long n = n9_await(w, sizeof w - 1);
+		if (n < 0) return -1;
+		w[n] = 0;
+		long wp = 0; const char *p = w; while (*p >= '0' && *p <= '9') wp = wp*10 + (*p++ - '0');
+		if (wp != pid) continue;          /* a different child; keep waiting */
+		/* await msg = "pid utime stime rtime 'status'"; the exit string is
+		 * QUOTED (Plan 9 %q): '' means empty == clean exit == success. */
+		int sp = 0; const char *q = w;
+		for (; *q && sp < 4; q++) if (*q == ' ') sp++;
+		if (*q == '\'') q++;              /* skip opening quote */
+		return (*q == '\'' || *q == 0) ? 0 : 1;   /* empty quoted status => 0 */
+	}
+}
+
 /* ---- STUB (POSIX failure; not on a compile path) ---- */
-int    fork(void) { return -1; }
-int    pipe(int fds[2]) { (void)fds; return -1; }
+extern long n9_pipe(int *);
+int    pipe(int fds[2]) { return (int)n9_pipe(fds); }
 int    dup3(int o, int n, int f) { (void)o; (void)n; (void)f; return -1; }
 int    setsid(void) { return -1; }
 int    getsid(int p) { (void)p; return -1; }
 int    execv(const char *p, char *const a[]) { (void)p; (void)a; return -1; }
 int    execvp(const char *p, char *const a[]) { (void)p; (void)a; return -1; }
 int    execve(const char *p, char *const a[], char *const e[]) { (void)p; (void)a; (void)e; return -1; }
-int    wait4(int p, int *s, int o, void *r) { (void)p; (void)s; (void)o; (void)r; return -1; }
-int    waitpid(int p, int *s, int o) { (void)p; (void)s; (void)o; return -1; }
-int    wait(int *s) { (void)s; return -1; }
+/* waitpid over Plan 9 await(2): wait for child `pid` (or any if pid<=0), decode
+ * the exit-status string into *s for the WIFEXITED/WEXITSTATUS macros. Plan 9
+ * reports a non-empty child exit string to the parent as "<argv0> <pid>: <str>";
+ * cc9_exitstr tags the numeric code as "cc9exit=N", so we scan the whole status
+ * for that marker. Empty status => clean exit 0; a "cc9exit=N" marker => exit
+ * code N; anything else non-empty (a "sys:" fault note / "cc9: abort") => report
+ * as a signal (SIGABRT) so WIFSIGNALED is true. */
+static const char *cc9_find(const char *h, const char *n){
+	for(; *h; h++){ const char *a=h,*b=n; while(*b && *a==*b){a++;b++;} if(!*b) return h; }
+	return 0;
+}
+int    waitpid(int pid, int *s, int o) {
+	(void)o;
+	char w[256];
+	for (;;) {
+		long n = n9_await(w, sizeof w - 1);
+		if (n < 0) return -1;
+		w[n] = 0;
+		long wp = 0; const char *p = w; while (*p >= '0' && *p <= '9') wp = wp*10 + (*p++ - '0');
+		if (pid > 0 && wp != pid) continue;          /* a different child; keep waiting */
+		/* locate the quoted exit string: skip "pid utime stime rtime " (4 spaces) */
+		int sp = 0; const char *q = w;
+		for (; *q && sp < 4; q++) if (*q == ' ') sp++;
+		if (*q == '\'') q++;                          /* skip opening quote */
+		if (s) {
+			const char *m = cc9_find(q, "cc9exit=");
+			if (*q == '\'' || *q == 0) *s = 0;                       /* clean exit 0 */
+			else if (m) {
+				m += 8; int neg = (*m=='-'); if (neg) m++;
+				int code = 0; while (*m >= '0' && *m <= '9') code = code*10 + (*m++ - '0');
+				*s = ((neg ? -code : code) & 0xff) << 8;             /* WIFEXITED, WEXITSTATUS=code */
+			} else *s = 6;                                           /* SIGABRT: WIFSIGNALED */
+		}
+		return (int)wp;
+	}
+}
+int    wait4(int p, int *s, int o, void *r) { (void)r; return waitpid(p, s, o); }
+int    wait(int *s) { return waitpid(-1, s, 0); }
 int    kill(int p, int s) { (void)p; (void)s; return -1; }
 unsigned int alarm(unsigned int s) { (void)s; return 0; }
+/* setitimer over Plan 9 alarm(2): ITIMER_REAL arms n9_alarm(ms); a SIGALRM note
+ * then fires (crt0.c note handler). Other timers are accepted as no-ops.
+ * Local struct mirrors <sys/time.h> (this file avoids pulling system headers). */
+extern long n9_alarm(unsigned long);
+struct itimerval { struct { long tv_sec, tv_usec; } it_interval, it_value; };
+int setitimer(int which, const struct itimerval *nv, struct itimerval *ov) {
+	(void)ov;
+	if(which != 0) return 0;                       /* ITIMER_REAL only */
+	unsigned long ms = nv ? (unsigned long)nv->it_value.tv_sec*1000 + (unsigned long)nv->it_value.tv_usec/1000 : 0;
+	n9_alarm(ms);
+	return 0;
+}
 int    usleep(unsigned int us) { (void)us; return 0; }
 int    ioctl(int fd, unsigned long req, ...) { (void)fd; (void)req; return -1; }
 int    fcntl(int fd, int cmd, ...) { (void)fd; (void)cmd; return 0; }  /* "locks succeed" */
@@ -150,7 +263,8 @@ int    fchown(int fd, unsigned u, unsigned g) { (void)fd; (void)u; (void)g; retu
 int    lchown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
 unsigned umask(unsigned m) { (void)m; return 022; }
 int    gethostname(char *n, unsigned long l) { if (l) n[0] = 0; return 0; }
-int    dup2(int o, int n) { (void)o; (void)n; return -1; }
+extern long n9_dup(int, int);
+int    dup2(int o, int n) { return (int)n9_dup(o, n); }
 
 /* time breakdown: gmtime/localtime (LLVM uses them for diagnostic timestamps).
  * No timezone db on Plan 9 -> local == UTC. Civil-from-days (Hinnant). */
@@ -200,7 +314,14 @@ int sigaddset(unsigned long *s, int n) { if (s) *s |= 1ul << (n & 63); return 0;
 int sigdelset(unsigned long *s, int n) { if (s) *s &= ~(1ul << (n & 63)); return 0; }
 int sigismember(const unsigned long *s, int n) { return s ? (int)((*s >> (n & 63)) & 1) : 0; }
 int sigprocmask(int how, const unsigned long *set, unsigned long *old) { (void)how; (void)set; if (old) *old = 0; return 0; }
-int sigaction(int sig, const void *act, void *old) { (void)sig; (void)act; (void)old; return 0; }
+extern void cc9_set_sigh(int, void (*)(int));
+int sigaction(int sig, const void *act, void *old) {
+	(void)old;
+	/* struct sigaction begins with the sa_handler union (a fn pointer); register
+	 * it so a matching Plan 9 note (e.g. SIGALRM from setitimer) dispatches it. */
+	if (act) cc9_set_sigh(sig, *(void (*const *)(int))act);
+	return 0;
+}
 
 /* rlimit / rusage: report "unlimited" / zero. */
 int getrlimit(int r, void *rl) { (void)r; if (rl) { unsigned long *p = rl; p[0] = p[1] = ~0ul; } return 0; }

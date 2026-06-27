@@ -357,6 +357,33 @@ n9_notify:
 	REST_CALLEE
 	ret
 
+// long n9_dup(int old, int new)  DUP=5. Dups `old` onto `new` (new>=0, returns
+// new) or to the lowest free fd (new<0). Returns the new fd / -1.
+	.globl n9_dup
+n9_dup:
+	SAVE_CALLEE
+	subq	$32, %rsp
+	movl	%edi, 8(%rsp)      // old
+	movl	%esi, 16(%rsp)     // new
+	movq	$5, %rbp
+	syscall
+	addq	$32, %rsp
+	REST_CALLEE
+	ret
+
+// long n9_pipe(int fd[2])  PIPE=21. Creates a pipe; fills fd[0]/fd[1] with the
+// two ends, returns 0 / -1.
+	.globl n9_pipe
+n9_pipe:
+	SAVE_CALLEE
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)
+	movq	$21, %rbp
+	syscall
+	addq	$16, %rsp
+	REST_CALLEE
+	ret
+
 // long n9_noted(int disposition)  NOTED=29. Returns from a note (NDFLT=1 dies,
 // NCONT=0 resumes). Does not return to the caller on NDFLT.
 	.globl n9_noted
@@ -377,7 +404,64 @@ n9_noted:
 cc9_notetramp:
 	movq	%rsp, %rdi         // raw note-frame base -> SysV arg0
 	andq	$-16, %rsp         // align for the SysV call (we never return here)
-	call	cc9_note_handler
-	movl	$1, %edi           // NDFLT
+	call	cc9_note_handler   // returns disposition in eax: 0=NCONT, 1=NDFLT
+	movl	%eax, %edi         // FP faults re-mask + resume (NCONT); others die (NDFLT)
 	call	n9_noted
 3:	jmp	3b
+
+// long n9_rfork(int flags)   RFORK=19. Plain fork-family primitive (system()
+// uses RFPROC|RFFDG). Unlike n9_rfork_thread this returns to BOTH parent (pid)
+// and child (0) — the caller branches on the result.
+	.globl n9_rfork
+n9_rfork:
+	SAVE_CALLEE
+	subq	$16, %rsp
+	movl	%edi, 8(%rsp)      // flags
+	movq	$19, %rbp
+	syscall
+	addq	$16, %rsp
+	REST_CALLEE
+	ret
+
+// long n9_exec(char *name, char **argv)   EXEC=7. Replaces the process image;
+// returns only on failure.
+	.globl n9_exec
+n9_exec:
+	SAVE_CALLEE
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)      // name
+	movq	%rsi, 16(%rsp)     // argv
+	movq	$7, %rbp
+	syscall
+	addq	$32, %rsp
+	REST_CALLEE
+	ret
+
+// long n9_await(char *buf, int n)   AWAIT=47. Fills buf with the wait message
+// of an exited child ("pid utime stime rtime status"); returns length or -1.
+	.globl n9_await
+n9_await:
+	SAVE_CALLEE
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)      // buf
+	movl	%esi, 16(%rsp)     // n
+	movq	$47, %rbp
+	syscall
+	addq	$32, %rsp
+	REST_CALLEE
+	ret
+
+// long n9_tsemacquire(long *addr, long ms)   TSEMACQUIRE=52. Like semacquire
+// but with a millisecond timeout: returns 1 (acquired), 0 (timed out), -1 (err).
+// ms==0 polls non-blocking. Backs condition_variable::wait_for / timed_mutex.
+	.globl n9_tsemacquire
+n9_tsemacquire:
+	SAVE_CALLEE
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)      // addr
+	movq	%rsi, 16(%rsp)     // ms
+	movq	$52, %rbp
+	syscall
+	addq	$32, %rsp
+	REST_CALLEE
+	ret

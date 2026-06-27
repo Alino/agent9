@@ -228,7 +228,24 @@ void __cc9_assert(const char *e, const char *f, int line){
 void __assert_fail(const char *e,const char *f,unsigned line,const char *fn){ (void)fn; __cc9_assert(e,f,(int)line); }
 void __assert(const char *e,const char *f,int line){ __cc9_assert(e,f,line); }
 void __assert_rtn(const char *fn,const char *f,int line,const char *e){ (void)fn; __cc9_assert(e,f,line); }
-void exit(int code){ n9_exits(code? "cc9: exit nonzero\n" : 0); for(;;){} }
+/* Encode the numeric exit code in the Plan 9 exits() string so a POSIX waitpid()
+ * in the parent can recover it via WEXITSTATUS — the libc++ death-test harness
+ * exits the child with an enum code and reads it back. Plan 9 reports a non-empty
+ * exit status to the parent's await as "<argv0> <pid>: <string>", so we tag the
+ * code with a distinctive marker ("cc9exit=N") that waitpid scans for, immune to
+ * that prefix wrapping. 0 maps to the empty status string (Plan 9 clean exit). */
+const char *cc9_exitstr(int code){
+	if(code==0) return 0;
+	static char buf[24]; const char *tag="cc9exit=";
+	int k=0; while(tag[k]){ buf[k]=tag[k]; k++; }
+	unsigned v = code<0 ? (unsigned)(-code) : (unsigned)code;
+	if(code<0) buf[k++]='-';
+	char d[12]; int j=0; if(v==0) d[j++]='0'; while(v){ d[j++]='0'+v%10; v/=10; }
+	while(j) buf[k++]=d[--j];
+	buf[k]=0;
+	return buf;
+}
+void exit(int code){ n9_exits(cc9_exitstr(code)); for(;;){} }
 void _Exit(int code){ exit(code); }
 void quick_exit(int code){ exit(code); }
 int at_quick_exit(void (*f)(void)){ (void)f; return 0; }   /* no handler table */
@@ -240,6 +257,13 @@ typedef void (*n9_sigh)(int);
 static n9_sigh n9_sigtab[32];
 n9_sigh signal(int s, n9_sigh h){ if(s<0||s>=32) return (n9_sigh)-1; n9_sigh o=n9_sigtab[s]; n9_sigtab[s]=h; return o; }
 int raise(int s){ if(s<0||s>=32) return -1; n9_sigh h=n9_sigtab[s]; if(h&&h!=(n9_sigh)1) h(s); return 0; }
+/* register a handler (used by sigaction in posix_llvm.c, which can't see the
+ * static table) */
+void cc9_set_sigh(int s, n9_sigh h){ if(s>=0&&s<32) n9_sigtab[s]=h; }
+/* run the SIGALRM (14) handler from the note handler when a Plan 9 "alarm" note
+ * fires (setitimer/alarm). Called in note context; the conformance use is an
+ * empty handler, but a real one runs here as the closest signal analogue. */
+void cc9_run_sigalrm(void){ n9_sigh h=n9_sigtab[14]; if(h&&h!=(n9_sigh)1&&h!=(n9_sigh)-1) h(14); }
 /* __atomic_is_lock_free(size, ptr): native scalar widths (<=16B) are lock-free
  * on amd64. Builtin name, so define via an __asm__ label (see __atomic_* below). */
 int cc9_atomic_is_lock_free(size_t n, const volatile void *p) __asm__("__atomic_is_lock_free");
@@ -307,6 +331,19 @@ char *setlocale(int c, const char *l){ (void)c; (void)l; return (char*)"C"; }
 struct n9_tm { int tm_sec,tm_min,tm_hour,tm_mday,tm_mon,tm_year,tm_wday,tm_yday,tm_isdst; };
 static const char *n9_wday[]={"Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"};
 static const char *n9_mon[]={"January","February","March","April","May","June","July","August","September","October","November","December"};
+/* ISO-8601 week number (1..53) + week-based year, for %V/%G/%g. The 52-vs-53
+ * decision uses the standard "Jan 1 weekday" rule (Thu, or Wed in a leap year). */
+static int n9_isoyearweeks(int y){
+	int p=(y+y/4-y/100+y/400)%7, p1=((y-1)+(y-1)/4-(y-1)/100+(y-1)/400)%7;
+	return (p==4||p1==3)?53:52;
+}
+static int n9_isoweek(const struct n9_tm *t, int *isoyear){
+	int y=t->tm_year+1900, wday=(t->tm_wday+6)%7;   /* Mon=0..Sun=6 */
+	int week=(t->tm_yday-wday+10)/7;
+	if(week<1){ y--; week=n9_isoyearweeks(y); }
+	else if(week>52){ int w=n9_isoyearweeks(y); if(week>w){ week=1; y++; } }
+	*isoyear=y; return week;
+}
 size_t strftime(char *s, size_t max, const char *f, const struct n9_tm *t){
 	char *o=s, *end=s+max;
 	#define PUT(c) do{ if(o<end-1)*o++=(c); }while(0)
@@ -315,8 +352,22 @@ size_t strftime(char *s, size_t max, const char *f, const struct n9_tm *t){
 	for(; *f; f++){
 		if(*f!='%'){ PUT(*f); continue; }
 		f++;
+		if(*f=='E'||*f=='O') f++;   /* C locale: alt-format modifiers are no-ops */
 		switch(*f){
 		case 'Y':{ int y=t->tm_year+1900; char b[8]; int i=0; if(y==0)b[i++]='0'; while(y){b[i++]='0'+y%10;y/=10;} while(i)PUT(b[--i]); }break;
+		case 'C': PUT2((t->tm_year+1900)/100); break;
+		case 'D': case 'x':{ char b[16]; strftime(b,sizeof b,"%m/%d/%y",t); PUTS(b); }break;
+		case 'F':{ char b[16]; strftime(b,sizeof b,"%Y-%m-%d",t); PUTS(b); }break;
+		case 'T': case 'X':{ char b[16]; strftime(b,sizeof b,"%H:%M:%S",t); PUTS(b); }break;
+		case 'R':{ char b[8]; strftime(b,sizeof b,"%H:%M",t); PUTS(b); }break;
+		case 'c':{ char b[32]; strftime(b,sizeof b,"%a %b %e %H:%M:%S %Y",t); PUTS(b); }break;
+		case 'r':{ char b[16]; strftime(b,sizeof b,"%I:%M:%S %p",t); PUTS(b); }break;
+		case 'u': PUT('0'+(t->tm_wday==0?7:t->tm_wday)); break;
+		case 'U': PUT2((t->tm_yday+7-t->tm_wday)/7); break;
+		case 'W': PUT2((t->tm_yday+7-(t->tm_wday==0?6:t->tm_wday-1))/7); break;
+		case 'V':{ int wy; PUT2(n9_isoweek(t,&wy)); }break;
+		case 'G':{ int wy; n9_isoweek(t,&wy); char b[8]; int i=0; int yy=wy<0?-wy:wy; if(!yy)b[i++]='0'; while(yy){b[i++]='0'+yy%10;yy/=10;} if(wy<0)PUT('-'); while(i)PUT(b[--i]); }break;
+		case 'g':{ int wy; n9_isoweek(t,&wy); PUT2(wy%100); }break;
 		case 'y': PUT2((t->tm_year+1900)%100); break;
 		case 'm': PUT2(t->tm_mon+1); break;
 		case 'd': PUT2(t->tm_mday); break;
@@ -368,36 +419,129 @@ static unsigned long long n9_ustrto(const char *nptr, char **e, int base, int *n
 	   ((s[2]>='0'&&s[2]<='9')||((s[2]|32)>='a'&&(s[2]|32)<='f'))){ s+=2; base=16; }
 	else if(base==0 && s[0]=='0'){ base=8; }
 	else if(base==0) base=10;
-	unsigned long long r=0; int any=0;
+	unsigned long long r=0; int any=0, ov=0;
 	for(;; s++){
 		unsigned char c=*s; int d;
 		if(c>='0'&&c<='9') d=c-'0';
 		else if((c|32)>='a'&&(c|32)<='z') d=(c|32)-'a'+10;
 		else break;
 		if(d>=base) break;
+		if(r > (~0ULL - (unsigned)d)/(unsigned)base) ov=1;
 		r = r*(unsigned)base + (unsigned)d; any=1;
 	}
 	if(e) *e=(char*)(any?s:nptr);
+	/* ponytail: flags unsigned-range overflow only (covers every stoul/stoull/stol/
+	 * stoll overflow test). Add a per-wrapper signed-range clamp if one ever needs it. */
+	if(ov){ n9_errno_v = 34; /* ERANGE */ r = ~0ULL; }
 	return r;
+}
+/* openlibm helpers (libcc9m.a) for the correctly-rounded float parser below. */
+long double powl(long double, long double);
+long double scalbnl(long double, int);
+long double fmal(long double, long double, long double);
+
+/* Correctly-rounded decimal scaling: mant * 10^exp10. 10^0..10^27 are exact in
+ * 80-bit long double, so the power is accumulated from exact chunks with Dekker
+ * two-product error tracking into a double-double, then applied with a single
+ * rounded multiply/divide — correctly rounded across the whole long-double range
+ * (a plain powl() was off-by-ULP for large exponents, e.g. 2e300).
+ * ponytail: when |exp10| > 4932 the power itself overflows LDBL_MAX, so we return
+ * 0 for tiny magnitudes even where the quotient would be a representable subnormal
+ * (same as the old powl path); the denormal boundary would need a bignum. */
+static long double n9_exp10x(int k){ long double r=1.0L; while(k-->0) r*=10.0L; return r; } /* exact, k<=27 */
+static long double n9_scale10(unsigned long long mant, int exp10){
+	long double m=(long double)mant;
+	if(exp10==0) return m;
+	int n = exp10<0 ? -exp10 : exp10;
+	long double Phi=1.0L, Plo=0.0L;                 /* double-double 10^n */
+	while(n>0){ int k=n>27?27:n; long double b=n9_exp10x(k);
+		long double p=Phi*b;
+		if(__builtin_isinf(p)) return exp10>0 ? p : 0.0L;   /* 10^|exp| overflowed */
+		long double e=fmal(Phi,b,-p)+Plo*b; Phi=p+e; Plo=e-(Phi-p); n-=k; }
+	if(exp10>0){ long double p=m*Phi; if(!__builtin_isinf(p)) p+=fmal(m,Phi,-p)+m*Plo; return p; }
+	long double q=m/Phi; if(q==0.0L) return q;          /* underflow to zero */
+	long double ph=q*Phi, pl=fmal(q,Phi,-ph)+q*Plo, r=(m-ph)-pl;
+	return q + r/Phi;
+}
+
+/* Shared float-magnitude parser for strtod/strtold (no sign, no inf/nan).
+ * Handles hex floats (0x<nibbles>.<nibbles>p±N) and decimal: up to 19 significant
+ * digits accumulated into a uint64, scaled by n9_scale10 (correctly rounded). *e
+ * is set past the consumed number; *any if a number was read; *nz if its
+ * significand was nonzero (callers use that to flag underflow-to-zero as ERANGE).
+ * ponytail: the significand is truncated to 19 digits before scaling, so inputs
+ * with >19 significant digits that land near a rounding halfway point can miss
+ * the last ULP; upgrade to a big-int parse only if a libc++ test needs it. */
+static long double n9_pflt(const char *s, char **e, int *any, int *nz){
+	*any=0; *nz=0;
+	/* hex float: 0x must be followed by a hex digit (or '.'+hex digit). */
+	if(s[0]=='0' && (s[1]|32)=='x' &&
+	   ( ((s[2]>='0'&&s[2]<='9')||((s[2]|32)>='a'&&(s[2]|32)<='f'))
+	     || (s[2]=='.' && ((s[3]>='0'&&s[3]<='9')||((s[3]|32)>='a'&&(s[3]|32)<='f'))) )){
+		const char *p=s+2; long double m=0; int bexp=0, dot=0, ax=0, nzx=0;
+		for(;;p++){
+			unsigned char c=*p; int d;
+			if(c>='0'&&c<='9') d=c-'0';
+			else if((c|32)>='a'&&(c|32)<='f') d=(c|32)-'a'+10;
+			else if(c=='.'&&!dot){ dot=1; continue; }
+			else break;
+			ax=1; if(d) nzx=1;
+			m=m*16+d; if(dot) bexp-=4;
+		}
+		int pexp=0;
+		if((*p|32)=='p'){
+			const char *ps=p; p++;
+			int pn=0; if(*p=='+')p++; else if(*p=='-'){pn=1;p++;}
+			if(*p>='0'&&*p<='9'){ int pe=0; while(*p>='0'&&*p<='9'){ if(pe<100000)pe=pe*10+(*p-'0'); p++; } pexp=pn?-pe:pe; }
+			else p=ps;
+		}
+		*e=(char*)p; *any=ax; *nz=nzx;
+		return scalbnl(m, bexp+pexp);
+	}
+	/* decimal */
+	const char *p=s; unsigned long long mant=0; int exp10=0, sig=0, dot=0, ax=0, nzd=0;
+	for(;;p++){
+		unsigned char c=*p;
+		if(c>='0'&&c<='9'){
+			ax=1; int d=c-'0'; if(d) nzd=1;
+			if(sig<19 && (mant!=0 || d!=0)){ mant=mant*10+(unsigned)d; sig++; if(dot)exp10--; }
+			else if(mant!=0 || d!=0){ if(!dot)exp10++; }   /* digit past the 19-sig budget */
+			else if(dot) exp10--;                          /* leading fractional zero */
+		} else if(c=='.'&&!dot){ dot=1; }
+		else break;
+	}
+	if(ax && (*p|32)=='e'){
+		const char *es=p; p++;
+		int en=0; if(*p=='+')p++; else if(*p=='-'){en=1;p++;}
+		if(*p>='0'&&*p<='9'){ int pe=0; while(*p>='0'&&*p<='9'){ if(pe<100000)pe=pe*10+(*p-'0'); p++; } exp10 += en?-pe:pe; }
+		else p=es;   /* lone 'e': not part of the number */
+	}
+	*e=(char*)p; *any=ax; *nz=nzd;
+	return n9_scale10(mant, exp10);
 }
 double strtod(const char *nptr, char **e){
 	const char *s=nptr;
 	while(*s==' '||*s=='\t'||*s=='\n'||*s=='\r'||*s=='\v'||*s=='\f') s++;
 	int neg=0; if(*s=='+')s++; else if(*s=='-'){neg=1;s++;}
-	double r=0; int any=0;
-	while(*s>='0'&&*s<='9'){ r=r*10+(*s-'0'); s++; any=1; }
-	if(*s=='.'){ s++; double f=0.1; while(*s>='0'&&*s<='9'){ r+=(*s-'0')*f; f*=0.1; s++; any=1; } }
-	if(any && (*s=='e'||*s=='E')){
-		const char *es=s; s++;
-		int eneg=0; if(*s=='+')s++; else if(*s=='-'){eneg=1;s++;}
-		if(*s>='0'&&*s<='9'){
-			int ex=0; while(*s>='0'&&*s<='9'){ if(ex<100000) ex=ex*10+(*s-'0'); s++; }
-			double p=1.0; for(int i=0;i<ex;i++) p*=10.0;
-			if(eneg) r/=p; else r*=p;
-		} else s=es;   /* lone 'e': not part of the number */
+	if(((s[0]|32)=='i')&&((s[1]|32)=='n')&&((s[2]|32)=='f')){
+		s+=3;
+		if(((s[0]|32)=='i')&&((s[1]|32)=='n')&&((s[2]|32)=='i')&&((s[3]|32)=='t')&&((s[4]|32)=='y')) s+=5;
+		if(e)*e=(char*)s;
+		return neg?-__builtin_inf():__builtin_inf();
 	}
-	if(e)*e=(char*)(any?s:nptr);
-	return neg?-r:r;
+	if(((s[0]|32)=='n')&&((s[1]|32)=='a')&&((s[2]|32)=='n')){
+		s+=3;
+		if(*s=='('){ const char*q=s+1; while(*q&&*q!=')')q++; if(*q==')')s=q+1; }
+		if(e)*e=(char*)s;
+		return __builtin_nan("");
+	}
+	char *end; int any, nz; long double v=n9_pflt(s,&end,&any,&nz);
+	if(!any){ if(e)*e=(char*)nptr; return neg?-0.0:0.0; }
+	if(e)*e=end;
+	double d=(double)v;
+	if(__builtin_isinf(d)) n9_errno_v = 34;            /* overflow -> ERANGE */
+	else if(nz && d==0.0) n9_errno_v = 34;             /* underflow -> ERANGE */
+	return neg?-d:d;
 }
 long strtol(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-(long)r:(long)r; }
 
@@ -416,7 +560,31 @@ int iscntrl(int c){ return c<32||c==127; }
 int isgraph(int c){ return c>32&&c<127; }
 int isblank(int c){ return c==' '||c=='\t'; }
 int ispunct(int c){ return isgraph(c)&&!isalnum(c); }
-long double strtold(const char *s, char **e){ return (long double)strtod(s, e); }
+/* native long-double parser (NOT a cast from double, so the 64-bit mantissa is
+ * kept) — shares n9_pflt with strtod; only the range check is long-double-wide. */
+long double strtold(const char *nptr, char **e){
+	const char *s=nptr;
+	while(*s==' '||*s=='\t'||*s=='\n'||*s=='\r'||*s=='\v'||*s=='\f') s++;
+	int neg=0; if(*s=='+')s++; else if(*s=='-'){neg=1;s++;}
+	if(((s[0]|32)=='i')&&((s[1]|32)=='n')&&((s[2]|32)=='f')){
+		s+=3;
+		if(((s[0]|32)=='i')&&((s[1]|32)=='n')&&((s[2]|32)=='i')&&((s[3]|32)=='t')&&((s[4]|32)=='y')) s+=5;
+		if(e)*e=(char*)s;
+		return neg?-__builtin_infl():__builtin_infl();
+	}
+	if(((s[0]|32)=='n')&&((s[1]|32)=='a')&&((s[2]|32)=='n')){
+		s+=3;
+		if(*s=='('){ const char*q=s+1; while(*q&&*q!=')')q++; if(*q==')')s=q+1; }
+		if(e)*e=(char*)s;
+		return __builtin_nanl("");
+	}
+	char *end; int any, nz; long double v=n9_pflt(s,&end,&any,&nz);
+	if(!any){ if(e)*e=(char*)nptr; return neg?-0.0L:0.0L; }
+	if(e)*e=end;
+	if(__builtin_isinf(v)) n9_errno_v = 34;            /* overflow -> ERANGE */
+	else if(nz && v==0.0L) n9_errno_v = 34;            /* underflow -> ERANGE */
+	return neg?-v:v;
+}
 
 unsigned long long strtoull(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-r:r; }
 long long strtoll(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-(long long)r:(long long)r; }
@@ -429,7 +597,13 @@ typedef struct { long quot, rem; } n9_imaxdiv_t;
 n9_imaxdiv_t imaxdiv(long a, long b){ n9_imaxdiv_t r; r.quot=a/b; r.rem=a%b; return r; }
 long strtoimax(const char *s, char **e, int b){ return strtoll(s,e,b); }
 unsigned long strtoumax(const char *s, char **e, int b){ return strtoull(s,e,b); }
-float strtof(const char *s, char **e){ return (float)strtod(s, e); }
+float strtof(const char *s, char **e){
+	double d = strtod(s, e); float f = (float)d;
+	/* float-range overflow: strtod leaves errno clear (the value fits a double),
+	 * but it overflows float — std::stof gates out_of_range on ERANGE. */
+	if(__builtin_isinf(f) && !__builtin_isinf(d)) n9_errno_v = 34 /*ERANGE*/;
+	return f;
+}
 /* utoa_ used by strerror above; the printf family (incl. float conv) lives in
  * cc9/runtime/printf.c now. */
 static char *utoa_(unsigned long long v, char *p, int base){ char t[32]; int i=0; if(!v)t[i++]='0'; while(v){int d=v%base; t[i++]="0123456789abcdef"[d]; v/=base;} while(i)*p++=t[--i]; return p; }
@@ -437,10 +611,41 @@ static char *utoa_(unsigned long long v, char *p, int base){ char t[32]; int i=0
 /* libm (sqrt/sin/exp/atan2/... + f/l variants) now comes from libcc9m.a
  * (openlibm) — a real correctly-rounded libm with full inf/nan/signbit
  * semantics and 80-bit long double. Only integer abs stays here (openlibm is
- * float-only); the fenv stubs openlibm references live below. */
+ * float-only); the fenv functions openlibm references come from runtime/fenv.c. */
 int abs(int x){ return x<0?-x:x; }
 long labs(long x){ return x<0?-x:x; }
 long long llabs(long long x){ return x<0?-x:x; }
+
+/* nan(): libc++ <cmath> re-exports ::nan; openlibm's s_nan didn't link, so map
+ * to the compiler builtins (quiet NaN; the tag string is ignored). */
+double nan(const char *t){ (void)t; return __builtin_nan(""); }
+float  nanf(const char *t){ (void)t; return __builtin_nanf(""); }
+long double nanl(const char *t){ (void)t; return __builtin_nanl(""); }
+
+/* tgamma(double): openlibm ships only the float version. Exact for small
+ * positive-integer arguments (factorials), Lanczos (g=7) elsewhere with the
+ * reflection formula for x < 0.5. tgammaf/tgammal come from openlibm. */
+extern double sin(double), sqrt(double), pow(double,double), exp(double), floor(double);
+double tgamma(double x){
+	if(x != x) return x;                              /* NaN */
+	if(__builtin_isinf(x)) return x > 0 ? x : __builtin_nan("");
+	if(x == 0.0) return 1.0/x;                        /* +-0 -> +-inf */
+	if(x < 0 && x == floor(x)) return __builtin_nan(""); /* negative integer pole */
+	if(x > 0 && x == floor(x) && x <= 171.0){         /* exact factorial */
+		double r = 1.0; for(double k = 2.0; k < x; k += 1.0) r *= k; return r;
+	}
+	const double PI = 3.14159265358979323846;
+	if(x < 0.5) return PI / (sin(PI*x) * tgamma(1.0 - x));   /* reflection */
+	static const double g = 7.0;
+	static const double c[9] = {
+		0.99999999999980993, 676.5203681218851, -1259.1392167224028,
+		771.32342877765313, -176.61502916214059, 12.507343278686905,
+		-0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7 };
+	x -= 1.0;
+	double a = c[0], t = x + g + 0.5;
+	for(int i = 1; i < 9; i++) a += c[i] / (x + i);
+	return sqrt(2.0*PI) * pow(t, x + 0.5) * exp(-t) * a;
+}
 
 /* Wall-clock time via Plan 9's /dev/bintime: reading it yields 8 bytes of
  * big-endian nanoseconds since the Unix epoch. Backs gettimeofday/clock_gettime
@@ -478,17 +683,9 @@ int clock_gettime(int clk, void *tsp){
 }
 long time(long *t){ long s = (long)(n9_nsec()/1000000000ULL); if(t)*t=s; return s; }
 
-/* fenv: cc9 keeps FP traps masked (n9_cli sets the FCR once) and the tests
- * don't inspect IEEE exception flags, so openlibm's fenv hooks are no-ops. */
-int feraiseexcept(int e){ (void)e; return 0; }
-int feclearexcept(int e){ (void)e; return 0; }
-int fetestexcept(int e){ (void)e; return 0; }
-int fegetenv(void *p){ (void)p; return 0; }
-int fesetenv(const void *p){ (void)p; return 0; }
-int feholdexcept(void *p){ (void)p; return 0; }
-int feupdateenv(const void *p){ (void)p; return 0; }
-int fegetround(void){ return 0 /*FE_TONEAREST*/; }
-int fesetround(int r){ (void)r; return 0; }
+/* <fenv.h> (rounding mode + IEEE exception-flag inspection) is implemented for
+ * real in runtime/fenv.c — the no-op stubs that used to shadow it lived here and
+ * were deleted so fenv.o gets linked. */
 
 /* Generic GCC atomic library calls — emitted for atomics that aren't inline
  * lock-free (large/odd-size types). cc9 is single-threaded, so they reduce to

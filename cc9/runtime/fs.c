@@ -18,6 +18,7 @@ extern long n9_stat(const char *, unsigned char *, int);
 extern long n9_fstat(int, unsigned char *, int);
 extern long n9_remove(const char *);
 extern long n9_chdir(const char *);
+extern long n9_fd2path(int, char *, int);
 extern void *malloc(size_t); extern void free(void *);
 extern void *memset(void *, int, size_t);
 extern size_t strlen(const char *);
@@ -45,6 +46,20 @@ static void dir_to_stat(const unsigned char *b, struct stat *st){
 }
 
 static int streq(const char *a, const char *b){ while(*a&&*a==*b){a++;b++;} return *a==*b; }
+
+/* Resolve an *at() (dfd, path) pair to a plain path. Plan 9 has no openat
+ * family, so a relative path is rebased onto the parent fd's path (fd2path);
+ * absolute paths and AT_FDCWD pass through. This is what makes libc++'s
+ * fd-threaded remove_all recurse into the right subdirectories. */
+static const char *at_path(int dfd, const char *path, char *buf, int bufsz){
+	if(!path || path[0]=='/' || dfd==AT_FDCWD) return path;
+	if(n9_fd2path(dfd, buf, bufsz) < 0) return path;   /* fall back; caller will error */
+	int i=0; while(buf[i] && i<bufsz-2) i++;
+	if(i==0 || buf[i-1]!='/') buf[i++]='/';
+	int j=0; while(path[j] && i<bufsz-1) buf[i++]=path[j++];
+	buf[i]=0; return buf;
+}
+
 int open(const char *path, int flags, ...){
 	if(streq(path,"/dev/urandom")) path="/dev/random";   /* Plan 9 entropy source */
 	int omode = flags & O_ACCMODE;        /* OREAD/OWRITE/ORDWR == 0/1/2 */
@@ -68,7 +83,7 @@ int open(const char *path, int flags, ...){
 	if(fd < 0){ errno = (flags & O_CREAT) ? EACCES : ENOENT; return -1; }
 	return (int)fd;
 }
-int openat(int dfd, const char *path, int flags, ...){ (void)dfd; return open(path, flags); }
+int openat(int dfd, const char *path, int flags, ...){ char b[1024]; return open(at_path(dfd,path,b,sizeof b), flags); }
 int close(int fd){ return n9_close(fd) < 0 ? -1 : 0; }
 long read(int fd, void *buf, size_t n){ long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
 long write(int fd, const void *buf, size_t n){ long r=n9_pwrite(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
@@ -85,14 +100,13 @@ int fstat(int fd, struct stat *st){
 	if(n<0){ errno=EBADF; return -1; } dir_to_stat(b,st); return 0;
 }
 int lstat(const char *path, struct stat *st){ return stat(path, st); }   /* no symlink follow distinction */
-int fstatat(int dfd, const char *path, struct stat *st, int flag){ (void)dfd;(void)flag; return stat(path, st); }
+int fstatat(int dfd, const char *path, struct stat *st, int flag){ (void)flag; char b[1024]; return stat(at_path(dfd,path,b,sizeof b), st); }
 
 int mkdir(const char *path, mode_t m){ long fd=n9_create(path, 0/*OREAD*/, DMDIR|(m&0777)); if(fd<0){ struct stat st; errno=(stat(path,&st)==0)?EEXIST:EACCES; return -1; } n9_close((int)fd); return 0; }
-int mkdirat(int dfd, const char *path, unsigned int m){ (void)dfd; return mkdir(path,m); }
+int mkdirat(int dfd, const char *path, unsigned int m){ char b[1024]; return mkdir(at_path(dfd,path,b,sizeof b),m); }
 
 extern long n9_wstat(const char *, unsigned char *, int);
 extern long n9_fwstat(int, unsigned char *, int);
-extern long n9_fd2path(int, char *, int);
 static void putle(unsigned char *p, unsigned long long v, int n){ for(int i=0;i<n;i++) p[i]=(unsigned char)(v>>(8*i)); }
 /* Build a wstat Dir with all fields "don't change" (~0 / empty) except those
  * given: name (rename), mode (chmod), length (truncate). 0xFFFF.. = leave. */
@@ -120,12 +134,12 @@ int chmod(const char *path, mode_t m){
 	return n9_wstat(path,b,n)<0?(errno=EACCES,-1):0;
 }
 int fchmod(int fd, mode_t m){ unsigned char b[128]; int n=build_wstat(b,0,m&0777,~0ULL); return n9_fwstat(fd,b,n)<0?-1:0; }
-int fchmodat(int d, const char *p, mode_t m, int f){ (void)d;(void)f; return chmod(p,m); }
+int fchmodat(int d, const char *p, mode_t m, int f){ (void)f; char b[1024]; return chmod(at_path(d,p,b,sizeof b),m); }
 long pathconf(const char *p, int name){ (void)p; return name==4 ? 4096 : 255; }
 long fpathconf(int fd, int name){ (void)fd; return name==4 ? 4096 : 255; }
 int unlink(const char *path){ if(n9_remove(path)<0){errno=ENOENT;return -1;} return 0; }
 int rmdir(const char *path){ return unlink(path); }
-int unlinkat(int dfd, const char *path, int flag){ (void)dfd;(void)flag; return unlink(path); }
+int unlinkat(int dfd, const char *path, int flag){ (void)flag; char b[1024]; return unlink(at_path(dfd,path,b,sizeof b)); }
 int remove(const char *path){ return unlink(path); }
 int chdir(const char *path){ return n9_chdir(path)<0 ? -1 : 0; }
 int access(const char *path, int mode){ (void)mode; struct stat st; return stat(path,&st)==0?0:-1; }
@@ -133,7 +147,8 @@ int isatty(int fd){ (void)fd; return 0; }
 int fsync(int fd){ (void)fd; return 0; }
 int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len); return n9_fwstat(fd,b,n)<0?-1:0; }
 int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len); return n9_wstat(p,b,n)<0?-1:0; }
-int dup(int fd){ (void)fd; errno=EBADF; return -1; }
+extern long n9_dup(int, int);
+int dup(int fd){ int r=(int)n9_dup(fd,-1); if(r<0) errno=EBADF; return r; }
 
 /* rename: Plan 9 wstat changes only the final name component, so this works for
  * same-directory renames; cross-directory -> EXDEV (libc++ falls back to copy). */
@@ -158,6 +173,7 @@ int renameat(int d1,const char*a,int d2,const char*b){ (void)d1;(void)d2; return
 int link(const char *a, const char *b){ (void)a;(void)b; errno=ENOSYS; return -1; }
 int linkat(int d1,const char*a,int d2,const char*b,int f){ (void)d1;(void)a;(void)d2;(void)b;(void)f; errno=ENOSYS; return -1; }
 int symlink(const char *a, const char *b){ (void)a;(void)b; errno=ENOSYS; return -1; }
+int mkfifo(const char *a, mode_t m){ (void)a;(void)m; errno=ENOSYS; return -1; }  /* 9front has no POSIX named pipes */
 int symlinkat(const char*a,int d,const char*b){ (void)a;(void)d;(void)b; errno=ENOSYS; return -1; }
 long readlink(const char *p, char *b, size_t n){ (void)p;(void)b;(void)n; errno=EINVAL; return -1; }
 long readlinkat(int d,const char*p,char*b,size_t n){ (void)d;(void)p;(void)b;(void)n; errno=EINVAL; return -1; }
@@ -220,19 +236,38 @@ struct __cc9_statvfs { unsigned long f_bsize,f_frsize,f_blocks,f_bfree,f_bavail,
 int statvfs(const char *p, void *vp){ (void)p; struct __cc9_statvfs *s=vp; memset(s,0,sizeof *s); s->f_bsize=8192; s->f_frsize=8192; s->f_blocks=1<<20; s->f_bfree=1<<19; s->f_bavail=1<<19; s->f_namemax=255; return 0; }
 int fstatvfs(int fd, void *vp){ (void)fd; return statvfs(0,vp); }
 
-/* getenv via Plan 9 /env/<name> (the per-process environment namespace). */
+/* getenv/setenv via Plan 9 /env/<name> (the per-process environment namespace). */
+static void env_path(const char *name, char *path, int n){
+	const char *pfx="/env/"; int i=0; while(pfx[i]){ path[i]=pfx[i]; i++; }
+	int j=0; while(name[j] && i<n-1){ path[i++]=name[j++]; } path[i]=0;
+}
 char *getenv(const char *name){
-	static char val[1024]; char path[300]; int i=0;
-	const char *pfx="/env/"; while(pfx[i]){ path[i]=pfx[i]; i++; }
-	int j=0; while(name[j] && i<290){ path[i++]=name[j++]; } path[i]=0;
+	static char val[1024]; char path[300];
+	env_path(name, path, sizeof path);
 	long fd=n9_open(path, 0); if(fd<0) return 0;
 	long n=n9_pread((int)fd, val, sizeof val - 1, -1); n9_close((int)fd);
 	if(n<=0) return 0;
 	while(n>0 && (val[n-1]=='\n'||val[n-1]==0)) n--;   /* /env values may be NUL/NL-terminated */
 	val[n]=0; return val;
 }
-int setenv(const char *n, const char *v, int o){ (void)n;(void)v;(void)o; return 0; }
-int unsetenv(const char *n){ (void)n; return 0; }
+/* setenv/unsetenv write the /env file so getenv() round-trips (the libc++
+ * temp_directory_path test sets TMPDIR then expects it back). create() truncates
+ * an existing /env file, giving overwrite semantics. */
+int setenv(const char *n, const char *v, int overwrite){
+	if(!n || !*n){ errno=EINVAL; return -1; }
+	char path[300]; env_path(n, path, sizeof path);
+	if(!overwrite){ long e=n9_open(path,0); if(e>=0){ n9_close((int)e); return 0; } }
+	long fd=n9_create(path, 1/*OWRITE*/, 0666); if(fd<0){ errno=EACCES; return -1; }
+	long len = v ? (long)strlen(v) : 0;
+	if(len>0 && n9_pwrite((int)fd, v, len, 0) < len){ n9_close((int)fd); errno=EIO; return -1; }
+	n9_close((int)fd); return 0;
+}
+int unsetenv(const char *n){
+	if(!n || !*n){ errno=EINVAL; return -1; }
+	char path[300]; env_path(n, path, sizeof path);
+	n9_remove(path);   /* removing an absent var is not an error */
+	return 0;
+}
 
 /* POSIX `environ`. Plan 9 keeps the environment as files under /env (no env
  * array on the entry stack), so crt0 calls this once at startup to materialize
@@ -255,4 +290,28 @@ void __cc9_build_environ(void){
 		tab[n++]=kv;
 	}
 	tab[n]=0; closedir(d); environ=tab;
+}
+
+/* mkstemp: replace the trailing "XXXXXX" with a unique suffix and create the
+ * file O_EXCL (reusing open()). Plan 9 getpid() is a stub, so seed uniqueness
+ * from /dev/random; a static counter keeps successive calls in one process
+ * distinct. The libc++ test framework (platform_support.h) needs this. */
+int mkstemp(char *tmpl){
+	int len = tmpl ? (int)strlen(tmpl) : 0;
+	if(len < 6){ errno = EINVAL; return -1; }
+	char *x = tmpl + len - 6;
+	for(int i=0;i<6;i++) if(x[i] != 'X'){ errno = EINVAL; return -1; }
+	static const char cs[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	static unsigned long seq = 0;
+	unsigned long seed = 0;
+	int rf = n9_open("/dev/random", 0);
+	if(rf >= 0){ n9_pread(rf, &seed, sizeof seed, -1); n9_close(rf); }
+	for(int attempt=0; attempt<4096; attempt++){
+		unsigned long v = seed + (seq++ * 0x9E3779B97F4A7C15UL) + (unsigned)attempt;
+		for(int i=0;i<6;i++){ x[i] = cs[v % 62]; v /= 62; }
+		int fd = open(tmpl, O_RDWR|O_CREAT|O_EXCL, 0600);
+		if(fd >= 0) return fd;
+	}
+	errno = EEXIST;
+	return -1;
 }

@@ -9,13 +9,75 @@ extern void *malloc(size_t);
 long double floorl(long double), log10l(long double), powl(long double, long double);
 int __n9_isnanl(long double x){ return x != x; }
 
+/* Round significant-digit stream g[0..ng-1] (g[0] nonzero, `sticky` = any nonzero
+ * past g[ng-1]) to n digits in out[0..n-1], rounding half-to-even like glibc.
+ * E is the decimal exponent of g[0]; returns it, bumped if a carry grows a digit. */
+static int n9_round(const char *g, int ng, int sticky, int n, char *out, int E){
+	if(ng <= n){
+		int i; for(i=0;i<ng;i++) out[i]=g[i];
+		for(; i<n; i++) out[i]='0';
+		return E;
+	}
+	for(int i=0;i<n;i++) out[i]=g[i];
+	int roundup;
+	if(g[n] > '5') roundup=1;
+	else if(g[n] < '5') roundup=0;
+	else {
+		int rest=sticky;
+		for(int i=n+1;i<ng && !rest;i++) if(g[i]!='0') rest=1;
+		roundup = rest ? 1 : ((out[n-1]-'0') & 1);   /* tie -> to even */
+	}
+	if(roundup){
+		int j=n-1;
+		for(; j>=0; j--){ if(out[j]<'9'){ out[j]++; break; } out[j]='0'; }
+		if(j<0){ for(int k=n-1;k>0;k--)out[k]=out[k-1]; out[0]='1'; E++; }
+	}
+	return E;
+}
+
 /* Extract `n` significant decimal digits of a positive finite x into out[0..n-1]
  * and return the decimal exponent E such that x ~= 0.d0d1.. * 10^(E+1), i.e.
- * out[0] is the 10^E digit. Rounds half-up using the (n+1)th digit. */
+ * out[0] is the 10^E digit. Rounds half-to-even.
+ *
+ * Exact path: decompose the 80-bit long double into M*2^E2 (M = 64-bit mantissa)
+ * and, when 1 <= x < 2^64 (E2 in [-63,0]), extract the integer part directly and
+ * the dyadic fraction with overflow-safe integer *10 stepping — so terminating
+ * decimals like 1234567890.125 print exactly (no last-digit drift) at any prec.
+ * ponytail: |x|<1 (E2<-63) and |x|>=2^64 (E2>0) fall back to the long-double
+ * scaler, which can drift in the far tail; upgrade to a bignum only if a test
+ * needs exact digits for those magnitudes. */
 static int n9_digits(long double x, int n, char *out){
-	int e;
 	if(x == 0){ for(int i=0;i<n;i++)out[i]='0'; return 0; }
-	e = (int)floorl(log10l(x));
+	unsigned long long M; unsigned short se;
+	__builtin_memcpy(&M,&x,8); __builtin_memcpy(&se,(char*)&x+8,2);
+	int be = se & 0x7fff;
+	if(be){
+		int E2 = be - 16383 - 63;            /* value = M * 2^E2 */
+		if(E2 >= -63 && E2 <= 0){
+			int shift = -E2;                 /* 0..63 */
+			unsigned long long I = shift ? (M >> shift) : M;
+			unsigned long long F = shift ? (M & ((1ULL<<shift)-1)) : 0ULL;
+			char g[48]; int ng=0;
+			char ib[24]; int ni=0; unsigned long long t=I;
+			while(t){ ib[ni++]=(char)('0'+(int)(t%10)); t/=10; }   /* I>=1 here */
+			int E = ni-1;
+			for(int i=ni-1;i>=0;i--) g[ng++]=ib[i];
+			while(ng < (int)sizeof g - 1 && F){
+				/* F = F*10; digit = F>>shift; F &= (2^shift-1)  (overflow-safe) */
+				unsigned long long lo=(F & 0xffffffffULL)*10ULL;
+				unsigned long long hi=(F>>32)*10ULL + (lo>>32);
+				unsigned long long lo32=lo & 0xffffffffULL; int d;
+				if(shift>=32){ int s2=shift-32; d=(int)(hi>>s2);
+					F = ((hi & ((1ULL<<s2)-1))<<32) | lo32; }
+				else { d=(int)((hi<<(32-shift)) | (lo32>>shift));
+					F = lo32 & ((1ULL<<shift)-1); }
+				g[ng++]=(char)('0'+d);
+			}
+			return n9_round(g, ng, F!=0, n, out, E);
+		}
+	}
+	/* fallback: long-double scaler (subnormals, |x|<1, |x|>=2^64) */
+	int e = (int)floorl(log10l(x));
 	long double m = x / powl(10.0L, (long double)e);
 	while(m >= 10.0L){ m /= 10.0L; e++; }
 	while(m < 1.0L){ m *= 10.0L; e--; }
@@ -39,19 +101,64 @@ static char *utoa_p(unsigned long long v, char *p, int base, int upper){
 }
 
 /* format a finite |x| (sign handled by caller) per conv with precision prec. */
-static void fmt_float(struct buf *b, long double x, int prec, char conv, int alt, char *sfx_exp){
+static void fmt_float(struct buf *b, long double x, int prec, char conv, int alt, int isL, char *sfx_exp){
 	int upper = (conv=='F'||conv=='E'||conv=='G');
 	char lc = conv|0x20;   /* lowercase conv */
+	if(lc=='a'){
+		/* hexadecimal float: 0x1.<nibbles>p±E (double), 0xH.<nibbles>p±E (80-bit).
+		 * prec<0 -> shortest (strip trailing-zero nibbles); else round/pad to prec.
+		 * The exponent has no min-2-digit padding (unlike %e). Uppercase for A/P/X. */
+		int up = (conv=='A');
+		const char *hx = up? "0123456789ABCDEF" : "0123456789abcdef";
+		char xch = up?'X':'x', pch = up?'P':'p';
+		int nv[15]; int nn, lead, E;   /* nibble VALUES 0..15 (so we can round) */
+		if(isL){
+			unsigned long long m; unsigned short se;
+			__builtin_memcpy(&m,&x,8); __builtin_memcpy(&se,(char*)&x+8,2);
+			int be=se&0x7fff;
+			if(be==0 && m==0){ lead=0; E=0; nn=15; for(int i=0;i<15;i++)nv[i]=0; }
+			else { lead=(int)((m>>60)&0xf); E=be-16383-3; nn=15;
+				for(int i=0;i<15;i++) nv[i]=(int)((m>>(56-4*i))&0xf); }
+		} else {
+			double dx=(double)x; unsigned long long u; __builtin_memcpy(&u,&dx,8);
+			int be=(int)((u>>52)&0x7ff); unsigned long long man=u&0xfffffffffffffULL;
+			/* ponytail: subnormals emit the 0x0.<frac>p-1022 form (lead=0), not glibc's
+			 * normalized 0x1...p-1074 — same value, round-trips, no test needs the latter. */
+			lead=(be==0)?0:1; E=(be==0)?(man?-1022:0):be-1023; nn=13;
+			if(be==0 && man==0) E=0;
+			for(int i=0;i<13;i++) nv[i]=(int)((man>>(48-4*i))&0xf);
+		}
+		/* round to `prec` nibbles (half-to-even) when prec truncates the exact value */
+		if(prec>=0 && prec<nn){
+			int half = nv[prec], rest=0;
+			for(int i=prec+1;i<nn;i++) if(nv[i]){ rest=1; break; }
+			int roundup = half>8 || (half==8 && (rest || ((prec? nv[prec-1] : lead)&1)));
+			nn=prec;
+			if(roundup){
+				int j=prec-1;
+				for(; j>=0; j--){ if(nv[j]<15){ nv[j]++; break; } nv[j]=0; }
+				if(j<0){ if(++lead>15){ lead=1; E+=4; } }
+			}
+		}
+		bput(b,'0'); bput(b,xch); bput(b, hx[lead]);
+		int n = (prec<0)? nn : prec;
+		if(prec<0){ while(n>0 && nv[n-1]==0) n--; }
+		if(n>0 || alt) bput(b,'.');
+		for(int i=0;i<n;i++) bput(b, hx[i<nn? nv[i] : 0]);
+		bput(b,pch); bput(b, E<0?'-':'+'); int ae=E<0?-E:E;
+		char eb[8]; char*ep=utoa_p((unsigned)ae,eb,10,0); bputs(b,eb,(int)(ep-eb));
+		(void)sfx_exp; return;
+	}
 	if(prec < 0) prec = 6;
 	if(lc=='g' && prec==0) prec = 1;
 
 	if(lc=='f'){
 		/* need digits from 10^E down to 10^-prec */
 		int total = 0; int E;
-		char digs[40];
+		char digs[80];
 		/* significant digits: integer part length + prec */
 		E = n9_digits(x, 1, digs);      /* get exponent cheaply */
-		int sig = E + 1 + prec; if(sig < 1) sig = 1; if(sig > 36) sig = 36;
+		int sig = E + 1 + prec; if(sig < 1) sig = 1; if(sig > 75) sig = 75;
 		E = n9_digits(x, sig, digs);
 		int intlen = E + 1; if(intlen < 1) intlen = 0;
 		/* integer part */
@@ -69,7 +176,7 @@ static void fmt_float(struct buf *b, long double x, int prec, char conv, int alt
 		}
 		(void)total;
 	} else if(lc=='e'){
-		char digs[40]; int sig = prec+1; if(sig>36)sig=36; if(sig<1)sig=1;
+		char digs[80]; int sig = prec+1; if(sig>75)sig=75; if(sig<1)sig=1;
 		int E = n9_digits(x, sig, digs);
 		bput(b, digs[0]);
 		if(prec>0 || alt){ bput(b,'.'); for(int k=1;k<=prec;k++) bput(b, k<sig?digs[k]:'0'); }
@@ -78,7 +185,7 @@ static void fmt_float(struct buf *b, long double x, int prec, char conv, int alt
 		char eb[8]; char *ep = utoa_p((unsigned)ae, eb, 10, 0); int el=(int)(ep-eb);
 		if(el<2){ bput(b,'0'); } bputs(b, eb, el);
 	} else { /* g/G */
-		char digs[40]; int P = prec; if(P<1)P=1; if(P>36)P=36;
+		char digs[80]; int P = prec; if(P<1)P=1; if(P>75)P=75;
 		int E = n9_digits(x, P, digs);
 		/* strip trailing zeros unless alt */
 		int ndig = P;
@@ -158,13 +265,13 @@ int vsnprintf(char *out, size_t n, const char *f, va_list ap){
 		else if(c=='c'){ tmp[0]=(char)__builtin_va_arg(ap,int); tlen=1; }
 		else if(c=='s'){ const char*s=__builtin_va_arg(ap,const char*); if(!s)s="(null)"; int l=0; while(s[l]&&(prec<0||l<prec))l++; /* pad */ int pad=width-l; if(!left)while(pad-->0)bput(&b,' '); bputs(&b,s,l); if(left)while(pad-->0)bput(&b,' '); continue; }
 		else if(c=='%'){ tmp[0]='%'; tlen=1; }
-		else if((c|0x20)=='f'||(c|0x20)=='e'||(c|0x20)=='g'){
+		else if((c|0x20)=='f'||(c|0x20)=='e'||(c|0x20)=='g'||(c|0x20)=='a'){
 			long double x = isL? __builtin_va_arg(ap,long double): (long double)__builtin_va_arg(ap,double);
 			struct buf fb; char fbuf[400]; fb.p=fbuf; fb.n=sizeof fbuf; fb.len=0;
 			char fs=0; if(x<0||(x==0&&1.0L/x<0)){ fs='-'; x=-x; } else if(plus)fs='+'; else if(space)fs=' ';
 			if(__n9_isnanl(x)){ const char*nn=(c<'a')?"NAN":"nan"; bputs(&fb,nn,3); }
 			else if(x > 1.0e4900L){ const char*ii=(c<'a')?"INF":"inf"; bputs(&fb,ii,3); }
-			else fmt_float(&fb, x, prec, c, alt, 0);
+			else fmt_float(&fb, x, prec, c, alt, isL, 0);
 			int l=(int)fb.len; int total=l+(fs?1:0); int pad=width-total;
 			if(!left && !zero) while(pad-->0) bput(&b,' ');
 			if(fs)bput(&b,fs);

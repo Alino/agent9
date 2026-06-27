@@ -60,6 +60,15 @@ typedef unsigned long      uintmax_t;
 #define SIZE_MAX    UINT64_MAX
 #define PTRDIFF_MIN INT64_MIN
 #define PTRDIFF_MAX INT64_MAX
+#define INTPTR_MIN  INT64_MIN
+#define INTPTR_MAX  INT64_MAX
+#define UINTPTR_MAX UINT64_MAX
+#define SIG_ATOMIC_MIN INT32_MIN   /* sig_atomic_t == int */
+#define SIG_ATOMIC_MAX INT32_MAX
+#define WCHAR_MIN   INT32_MIN      /* wchar_t == int (4-byte) */
+#define WCHAR_MAX   INT32_MAX
+#define WINT_MIN    INT32_MIN      /* wint_t == int (signed, per cc9 <wchar.h>) */
+#define WINT_MAX    INT32_MAX
 
 #define INT_LEAST8_MIN   INT8_MIN
 #define INT_LEAST16_MIN  INT16_MIN

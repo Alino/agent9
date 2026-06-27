@@ -1,5 +1,6 @@
 #ifndef _LOCALE_H
 #define _LOCALE_H
+#include <stddef.h>    /* NULL (clocale.pass.cpp checks it) */
 struct lconv {
 	char *decimal_point, *thousands_sep, *grouping;
 	char *int_curr_symbol, *currency_symbol, *mon_decimal_point, *mon_thousands_sep,

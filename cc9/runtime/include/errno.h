@@ -42,4 +42,7 @@ int *__n9_errno(void);
 #define ENOTSUP 95
 #define EOPNOTSUPP 95
 #define ETIMEDOUT 110
+/* Largest errno + 1, so libc++'s config_elast.h sets _LIBCPP_ELAST and
+ * std::system_category()::default_error_condition works on this target. */
+#define ELAST 4095
 #endif
