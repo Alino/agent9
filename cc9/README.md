@@ -12,8 +12,10 @@ runtime bridge supply the standard library over Plan 9 syscalls, and an
 
 The result: **full modern C++ runs on 9front** — exceptions, the STL, iostreams,
 threads, `<regex>`, wide characters, `<filesystem>`, RTTI, `thread_local`,
-`std::filesystem`, and real third-party libraries (nlohmann/json) — validated
-against libc++'s own conformance suite at ~100% of applicable tests.
+`std::filesystem`, and real third-party software (nlohmann/json; **Stockfish**,
+which self-verifies). Validated against the upstream conformance suites of all
+three runtime libraries cc9 ships — libc++, libc++abi, and libunwind — at ~100%
+of applicable tests, `rfail=0`.
 
 ## Gallery — what cc9 makes possible
 
@@ -49,6 +51,29 @@ $ threads          # 100 std::threads + thread_local + std::call_once
 sum=4950 tls=ok once=1 staticctor=1 PASS
 ```
 (`cc9/test/bfjit.cpp`, `cc9/test/suite/`)
+
+### Stockfish runs on 9front — and self-verifies
+
+The headline real-world demo: **Stockfish 11** (a world-class chess engine —
+multithreaded, compute-heavy, modern C++) cross-compiled with cc9 and run on a
+stock 9front box. `stockfish bench` searches 46 fixed positions to depth 13 and
+prints a **deterministic, ISA-independent node count** — so matching it is a
+bit-for-bit proof that the search is *correct*, not merely that it ran:
+
+```text
+$ stockfish bench
+Stockfish 11 64 POPCNT
+===========================
+Total time (ms) : 7977
+Nodes searched  : 5156767      # identical to the host (macOS/clang) reference
+Nodes/second    : 646454
+```
+
+Building it shook out — and fixed — a real cc9 condition-variable lost-wakeup
+bug (the thread-pool search handshake deadlocked); see the conformance notes
+below. cc9 now compiles a famous third-party C++ program that proves its own
+correctness on Plan 9. (Build recipe: `git clone --branch sf_11`, compile
+`src/*.cpp` + `syzygy/tbprobe.cpp` at `-std=c++14 -DUSE_POPCNT`, `cc9-link`.)
 
 ## Quick start
 
@@ -108,12 +133,14 @@ int main() {
 |---|---|
 | `n9syscall.s` | SysV→Plan9 syscall thunks (pwrite/pread/open/brk/rfork/sem*/stat/wstat/…). **Saves/restores all SysV callee-saved regs around `SYSCALL`** — the Plan 9 kernel clobbers rbx/rbp/r13. |
 | `crt0.c` | `_start`, **real `argc`/`argv`** (from the Plan 9 entry stack) + **`environ`** (from `/env`), `.init_array`/`.fini_array`, `atexit`/`__cxa_atexit`, an 8 MiB BSS main stack (shared via RFMEM so thread captures work), and **FP-exception masking** (bare-metal 9front traps on div-by-zero otherwise). |
-| `n9libc.c` | freestanding libc: a K&R heap over the `brk` syscall (overflow-guarded `malloc`/`calloc`/`realloc`/`aligned_alloc`), `mem*`/`str*`, `strto*` (base/0x/sign/exponent), ctype, `strftime`, time over `/dev/bintime`, GCC atomic/fenv shims. |
+| `n9libc.c` | freestanding libc: a K&R heap over the `brk` syscall (overflow-guarded `malloc`/`calloc`/`realloc`/`aligned_alloc`), `mem*`/`str*`, `strto*` (base/0x/sign/exponent), ctype, `strftime`, `div`/`ldiv`, time over `/dev/bintime`, GCC atomics. |
 | `printf.c` | real `vsnprintf`/`vsscanf` incl. float conversion (long-double digit extraction over openlibm) and precision. |
 | `stdio.c` | `FILE` layer over Plan 9 fds (stdio + real files; short-transfer-safe `fwrite`/`fread`). |
 | `fs.c` | POSIX-over-9P: `open`/`stat`/`read`/`dir`/`wstat` (a slice of APE) backing `std::filesystem` + `std::fstream`. |
-| `pthread.c` | pthreads over `rfork(RFMEM)` + semaphores: create/join/detach, mutex/condvar/once, TLS + emulated-TLS (`thread_local`), keyed by a stack-region thread id. |
-| `cxxrt.cpp`, `exception_ptr.cpp`, `tochars.cpp`, `typeinfo_min.cpp` | `operator new/delete`, thread-safe static guards, `std::exception_ptr`/`rethrow_exception`, float `to_chars`, `type_info`. |
+| `pthread.c` | pthreads over `rfork(RFMEM)` + semaphores: create/join/detach, mutex, **FIFO-queue condvar** (per-waiter semaphores — no signal-steal/lost-wakeup), once, TLS + emulated-TLS with **POSIX key destructors at thread exit** (`thread_local`), keyed by a stack-region thread id. |
+| `cxxrt.cpp`, `exception_ptr.cpp`, `typeinfo_min.cpp` | `operator new/delete` (all replaceable forms), thread-safe static guards, `std::exception_ptr`/`rethrow_exception`, `type_info`. |
+| `fenv.c` | `<fenv.h>` over MXCSR/x87 — `fenv_t` is **byte-identical to openlibm's** so its math routines and cc9 agree on the FP environment (a layout mismatch silently unmasked SSE exceptions and trapped). |
+| real `charconv.cpp` + libc++abi `cxa_demangle.cpp` | full `to_chars`/`from_chars` incl. correctly-rounded float (LLVM-libc parser), and the real Itanium demangler (readable fault/terminate names). |
 | from-source **libc++/libc++abi** objects | the STL runtime (string/locale/ios/regex/filesystem/chrono/…) + the **DWARF exception runtime** (libunwind bare-metal). |
 | `lib/libcc9m.a` | **openlibm** cross-compiled for the target — a real correctly-rounded libm with 80-bit `long double`. |
 
@@ -130,20 +157,42 @@ rethrow, `e.what()`), **STL** (vector/string/map/unordered/set/optional/sort…)
 (`std::thread`/mutex/condvar/future/`call_once`/atomics), **`<regex>`**,
 **wide characters** (`std::wstring`/`wcout`), **`<filesystem>`** + `std::fstream`,
 **RTTI** (`dynamic_cast`/`typeid`), **`thread_local`**, **`std::format`** floats,
-and **nlohmann/json** (a real third-party library: parse + mutate + serialize).
+**nlohmann/json** (parse + mutate + serialize), and **Stockfish 11** (a real
+multithreaded chess engine whose `bench` self-verifies to the exact reference
+node count).
 
-### Conformance parity
+### Conformance parity — the full runtime triad
 
-`cc9/host/run-libcxx-tests.sh <category> <N>` runs the **actual upstream libc++
-conformance suite** (`libcxx/test/std/**/*.pass.cpp` from the LLVM tree) through
-cc9 on the VM — compile + link + convert + run; a `.pass.cpp` asserts internally,
-so a clean exit is a pass. It honors libc++'s own feature model (a test marked
-`UNSUPPORTED` for a feature cc9 lacks is a skip, not a failure — what upstream
-`lit` does). Recent sweeps: **~100% of applicable tests pass, with `rfail=0`** —
-nothing that compiles and links has ever miscompiled or faulted on 9front; the
-gaps that remain are compile/link-time (genuinely unsupported features), not
-runtime bugs. The hand-written smoke/regression suite lives in `test/suite/`
-(run with `cc9/host/run-tests.sh`).
+The compiler is upstream clang (its x86_64 codegen is already trusted), so the
+faithful-port question is about what cc9 *ported*: the runtime. cc9 is validated
+against the **actual upstream conformance suites of all three runtime libraries
+it ships**, at llvmorg-22.1.8, run on real 9front. Every suite uses a faithful
+`lit` applicability filter (reusing lit's own `BooleanExpression` + the feature
+set cc9's `_LIBCPP_*` macros actually define), so a test `lit` would skip
+(`UNSUPPORTED`/`REQUIRES` for a feature cc9 lacks — no-tzdb, no-symlinks, ASan,
+…) is a skip, not a failure.
+
+| Suite | What it exercises | Result on 9front |
+|---|---|---|
+| **libc++ `test/std`** (≈6,770 applicable) | the STL / language library | ~99.9% build, ~99.x% run, **`rfail=0`** |
+| **libcxxabi/test** | exceptions, RTTI, `dynamic_cast`, `exception_ptr`, guards, the demangler | **all applicable pass** (29,917/29,917 demangler symbols) |
+| **libunwind/test** | the bundled DWARF unwinder | **8/9 applicable pass** (rest are wrong-arch / dl-loader-only) |
+| **libcxx/test/libcxx** (312 RUN) | libc++ *implementation* internals + hardening | **312/312 RUN pass** |
+
+`rfail=0` is the headline: **nothing that compiles and links has ever
+miscompiled or faulted on 9front** — remaining gaps are compile/link-time
+(genuinely unsupported platform features), not runtime bugs. Drivers:
+`cc9/host/run-libcxx-tests.sh` (the std suite); the hand-written smoke/regression
+suite is in `test/suite/` (`cc9/host/run-tests.sh`).
+
+Runtime fixes that closed the last conformance clusters: an **`fenv_t` ABI
+layout match** with openlibm (the x87/SSE FP-trap + complex-GPF root cause); a
+**FIFO-queue condition variable** (the old one let a new waiter steal a signal —
+deadlocked std::thread-pool handshakes); the full **death-test machinery**
+(`pipe`/`dup2`/`fork`/`waitpid` + exit-code propagation + trap→SIGILL mapping);
+**POSIX TSD destructors** + `[basic.start.term]` atexit ordering; **signal-over-
+note** (`sigaction`/SIGALRM, deadline `nanosleep`); and the **real Itanium
+demangler** (was a stub) so fault/terminate messages print readable C++ names.
 
 ## Optional JIT — the W^X kernel patch (`cc9/kernel`)
 
@@ -162,6 +211,8 @@ static C++ never requests `SG_EXEC`). See `cc9/kernel/README.md`.
 # one-time: a from-source libc++ header tree + openlibm (see docs/ for the recipe)
 cc9/host/build-runtime.sh     # -> cc9/lib/libcc9cxx.a   (the C++ runtime archive)
 cc9/host/build-libm.sh        # -> cc9/lib/libcc9m.a     (openlibm)
+cc9/host/build-modules.sh     # -> cc9/lib/modules/      (optional: std / std.compat
+                              #    C++23 module BMIs — `import std;` works on 9front)
 ```
 
 Environment: `CC9_LLVM` (brew llvm bin), `CC9_LLD` (ld.lld), `CC9_LIBCXX`
@@ -183,18 +234,19 @@ Environment: `CC9_LLVM` (brew llvm bin), `CC9_LLD` (ld.lld), `CC9_LIBCXX`
   parsing caps at 127 chars. (`crt0` now passes the real kernel `argc`/`argv` and
   populates `environ` from `/env`.)
 
-The runtime has been through two adversarial multi-agent review rounds; see the
-git history (`cc9: fix … from a full runtime review`).
+The runtime has been through adversarial multi-agent review rounds plus the full
+runtime-triad conformance pass (libc++/libc++abi/libunwind, see above) and a
+real-world Stockfish bring-up — each round's fixes are in the git history.
 
 ## Layout
 
 ```
 cc9/host/        cross-toolchain: cc9 wrapper, build-runtime.sh, build-libm.sh,
-                 elf2aout.py, run-tests.sh, run-libcxx-tests.sh
+                 build-modules.sh, elf2aout.py, run-tests.sh, run-libcxx-tests.sh
 cc9/runtime/     the runtime bridge (libc shim, C++ runtime, pthreads, fs, stdio)
 cc9/runtime/include/  minimal C headers
 cc9/test/        n9syscall.s, plan9.ld, demos (json/stl/…), suite/ (regression)
 cc9/kernel/      optional W^X/JIT kernel patch (wxallow + SG_EXEC)
-cc9/lib/         built archives (libcc9cxx.a, libcc9m.a)
+cc9/lib/         built archives (libcc9cxx.a, libcc9m.a); modules/ (std BMIs)
 cc9/vendor/      third-party headers used in demos (nlohmann/json)
 ```
