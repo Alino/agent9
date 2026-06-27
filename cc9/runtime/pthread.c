@@ -238,51 +238,79 @@ int pthread_mutexattr_init(pthread_mutexattr_t *a){ a->kind=0; return 0; }
 int pthread_mutexattr_destroy(pthread_mutexattr_t *a){ (void)a; return 0; }
 int pthread_mutexattr_settype(pthread_mutexattr_t *a, int k){ a->kind=k; return 0; }
 
-/* ---- condition variable (semaphore + waiter count under a spin-free lock) ---- */
-int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a){ (void)a; c->sem=0; c->waiters=0; c->lk=1; return 0; }
+/* ---- condition variable: FIFO queue of per-waiter semaphores ----
+ * The old design used one counting semaphore + a waiter count, which let a
+ * NEWLY-arriving waiter steal the token a signal posted for an already-blocked
+ * waiter (e.g. two threads waiting on one cv with opposite predicates — exactly
+ * std::thread pool handshakes / Stockfish). Here each waiter enqueues a node
+ * holding its OWN semaphore; signal dequeues the head and posts only that node's
+ * sem, so a fresh waiter (appended at the tail) can't intercept it. c->lk is the
+ * internal mutex-semaphore guarding the queue. */
+extern long n9_tsemacquire(int *, long);
+extern int clock_gettime(int, struct timespec *);
+typedef struct cc9_cwaiter { int sem; int dq; struct cc9_cwaiter *next; } cc9_cwaiter;
+static void cond_enqueue(pthread_cond_t *c, cc9_cwaiter *w){
+	w->sem=0; w->dq=0; w->next=0;
+	if(c->lk==0) c->lk=1;                 /* defensive: treat 0 as freshly-unlocked */
+	n9_semacquire(&c->lk,1);
+	if(c->tail) ((cc9_cwaiter*)c->tail)->next=w; else c->head=w;
+	c->tail=w;
+	n9_semrelease(&c->lk,1);
+}
+int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a){ (void)a; c->lk=1; c->pad=0; c->head=0; c->tail=0; return 0; }
 int pthread_cond_destroy(pthread_cond_t *c){ (void)c; return 0; }
 int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m){
-	if(c->lk==0 && c->waiters==0) c->lk=1;     /* lazy init for PTHREAD_COND_INITIALIZER */
-	n9_semacquire(&c->lk,1); c->waiters++; n9_semrelease(&c->lk,1);
+	cc9_cwaiter w;
+	cond_enqueue(c, &w);
 	pthread_mutex_unlock(m);
-	n9_semacquire(&c->sem, 1);
+	n9_semacquire(&w.sem, 1);             /* wait on my own semaphore */
 	pthread_mutex_lock(m);
 	return 0;
 }
-/* Real timed wait: block on the condvar semaphore with a deadline (ts is an
- * absolute CLOCK_REALTIME time, as pthread/libc++ pass it). Without this every
- * condition_variable::wait_for / timed_mutex::try_lock_for / future::wait_for
- * that should expire would block forever (libc++ builds them on the condvar). */
-extern long n9_tsemacquire(int *, long);
-extern int clock_gettime(int, struct timespec *);
+/* Real timed wait: deadline is an absolute CLOCK_REALTIME time (libc++/pthread
+ * pass it that way). On timeout, de-queue self under c->lk; if a signal raced in
+ * (dq set + sem posted), consume it and report success — race-free. */
 int pthread_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct timespec *ts){
-	if(c->lk==0 && c->waiters==0) c->lk=1;     /* lazy init for PTHREAD_COND_INITIALIZER */
-	n9_semacquire(&c->lk,1); c->waiters++; n9_semrelease(&c->lk,1);
+	cc9_cwaiter w;
+	cond_enqueue(c, &w);
 	pthread_mutex_unlock(m);
 	struct timespec now; clock_gettime(0 /*CLOCK_REALTIME*/, &now);
 	long ms = (long)(ts->tv_sec - now.tv_sec)*1000 + (ts->tv_nsec - now.tv_nsec)/1000000;
 	if(ms < 0) ms = 0;
-	long r = n9_tsemacquire(&c->sem, ms);
+	long r = n9_tsemacquire(&w.sem, ms);
+	int rc = 0;
 	if(r != 1){
-		/* timed out — but a signal may have raced just after; re-check the sem
-		 * under c->lk (mutually exclusive with signal/broadcast). If it released
-		 * for us, consume it (signal already dropped our waiter slot); otherwise
-		 * drop our own slot. Race-free, no lost wakeup. */
 		n9_semacquire(&c->lk,1);
-		r = n9_tsemacquire(&c->sem, 0);                 /* 0ms = non-blocking poll */
-		if(r != 1 && c->waiters>0) c->waiters--;
+		if(w.dq){                                  /* signal dequeued+posted us as we timed out */
+			n9_tsemacquire(&w.sem, 0);             /* consume the token (non-blocking) */
+			rc = 0;
+		} else {                                   /* still queued: unlink self */
+			cc9_cwaiter *p=(cc9_cwaiter*)c->head, *prev=0;
+			while(p && p!=&w){ prev=p; p=p->next; }
+			if(p==&w){ if(prev) prev->next=w.next; else c->head=w.next; if(c->tail==(void*)&w) c->tail=(void*)prev; }
+			rc = 110 /*ETIMEDOUT*/;
+		}
 		n9_semrelease(&c->lk,1);
 	}
 	pthread_mutex_lock(m);
-	return r==1 ? 0 : 110 /*ETIMEDOUT*/;
+	return rc;
 }
 int pthread_cond_signal(pthread_cond_t *c){
 	if(c->lk==0) c->lk=1;
-	n9_semacquire(&c->lk,1); if(c->waiters>0){ c->waiters--; n9_semrelease(&c->sem,1);} n9_semrelease(&c->lk,1); return 0;
+	n9_semacquire(&c->lk,1);
+	cc9_cwaiter *w=(cc9_cwaiter*)c->head;
+	if(w){ c->head=w->next; if(!c->head) c->tail=0; w->dq=1; n9_semrelease(&w->sem,1); }
+	n9_semrelease(&c->lk,1);
+	return 0;
 }
 int pthread_cond_broadcast(pthread_cond_t *c){
 	if(c->lk==0) c->lk=1;
-	n9_semacquire(&c->lk,1); while(c->waiters>0){ c->waiters--; n9_semrelease(&c->sem,1);} n9_semrelease(&c->lk,1); return 0;
+	n9_semacquire(&c->lk,1);
+	cc9_cwaiter *w=(cc9_cwaiter*)c->head;
+	c->head=0; c->tail=0;
+	while(w){ cc9_cwaiter *n=w->next; w->dq=1; n9_semrelease(&w->sem,1); w=n; }
+	n9_semrelease(&c->lk,1);
+	return 0;
 }
 
 /* ---- once ---- */

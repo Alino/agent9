@@ -19,6 +19,8 @@
 #define MS_INVALIDATE 2
 #define MS_SYNC       4
 #define MADV_NORMAL    0
+#define MADV_RANDOM    1
+#define MADV_SEQUENTIAL 2
 #define MADV_WILLNEED  3
 #define MADV_DONTNEED  4
 #ifdef __cplusplus

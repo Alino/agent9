@@ -5,7 +5,11 @@
  * pid of the thread (rfork return / read from /dev/pid). */
 typedef unsigned long pthread_t;
 typedef struct { int sem; unsigned long owner; int count; int kind; } pthread_mutex_t;
-typedef struct { int sem; int waiters; int lk; } pthread_cond_t;
+/* FIFO waiter queue: each waiter blocks on its OWN semaphore (a node on its
+ * stack), so a signal targets a specific already-queued waiter and a newly
+ * arriving waiter (appended at the tail) cannot steal it. lk = internal
+ * mutex-semaphore (1=free). */
+typedef struct { int lk; int pad; void *head; void *tail; } pthread_cond_t;
 typedef int pthread_once_t;
 typedef int pthread_key_t;
 typedef struct { int kind; } pthread_mutexattr_t;
@@ -14,7 +18,7 @@ typedef struct { int unused; } pthread_attr_t;
 typedef pthread_mutex_t pthread_rwlock_t;   /* a plain mutex (readers serialize) */
 #define PTHREAD_RWLOCK_INITIALIZER {1,0,0,0}
 #define PTHREAD_MUTEX_INITIALIZER {1,0,0,0}
-#define PTHREAD_COND_INITIALIZER {0,0,1}
+#define PTHREAD_COND_INITIALIZER {1,0,0,0}
 #define PTHREAD_ONCE_INIT 0
 #define PTHREAD_MUTEX_NORMAL 0
 #define PTHREAD_MUTEX_RECURSIVE 1
