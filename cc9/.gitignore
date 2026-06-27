@@ -1,1 +1,4 @@
 host/__pycache__/
+
+# regenerable C++23 module BMIs (host/build-modules.sh)
+lib/modules/
