@@ -23,6 +23,10 @@ static struct { void (*fn)(void *); void *arg; } atexit_tab[CC9_ATEXIT_MAX];
 static int atexit_n = 0;
 int atexit(cc9_fn f) { if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = (void (*)(void *))f; atexit_tab[atexit_n].arg = 0; atexit_n++; return 0; } return -1; }
 int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { (void)dso; if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = f; atexit_tab[atexit_n].arg = arg; atexit_n++; return 0; } return -1; }
+/* thread_local destructor registration (used by lld). cc9 threads (rfork) exit
+ * together with the process, so running these at process exit is correct here. */
+int __cxa_thread_atexit(void (*f)(void *), void *arg, void *dso) { return __cxa_atexit(f, arg, dso); }
+int __cxa_thread_atexit_impl(void (*f)(void *), void *arg, void *dso) { return __cxa_atexit(f, arg, dso); }
 void *__dso_handle = 0;
 
 /* Mask SSE + x87 FP exceptions. Bare-metal 9front leaves them UNMASKED, so a
@@ -124,12 +128,23 @@ void cc9_note_handler(unsigned long framesp)
 #endif
 }
 
+#ifdef CC9_STAGE_MARK
+/* markers to fd 2 (unbuffered syscall, reaches the connection immediately) — robust
+ * against the flaky on-box fs. Format: <STG:x> so they're greppable amid clang stderr. */
+static void cc9_stage(char c){ char b[7]={'<','S','T','G',':',c,'>'}; n9_pwrite(2,b,7,-1); }
+#define STAGE(c) cc9_stage(c)
+#else
+#define STAGE(c)
+#endif
 void __cc9_run(void)
 {
+	STAGE('a');
 	cc9_fpmask();
+	STAGE('b');
 #ifndef CC9_NO_NOTE
 	n9_notify((void *)cc9_notetramp);   /* report faults instead of dying silently */
 #endif
+	STAGE('c');
 #ifdef CC9_RECURSE_PROBE
 	{ extern long n9_alarm(unsigned long); n9_alarm(1500); }  /* timer to sample a runaway recursion */
 #endif
@@ -142,7 +157,9 @@ void __cc9_run(void)
 		argc = (int)ks[0];
 		argv = (char **)(ks + 1);
 	} else { argc = 1; argv = fallback; }
+	STAGE('d');
 	__cc9_build_environ();
+	STAGE('e');
 #ifdef CC9_PAUSE_ATTACH
 	/* sleep at startup so a debugger can attach by pid (acid <pid>) — the process
 	 * is kernel-exec'd so its bss stack is valid (unlike acid's own new()), and it
@@ -150,9 +167,12 @@ void __cc9_run(void)
 	{ extern char *getenv(const char *); extern long n9_sleep(long);
 	  if (getenv("CC9_PAUSE")) { for (int s = 0; s < 25; s++) n9_sleep(1000); } }
 #endif
+	STAGE('f');
 	for (cc9_fn *p = __init_array_start; p < __init_array_end; ++p)
 		(*p)();
+	STAGE('g');
 	int rc = main(argc, argv);
+	STAGE('h');
 	for (int i = atexit_n; i > 0; --i)
 		atexit_tab[i - 1].fn(atexit_tab[i - 1].arg);
 	for (cc9_fn *p = __fini_array_end; p > __fini_array_start; )
@@ -183,9 +203,25 @@ __attribute__((section(".cc9stack"), aligned(16), used)) char __cc9_main_stack[C
  * parses argv from it. */
 unsigned long __cc9_ksp = 0;
 
+#ifdef CC9_STAGE_MARK
+char cc9_Ymsg[] = "<STG:Y>";   /* written by _start before any stack switch (raw syscall) */
+#endif
 __attribute__((naked, used)) void _start(void)
 {
 	__asm__ volatile(
+#ifdef CC9_STAGE_MARK
+		/* raw pwrite("<STG:Y>", fd 2) on the kernel entry stack (valid here), to prove
+		 * _start actually runs. rsp is restored (net +/-48) before saving __cc9_ksp. */
+		"subq $48, %rsp\n\t"
+		"movl $2, 8(%rsp)\n\t"
+		"leaq cc9_Ymsg(%rip), %rax\n\t"
+		"movq %rax, 16(%rsp)\n\t"
+		"movl $7, 24(%rsp)\n\t"
+		"movq $-1, 32(%rsp)\n\t"
+		"movq $51, %rbp\n\t"
+		"syscall\n\t"
+		"addq $48, %rsp\n\t"
+#endif
 		"movq %rsp, __cc9_ksp(%rip)\n\t"
 		"leaq __cc9_main_stack(%rip), %rsp\n\t"
 		"addq $" CC9_STR(CC9_STACK_BYTES) ", %rsp\n\t"   /* top of the stack */
