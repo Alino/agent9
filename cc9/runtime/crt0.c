@@ -64,17 +64,17 @@ void cc9_note_handler(unsigned long framesp)
 	 * framesp+160 with bp at slot 26 (framesp+208), per the kernel layout. Dumps
 	 * return addresses to fd 2 (the recursion cycle), then exits. */
 	if (msg[0]=='a' && msg[1]=='l' && msg[2]=='a' && msg[3]=='r') {
-		void **fp = *(void ***)(framesp + 26*8);   /* interrupted RBP */
-		n9_pwrite(2, "CC9-ALARM-CHAIN:\n", 17, -1);
-		for (int i = 0; i < 70 && fp; i++) {
-			void *ret = fp[1];
-			char b[20]; int k=0; b[k++]='0'; b[k++]='x';
-			unsigned long v=(unsigned long)ret;
+		/* raw frame dump (no deref — can't fault): find PC/SP/BP slots for the
+		 * async-note Ureg empirically. */
+		unsigned long *f = (unsigned long *)framesp;
+		n9_pwrite(2, "CC9-ALARM-FRAME:\n", 17, -1);
+		for (int i = 0; i < 60; i++) {
+			unsigned long v = f[i];
+			char b[28]; int k=0;
+			b[k++]='['; if(i>=10)b[k++]='0'+i/10; b[k++]='0'+i%10; b[k++]=']'; b[k++]=' ';
+			b[k++]='0'; b[k++]='x';
 			for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
 			b[k++]='\n'; n9_pwrite(2, b, k, -1);
-			void **nx=(void**)fp[0];
-			if (nx <= fp) break;
-			fp = nx;
 		}
 		n9_exits("cc9-alarm");
 	}
