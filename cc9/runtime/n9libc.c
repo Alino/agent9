@@ -150,6 +150,57 @@ void *realloc(void*old,size_t n){
 	return np;
 }
 void abort(void){ n9_exits("cc9: abort\n"); for(;;){} }
+
+/* -finstrument-functions hooks (CC9_RECURSE_PROBE clang build): every instrumented
+ * function entry/exit calls these. Track call depth; when it runs away (infinite
+ * recursion), dump the deepest call-chain (this_fn addresses) to /tmp/cc9fault and
+ * exit — the repeating addresses map (via clang-22.elf) to the recursing functions.
+ * Marked no_instrument_function so the hooks don't instrument themselves. */
+extern long n9_create(const char *, int, int);
+extern long n9_pwrite(int, const void *, long, long long);
+#define CC9_RING 256
+static void *cc9_ring[CC9_RING];
+static int cc9_depth;
+__attribute__((no_instrument_function))
+static void cc9_hexw(int fd, unsigned long v){ char b[19]; int k=0; b[k++]='0'; b[k++]='x'; for(int j=15;j>=0;j--){int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10;} b[k++]='\n'; n9_pwrite(fd,b,k,-1); }
+__attribute__((no_instrument_function))
+void __cyg_profile_func_enter(void *this_fn, void *call_site){
+	(void)call_site;
+	cc9_ring[cc9_depth & (CC9_RING-1)] = this_fn;
+	if(++cc9_depth > 60000){
+		int fd = n9_create("/tmp/cc9fault", 1, 0666);
+		if(fd>=0){
+			n9_pwrite(fd,"CC9 RUNAWAY RECURSION; deepest call-chain (this_fn):\n",52,-1);
+			/* dump the ring in call order (oldest of the window first) */
+			for(int i=0;i<CC9_RING;i++){ void*p=cc9_ring[(cc9_depth+i)&(CC9_RING-1)]; if(p) cc9_hexw(fd,(unsigned long)p); }
+		}
+		n9_exits("cc9-recurse-dump");
+	}
+}
+__attribute__((no_instrument_function))
+void __cyg_profile_func_exit(void *this_fn, void *call_site){ (void)this_fn; (void)call_site; if(cc9_depth>0) cc9_depth--; }
+/* assert support: print the failing expression + file:line to fd 2 before dying,
+ * so a built-with-assertions clang names the broken invariant (assert.h routes
+ * the standard assert macro here). __assert_fail is the glibc-style entry LLVM may
+ * also reference directly. */
+extern long n9_pwrite(int, const void *, long, long long);
+extern long n9_create(const char *, int, int);
+size_t strlen(const char *);
+static void cc9_assert_emit(int fd, const char *e, const char *f, const char *ln, int k){
+	n9_pwrite(fd,"cc9 assert: ",12,-1); n9_pwrite(fd,e,(long)strlen(e),-1);
+	n9_pwrite(fd," at ",4,-1); n9_pwrite(fd,f,(long)strlen(f),-1);
+	n9_pwrite(fd,":",1,-1); n9_pwrite(fd,ln,k,-1); n9_pwrite(fd,"\n",1,-1);
+}
+void __cc9_assert(const char *e, const char *f, int line){
+	char ln[16]; int k=0; if(line<=0){ln[k++]='0';} else { char t[16]; int j=0; while(line){t[j++]='0'+line%10;line/=10;} while(j)ln[k++]=t[--j]; }
+	cc9_assert_emit(2, e, f, ln, k);                          /* fd 2 (dev VM connection) */
+	int ffd = n9_create("/tmp/cc9fault", 1 /*OWRITE*/, 0666); /* file (survives Shuttle conn death) */
+	if(ffd>=0) cc9_assert_emit(ffd, e, f, ln, k);
+	abort();
+}
+void __assert_fail(const char *e,const char *f,unsigned line,const char *fn){ (void)fn; __cc9_assert(e,f,(int)line); }
+void __assert(const char *e,const char *f,int line){ __cc9_assert(e,f,line); }
+void __assert_rtn(const char *fn,const char *f,int line,const char *e){ (void)fn; __cc9_assert(e,f,line); }
 void exit(int code){ n9_exits(code? "cc9: exit nonzero\n" : 0); for(;;){} }
 void _Exit(int code){ exit(code); }
 void quick_exit(int code){ exit(code); }

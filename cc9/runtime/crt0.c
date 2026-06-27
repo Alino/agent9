@@ -171,7 +171,9 @@ void __cc9_run(void)
  * it NOBITS — otherwise lld file-backs this huge array (p_filesz == p_memsz) and
  * the a.out balloons by the full stack size. NOLOAD ⇒ zero file bytes; the kernel
  * zero-fills it as bss, demand-paged, so the size is virtual until touched. */
+#ifndef CC9_STACK_BYTES
 #define CC9_STACK_BYTES 268435456
+#endif
 __attribute__((section(".cc9stack"), aligned(16), used)) char __cc9_main_stack[CC9_STACK_BYTES];
 #define CC9_STR2(x) #x
 #define CC9_STR(x) CC9_STR2(x)
