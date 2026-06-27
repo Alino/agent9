@@ -234,7 +234,13 @@ int    waitpid(int pid, int *s, int o) {
 				m += 8; int neg = (*m=='-'); if (neg) m++;
 				int code = 0; while (*m >= '0' && *m <= '9') code = code*10 + (*m++ - '0');
 				*s = ((neg ? -code : code) & 0xff) << 8;             /* WIFEXITED, WEXITSTATUS=code */
-			} else *s = 6;                                           /* SIGABRT: WIFSIGNALED */
+			}
+			/* a CPU trap (__builtin_trap/__builtin_verbose_trap -> "sys: trap:
+			 * invalid opcode") is libc++'s hardening trap path — report as SIGILL
+			 * so death tests map it to DeathCause::Trap, not SIGABRT. */
+			else if (cc9_find(q, "trap") || cc9_find(q, "invalid opcode") || cc9_find(q, "illegal"))
+				*s = 4;                                              /* SIGILL: WIFSIGNALED */
+			else *s = 6;                                             /* SIGABRT: WIFSIGNALED */
 		}
 		return (int)wp;
 	}

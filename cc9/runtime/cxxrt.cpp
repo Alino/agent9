@@ -177,7 +177,10 @@ bool uncaught_exception() noexcept { return uncaught_exceptions() > 0; }
 namespace std { inline namespace __1 {
 // weak: tests (check_assertion.h) replace this with their own interceptor.
 __attribute__((noreturn, weak)) void __libcpp_verbose_abort(const char *, ...) noexcept {
-	n9_exits("cc9: libcxx abort\n"); __builtin_unreachable();
+	/* Route through abort() so a user-installed SIGABRT handler runs (libc++'s
+	 * hardening/verbose-abort contract; the death-test harness replaces this
+	 * weak symbol with its own interceptor). */
+	::abort(); __builtin_unreachable();
 }
 }}
 

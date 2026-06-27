@@ -149,7 +149,10 @@ void *realloc(void*old,size_t n){
 	n9_semrelease(&malloc_lock,1);
 	return np;
 }
-void abort(void){ n9_exits("cc9: abort\n"); for(;;){} }
+/* abort(): raise SIGABRT first so a user-installed handler runs (POSIX), then
+ * terminate. raise() (below) invokes n9_sigtab[SIGABRT] if set. */
+extern int raise(int);
+void abort(void){ raise(6 /*SIGABRT*/); n9_exits("cc9: abort\n"); for(;;){} }
 
 /* -finstrument-functions hooks (CC9_RECURSE_PROBE clang build): every instrumented
  * function entry/exit calls these. Track call depth; when it runs away (infinite
