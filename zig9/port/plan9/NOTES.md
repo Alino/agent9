@@ -269,6 +269,14 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   feature build with uncertain feasibility — deferred rather than risk the verified
   1773. (`@floor`/`@sqrt` sidestep this via `-mcpu=x86_64_v2`; only 128-bit int
   division and a few f16/f128 ops actually need compiler-rt.)
+  **Investigated to confirm intractability (not assumed):** there is no name→nav
+  lookup to even start from — exports live in `Zcu.single_exports`/`multi_exports`
+  keyed by `AnalUnit` and are populated only *after* a nav is analyzed, and
+  compiler-rt fns are analyzed lazily (a `.lib` call creates no dependency, so
+  `__udivti3` is never analyzed); `getBuiltin`-style module-decl-by-name lookup
+  doesn't exist here. So this spans force-analysis-by-name + a name→nav map +
+  linker registration — genuinely new infra, unlike the 3 gaps this session that
+  *looked* upstream-incomplete but were one-mechanism plan9 bugs (alloc/mem/align).
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
