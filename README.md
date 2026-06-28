@@ -33,7 +33,7 @@ up front than leave it to the log.
 | **NetSurf** | Web browser (from [netsurf-plan9](https://github.com/netsurf-plan9)). | C |
 | **python9** | CPython 3.11.14 ported to 9front (kencc/APE), validated at **100% parity** against CPython's own regression suite. Source + parity harness under `python9/`. | C |
 | **node9**   | Node.js-compatible runtime ported to 9front (kencc/APE) on **QuickJS-ng** (not V8), running the **real, unmodified npm 10**. `npm install` from registry.npmjs.org over TLS, SHA-512 SRI-verified; **30/30** popular packages download + run. Source under `node9/`. | C / JS |
-| **cc9**     | **Modern C++ for 9front**, cross-compiled by host **clang/LLVM** → native Plan 9 a.out. Full C++ — exceptions, STL, iostreams, threads, `<regex>`, wide chars, `<filesystem>`, RTTI, `thread_local`, nlohmann/json — runs on a **stock** kernel; **~100%** of applicable libc++ conformance tests pass (`rfail=0`). Optional opt-in **W^X kernel patch** unlocks JIT. Source under `cc9/`. | C++ / LLVM |
+| **cc9**     | **Modern C++ for 9front** via **clang/LLVM** → native Plan 9 a.out. Full C++ — exceptions, STL, iostreams, threads, `<regex>`, wide chars, `<filesystem>`, RTTI, `thread_local`, `import std`, nlohmann/json, **Stockfish** (self-verifying) — on a **stock** kernel; **~100%** of applicable libc++ / libc++abi / libunwind conformance tests pass with **zero runtime failures**. The compiler **also runs natively on 9front**. Optional opt-in **W^X kernel patch** unlocks JIT. Source under `cc9/`. | C++ / LLVM |
 
 ![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
 
@@ -43,7 +43,7 @@ set an API key with `/login`.
 
 ## Try it now
 
-Download `agent9-v0.4.0.qcow2` from the
+Download `agent9-v0.5.0.qcow2` from the
 [Releases page](https://github.com/Alino/agent9/releases),
 drop it next to the runner script for your OS, run.
 
@@ -66,12 +66,15 @@ for details.
 
 ## Status
 
-This is **v0.4.0**. New since v0.3.0: **cc9** — a clang/LLVM cross-toolchain that
-brings **modern C++ to 9front**. The image ships the **W^X kernel patch** (opt-in,
-off by default) and cc9 demo binaries; the toolchain itself runs on your host and
-emits native Plan 9 a.out. Full C++ (exceptions, STL, iostreams, threads, regex,
-wide chars, filesystem, RTTI, nlohmann/json) runs on a stock kernel at ~100% libc++
-conformance parity. v0.3.0 added **node9** —
+This is **v0.5.0**. New since v0.4.0: **cc9 matured**. Its C++ runtime now passes
+the full upstream conformance triad — **libc++, libc++abi, and libunwind** — at
+~100% of applicable tests with **zero runtime failures**; a reduced **clang + lld
+now run natively on 9front** (compile C++ on the box, not just from the host); and
+the image ships a **Stockfish 11** demo whose `bench` self-verifies to the exact
+reference node count. v0.4.0 introduced **cc9** itself — modern C++ on 9front via a
+clang/LLVM cross-toolchain (exceptions, STL, iostreams, threads, regex, wide chars,
+filesystem, RTTI, nlohmann/json on a stock kernel) and the opt-in **W^X kernel
+patch**. v0.3.0 added **node9** —
 a Node.js-compatible runtime running the real npm (`node` / `npm` on
 PATH; `npm install` works from the registry). v0.2.0 added the **python9**
 CPython 3.11 port (`python` / `python3` on PATH) and brought **pi9** to
@@ -128,11 +131,14 @@ standard library over Plan 9 syscalls, and an **ELF→a.out converter** repackag
 output to run on a **stock, unmodified** 9front kernel. The headline: **full modern
 C++ runs on 9front** — C++ exceptions (DWARF unwind), the STL, iostreams, threads
 (over `rfork`), `<regex>`, wide characters, `<filesystem>`, RTTI, `thread_local`, and
-real third-party libraries (nlohmann/json) — validated against **libc++'s own
-conformance suite at ~100% of applicable tests, `rfail=0`** (nothing that compiles
-and links has ever miscompiled or faulted on 9front). The compiler runs on your host
-(`cc9 build foo.cpp` / `cc9 run foo.cpp`); only the emitted static a.out and the
-runtime run on Plan 9. cc9 also ships an **optional, opt-in kernel patch** (`wxallow`
+real third-party software (nlohmann/json, and **Stockfish 11** — whose `bench`
+self-verifies to the exact reference node count) — validated against the upstream
+conformance suites of **libc++, libc++abi, and libunwind at ~100% of applicable
+tests with zero runtime failures** (nothing that compiles and links has ever
+miscompiled or faulted on 9front). Cross-compilation is the primary path
+(`cc9 build foo.cpp`), and a reduced **clang + lld now also run natively on
+9front**, so you can compile C++ on the box. cc9 also ships an **optional, opt-in
+kernel patch** (`wxallow`
 + a per-segment `SG_EXEC` flag) that unlocks **W^X / JIT** — secure by default (off ⇒
 identical to stock), which makes V8-class JIT *reachable* on a patched kernel while
 leaving stock binaries untouched. See [`cc9/README.md`](cc9/README.md) for the
@@ -339,9 +345,6 @@ ready to `mk` (Plan 9 build tool). Edit on the host, rsync into the VM
 via the included listen1 + http shuttle pattern in `tools/`, or just
 ssh in (`ssh -p 2222 glenda@localhost`, no password) and edit with
 acme.
-
-Wiki (architecture, gotchas, per-phase write-ups for pi9 etc.) lives
-at `wiki/`. Start with `wiki/index.md` for a table of contents.
 
 For day-to-day workflow patterns, see `docs/development.md`.
 
