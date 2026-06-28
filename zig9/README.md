@@ -58,8 +58,10 @@ harnesses bake in the right flags (`-target x86_64-plan9 -mcpu=x86_64_v2
 ## What does NOT work yet
 
 - Named external symbols / compiler-rt (`x86_64`'s u128 division, `zon`'s
-  `format_float`) — plan9 has no `getGlobalSymbol`; a substantial unimplemented
-  feature, not a path bug. The only 2 unrunnable files that aren't platform-N/A.
+  `format_float`) — the only 2 unrunnable files that aren't platform-N/A. The
+  *codegen* half is now done (patch 14 materializes 128-bit symbol operands); what
+  remains is a backend↔linker **name→export reloc** so libcalls (`__udivti3`) resolve
+  against the in-module compiler_rt (`.zcu` strat). See `port/plan9/NOTES.md`.
 - N/A on Plan 9: `@wasmMemorySize` (no wasm runtime), translate-c `@cImport`
   (no C frontend).
 - Threads (`std.Thread.spawn`) — deferred (rfork); `getCurrentId`/`getCpuCount` stubbed.
@@ -67,7 +69,8 @@ harnesses bake in the right flags (`-target x86_64-plan9 -mcpu=x86_64_v2
   via the SbrkAllocator honoring alignment, patch 11; the `mem()` symbol-base keystone
   (`floatop`/`math`) via tracked register materialization, patch 12; **SIMD —
   `@shuffle`/`@select`/`vector` — via UAV natural alignment, patch 13** (the pshufb
-  control-mask was under-aligned, faulting legacy SSE).)
+  control-mask was under-aligned, faulting legacy SSE); 128-bit symbol-operand
+  materialization in mul/div, patch 14.)
 
 See `port/plan9/README.md` → "Still open".
 
@@ -78,7 +81,7 @@ The patched compiler is built in a Linux container (the macOS-26 host can't link
 
 ```sh
 zig9/fetch.sh                                   # vendor Zig 0.14.1 (src + host toolchain)
-sh zig9/port/plan9/apply.sh                     # apply the 13 plan9 patches
+sh zig9/port/plan9/apply.sh                     # apply the 14 plan9 patches
 sh zig9/port/plan9/linux-build.sh build         # build the patched compiler in the container
 python3 zig9/test/run_corpus.py qemu            # 13/13 corpus -> test/parity/manifests/
 python3 zig9/test/run_corpus.py cirno           # same, on bare metal
@@ -99,7 +102,7 @@ zig9/
     README.md                   the port archaeology: every fix, every blocker, path forward
     NOTES.md                    running log + headline numbers
     linux-build.sh              build the patched compiler in the Linux container
-    patches/*.patch (01-13)     the fixes; 01-03,05,07,09,11 lib/std; 04,06,08,10,12,13 compiler src
+    patches/*.patch (01-14)     the fixes; 01-03,05,07,09,11 lib/std; 04,06,08,10,12,13,14 compiler src
     apply.sh
   test/
     corpus/*.zig                self-checking feature tests (print "ok <name>")
