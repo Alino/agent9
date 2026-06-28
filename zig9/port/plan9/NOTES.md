@@ -339,6 +339,22 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   (not in `apply.sh` — inert without `.zcu`); reverted from the tree so the committed
   compiler stays the verified 1773. This is the real frontier now: a Zig-backend
   limitation, not missing plan9 infrastructure.
+  **Went further (2026-06-28) — gated the f16/f80/f128 softfloat block out of
+  `lib/compiler_rt.zig` for plan9** (a legitimate "feature deferred" like threads;
+  f32/f64 use SSE, softfloat tests self-skip). The WIP now carries this 4th file.
+  With float gated + `.zcu` + the symbol resolution, **compiler_rt's integer routines
+  compile, resolve, and RUN CORRECTLY** — `01_arith` (which now force-compiles
+  compiler_rt) prints `ok`. So the whole port-side compiler-rt path is proven
+  end-to-end. **Yet the two target files still don't pass, for reasons past the port:**
+  (1) `x86_64` hits **"ran out of registers"** in its *own* 16 205-line test function
+  (`x86_64/math.zig`), nothing to do with compiler_rt — an upstream backend limit on
+  the test itself; (2) `zon` finally **compiles** (its `__udivti3` libcall resolves!)
+  but **crashes at runtime** — a deeper `__udivti3`/u128-division codegen bug that
+  needs the trap PC to chase. And `.zcu` force-compiles compiler_rt into *every*
+  binary (bigger/slower), with no suite gain, so it's not worth shipping. Reverted
+  to the clean 1773; WIP (now 4 files) preserves the complete, proven approach.
+  Net: the plan9 port-side is done and proven; the last two files are blocked by an
+  upstream register limit (`x86_64`) and a u128-division runtime bug (`zon`).
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 

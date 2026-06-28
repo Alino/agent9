@@ -1,5 +1,5 @@
 --- a/src/arch/x86_64/CodeGen.zig	2026-06-28 19:48:30
-+++ b/src/arch/x86_64/CodeGen.zig	2026-06-28 19:43:42
++++ b/src/arch/x86_64/CodeGen.zig	2026-06-28 19:58:14
 @@ -96259,6 +96259,24 @@
          switch (tag) {
              .mov => {},
@@ -47,7 +47,7 @@
                          try elf_file.getGlobalSymbol(symbol_spec.name, symbol_spec.lib)
                      else if (cg.bin_file.cast(.macho)) |macho_file|
 --- a/src/link/Plan9.zig	2026-06-28 19:48:30
-+++ b/src/link/Plan9.zig	2026-06-28 19:40:10
++++ b/src/link/Plan9.zig	2026-06-28 19:58:14
 @@ -61,6 +61,11 @@
  /// When `updateExports` is called, we store the export indices here, to be used
  /// during flush.
@@ -135,7 +135,7 @@
      for (self.nav_exports.values()) |export_indices| {
          gpa.free(export_indices);
 --- a/src/Compilation.zig	2026-06-28 19:48:31
-+++ b/src/Compilation.zig	2026-06-28 19:40:41
++++ b/src/Compilation.zig	2026-06-28 19:58:14
 @@ -1309,6 +1309,11 @@
              const want = options.want_compiler_rt orelse is_exe_or_dyn_lib;
              if (!want) break :s .none;
@@ -148,3 +148,28 @@
              if (is_exe_or_dyn_lib) break :s .lib;
              break :s .obj;
          };
+--- a/lib/compiler_rt.zig	2026-06-28 20:10:18
++++ b/lib/compiler_rt.zig	2026-06-28 19:58:00
+@@ -31,7 +31,13 @@
+     _ = @import("compiler_rt/subo.zig");
+     _ = @import("compiler_rt/mulo.zig");
+ 
+-    // Float routines
++    // Float routines — gated off on plan9. The self-hosted x86_64 backend's
++    // register allocator exhausts ("ran out of registers") on the f16/f80/f128
++    // softfloat helpers (e.g. __mulhc3, __powihf2). f32/f64 use SSE directly
++    // (-mcpu=x86_64_v2), and the f16/f80/f128 behavior tests self-skip, so this
++    // only defers genuinely-unsupported softfloat — like threads are deferred.
++    // Integer/BigInt routines (incl. __udivti3 via udivmodti4) stay below.
++    if (@import("builtin").os.tag != .plan9) {
+     // conversion
+     _ = @import("compiler_rt/extendf.zig");
+     _ = @import("compiler_rt/extendhfsf2.zig");
+@@ -228,6 +234,7 @@
+     _ = @import("compiler_rt/sqrt.zig");
+     _ = @import("compiler_rt/tan.zig");
+     _ = @import("compiler_rt/trunc.zig");
++    } // end plan9 float-routines gate
+ 
+     // BigInt. Alphabetically sorted.
+     _ = @import("compiler_rt/divmodei4.zig");
