@@ -370,14 +370,23 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
 ### Zig's std-lib test suite on plan9 (investigated)
-Beyond `test/behavior`, Zig's std modules carry `test{}` blocks. Running them on
-plan9 is awkward: Zig only collects tests from the **root** module, so a std module
-must *be* the root — but then `--zig-lib-dir <patched tree>` double-includes it
-("file exists in multiple modules"), and *without* `--zig-lib-dir` the minimal
-runner pulls the **unpatched** host plan9 layer (broken syscalls). On top of that,
-the pure modules that would otherwise run (`math`/`sort`/`base64`) hit the `mem()`
-gap above, and many others need fs/net/threads. `std.hash.wyhash` compiles. A
-clean std-suite run needs the proper module config **and** the `mem()` fix.
+Beyond `test/behavior`, Zig's std modules carry `test{}` blocks. **Re-checked
+2026-06-28 (post-patch-12/14):** a root that references the pure modules
+(`comptime { _ = std.mem; _ = std.sort; _ = std.ascii; _ = std.fmt; _ = std.math;
+_ = std.unicode; _ = std.base64; _ = std.hash; _ = std.meta; _ = std.enums; }`)
+**now compiles clean for plan9** — the `mem()` gap that used to block math/sort/
+base64 is fixed. But **0 tests run**: Zig only collects `test{}` blocks from the
+**root module**, and these are in the separate `std` module, so referencing them
+doesn't include their tests. To actually *run* std's tests, a std file must *be*
+the root module — which (a) double-includes via `--zig-lib-dir <patched tree>`
+("file exists in multiple modules"), (b) without `--zig-lib-dir` pulls the
+**unpatched** host plan9 layer, and (c) the minimal runner itself `@import("std")`,
+re-introducing the conflict. So a std-unit-test run on plan9 is its *own*
+infrastructure project (a runner that doesn't import std + correct module wiring),
+on top of the unsupported transitive deps (threads/DWARF/fs) and `format_float`'s
+compiler-rt. The pure stdlib is already validated two ways though: it **compiles**
+for plan9, and `test/behavior` exercises `std.mem`/`fmt`/`sort`/`AutoHashMap`/… at
+runtime (1773 tests). Running std's *own* blocks is the remaining, separate suite.
 
 ### Discovery findings worth keeping
 - The prebuilt host compiler uses its **own** bundled `vendor/zig-host/lib/std`;
