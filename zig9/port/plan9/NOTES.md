@@ -258,9 +258,17 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   functions")`, the `.symbol` Select operand fails at `CodeGen.zig:107101`
   ("external symbols unimplemented for plan9"), and `Plan9.getDeclVAddr` has
   "TODO handle other extern variables and functions". There is **nothing to
-  resolve against** — compiler-rt isn't linked as a separate object in the single
-  a.out model, so this needs name-keyed symbol resolution + compiler-rt-as-navs
-  integration. Real feature, uncertain feasibility; would risk the verified result.
+  resolve against** — compiler-rt is built as a separate `compiler_rt_obj`/`_lib`
+  and **linked by lld** for normal targets (`link.zig:1114-1198`); plan9's
+  self-hosted linker links no objects. And crucially **no Zig backend resolves a
+  libcall to a nav** — LLVM/C/all emit an external symbol + rely on object linking
+  — so plan9 would be the *first* to need a libcall→nav path (look up `__udivti3`
+  in the imported compiler-rt module, force-analyze it as a nav, emit a nav call).
+  This is the one remaining gap that **doesn't reuse existing machinery** (unlike
+  patches 12/13, which leaned on `toBase`/`abiAlignment`): it's a from-scratch
+  feature build with uncertain feasibility — deferred rather than risk the verified
+  1773. (`@floor`/`@sqrt` sidestep this via `-mcpu=x86_64_v2`; only 128-bit int
+  division and a few f16/f128 ops actually need compiler-rt.)
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
