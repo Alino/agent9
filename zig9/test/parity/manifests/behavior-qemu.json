@@ -2,12 +2,12 @@
   "target": "qemu",
   "host": "127.0.0.1:1717",
   "files_total": 119,
-  "files_ran": 110,
-  "files_compile_fail": 6,
+  "files_ran": 112,
+  "files_compile_fail": 4,
   "files_crash": 3,
-  "tests_pass": 1662,
+  "tests_pass": 1737,
   "tests_fail": 0,
-  "tests_skip": 167,
+  "tests_skip": 263,
   "results": [
     {
       "file": "abs",
@@ -277,8 +277,10 @@
     },
     {
       "file": "floatop",
-      "status": "compile-fail",
-      "detail": "thread 40611 panic: reached unreachable code"
+      "status": "ran",
+      "pass": 25,
+      "fail": 0,
+      "skip": 70
     },
     {
       "file": "fn",
@@ -399,8 +401,10 @@
     },
     {
       "file": "math",
-      "status": "compile-fail",
-      "detail": "thread 41008 panic: reached unreachable code"
+      "status": "ran",
+      "pass": 50,
+      "fail": 0,
+      "skip": 26
     },
     {
       "file": "maximum_minimum",
@@ -817,7 +821,7 @@
     {
       "file": "x86_64",
       "status": "compile-fail",
-      "detail": "thread 42352 panic: reached unreachable code"
+      "detail": "vendor/zig/test/behavior/x86_64/math.zig:133:10: error: external symbols unimplemented for plan9"
     },
     {
       "file": "zon",

@@ -2,12 +2,12 @@
   "target": "cirno",
   "host": "192.168.88.159:17010",
   "files_total": 40,
-  "files_ran": 39,
-  "files_compile_fail": 1,
+  "files_ran": 40,
+  "files_compile_fail": 0,
   "files_crash": 0,
-  "tests_pass": 764,
+  "tests_pass": 789,
   "tests_fail": 0,
-  "tests_skip": 130,
+  "tests_skip": 200,
   "results": [
     {
       "file": "abs",
@@ -277,8 +277,10 @@
     },
     {
       "file": "floatop",
-      "status": "compile-fail",
-      "detail": "thread 43232 panic: reached unreachable code"
+      "status": "ran",
+      "pass": 25,
+      "fail": 0,
+      "skip": 70
     },
     {
       "file": "fn",

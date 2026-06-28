@@ -1,0 +1,41 @@
+--- a/src/arch/x86_64/CodeGen.zig
++++ b/src/arch/x86_64/CodeGen.zig
+@@ -108014,15 +108014,29 @@
+                         },
+                     } },
+                 } },
+-                .mem => .{ .mem = try op.flags.base.ref.valueOf(s).mem(s.cg, .{
+-                    .size = op.flags.base.size,
+-                    .index = switch (op.flags.index.ref) {
+-                        else => |index_ref| registerAlias(index_ref.valueOf(s).register, @divExact(s.cg.target.ptrBitWidth(), 8)),
+-                        .none => .none,
+-                    },
+-                    .scale = op.flags.index.scale,
+-                    .disp = op.adjustedImm(i32, s),
+-                }) },
++                .mem => .{ .mem = blk: {
++                    // zig9/plan9: a symbol const (.load_direct/.lea_direct) used as a
++                    // `.mem` base can't be lowered by mem() — plan9 is non-PIC, so
++                    // there's no RIP-relative reloc like ELF's .load_symbol. The
++                    // address must live in a register. Materialize it via toBase,
++                    // which uses a *tracked* allocReg (allocReg(temp_index,…)) so the
++                    // scratch can't collide with a live reg — the bug that sank the
++                    // earlier allocReg(null) attempts. toBase updates s.temps[ref] in
++                    // place, so valueOf below sees the resulting .indirect.
++                    if (s.cg.bin_file.cast(.plan9)) |_| switch (op.flags.base.ref.valueOf(s)) {
++                        .load_direct, .lea_direct => _ = try s.temps[@intFromEnum(op.flags.base.ref)].toBase(false, s.cg),
++                        else => {},
++                    };
++                    break :blk try op.flags.base.ref.valueOf(s).mem(s.cg, .{
++                        .size = op.flags.base.size,
++                        .index = switch (op.flags.index.ref) {
++                            else => |index_ref| registerAlias(index_ref.valueOf(s).register, @divExact(s.cg.target.ptrBitWidth(), 8)),
++                            .none => .none,
++                        },
++                        .scale = op.flags.index.scale,
++                        .disp = op.adjustedImm(i32, s),
++                    });
++                } },
+             };
+         }
+     };

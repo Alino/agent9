@@ -58,8 +58,8 @@ macOS-26 host.
   cirno bare metal** (`test/parity/manifests/{qemu,cirno}.json`). Covers int/FP
   arithmetic, structs, tagged unions, generics, comptime, error unions, **heap
   allocation, `std.mem.sort`, `std.AutoHashMap`, `ArrayList`, `std.fmt`**.
-- **Upstream behavior suite: 1662 of Zig's own `test/behavior/*.zig` tests pass**
-  on 9front — full QEMU run **1662 pass / 0 fail / 167 skip across 110/119 files**
+- **Upstream behavior suite: 1737 of Zig's own `test/behavior/*.zig` tests pass**
+  on 9front — full QEMU run **1737 pass / 0 fail / 263 skip across 112/119 files**
   that compile+run (`test/parity/manifests/behavior-qemu.json`); **100% of the
   tests that run.** Top files: `cast` 126, `eval` 107, `union` 101,
   `array` 66, `error` 64. Run via a minimal plan9 test runner
@@ -72,14 +72,17 @@ macOS-26 host.
   Plan9 linker honors atom alignment; see below). **`basic` (+97) and `var_args`
   (+11) now run too** — they weren't a codegen bug at all but the SbrkAllocator not
   honoring alignment, which corrupted the GeneralPurposeAllocator (`std.testing.
-  allocator`); fixed by patch 11. The remaining 9 unrunnable files are: SIMD/vector
-  codegen (`select`/`shuffle`/`vector` crash + `reached unreachable` in
-  floatop/math/x86_64 — the `mem()` symbol-operand path, 6), a `format_float`
-  u128-division compiler-rt extern (`zon`), and genuinely-N/A builtins
-  (`@wasmMemorySize`, translate-c `@cImport`). The trajectory this session:
+  allocator`); fixed by patch 11. **`floatop` (+25) and `math` (+50) now run too —
+  the `mem()` keystone is fixed (patch 12)**: a symbol const used as a memory-operand
+  base is now materialized into a register via *tracked* `toBase` (the prior two
+  attempts used untracked `allocReg(null)` and miscompiled). The remaining 7
+  unrunnable files are: SIMD/vector codegen (`select`/`shuffle`/`vector` crash, 3),
+  the named-external / compiler-rt-extern feature (`x86_64`'s u128 ops + `zon`'s
+  `format_float`, 2 — `x86_64` advanced *past* `mem()` to this), and genuinely-N/A
+  builtins (`@wasmMemorySize`, translate-c `@cImport`, 2). The trajectory this session:
   **9/13-blocked → 752 → 883 → 1163 → 1404 → 1440 → 1446 → 1551 (stock runner +
   struct) → 1554, 0 fail (linker alignment, patch 10) → 1662 (GPA/sbrk alignment,
-  patch 11)** as each bug was fixed.
+  patch 11) → 1737 (mem() symbol-base keystone, patch 12)** as each bug was fixed.
 
 ### What the 163 skips actually are (faithfulness check, 2026-06-28)
 Audited the skip count against the test source — **the 163 skips are the Zig
@@ -204,47 +207,30 @@ Patch 07 contributed `isatty`/`ino_t`/`writev`/`selfExePath`/`flock`/`PROT`/the
 `--test-runner` remains the default in the harness (it isolates per-file failures
 and is faster), but the stock runner is now a working option.
 
+### The `mem()` symbol-base keystone — FIXED (patch 12)
+**The single highest-leverage backend gap, fixed 2026-06-28 (1662→1737).**
+`MCValue.mem()` (`CodeGen.zig:483`) is `unreachable` for plan9's `.load_direct`/
+`.lea_direct`, so any instruction using a symbol const as a **memory-operand base**
+(e.g. `@abs`'s SSE sign-mask, FP/int lookup tables) faulted the *compiler* with
+"reached unreachable". plan9 is non-PIC: there's no RIP-relative `.reloc` base like
+ELF's `.load_symbol`, so the symbol's address must live in a register.
+
+The fix (patch 12, one hunk at the `.mem` `lower()` case): when the base resolves
+to `.load_direct`/`.lea_direct` on plan9, materialize it via **`temp.toBase()`**,
+which uses a **tracked** `allocReg(temp_index,…)`+`genSetReg` and rewrites the temp
+to `.indirect`; `valueOf` then sees a register base and `mem()` lowers it. Diagnosed
+precisely first (diagnostic build): the offending base is a **`tmp` temp set to
+`.load_direct` mid-body**, so a pre-emit pass can't catch it — but doing it at
+`lower()` *with the tracked `toBase`* works, because the register manager knows the
+scratch is live (it can't collide). **This is why the two earlier attempts failed:
+they used untracked `allocReg(null)`, which grabbed a live operand reg → runtime
+GP-fault.** Verified: `floatop` 25/0 and `math` 50/0 — their float-result asserts
+*pass* (a miscompile would trip them) — on QEMU **and cirno bare metal**; full
+suite **1737/0**, corpus **13/13**, **zero regressions** (the change is
+plan9-guarded and only fires for symbol `.mem` bases). `x86_64` advanced *past*
+this to the compiler-rt extern gap below.
+
 ### Other still-open backend gaps
-- **The `mem()` symbol-operand gap is the keystone remaining backend issue.**
-  `MCValue.mem()` (`CodeGen.zig:483`) is `unreachable` for plan9's `.load_direct`/
-  `.lea_direct` — so any instruction that uses a global/const-table symbol as a
-  *memory operand base* (very common: const lookup tables) faults. A single x86
-  operand can't express plan9's GOT double-indirection, so the fix must
-  materialize the symbol into a register **in the Select.Operand lowering**
-  (`CodeGen.zig:108017`) before `mem()`. This gap blocks behavior `floatop`/`math`/
-  `x86_64` AND std-lib `math`/`sort`/`base64`. **Attempted twice & reverted both
-  times** (each verified against floatop/math, whose assertions catch a miscompile):
-  (1) `allocReg(null)` + `genSetReg` + `MCValue{ .indirect = … }.mem()` compiled the
-  files but the binaries crashed (the scratch reg collided with a live operand
-  register — `allocReg` has no liveness context at per-operand lowering). (2) Adding
-  `lockRegAssumeUnused` on the *index* register still crashed (general-protection
-  fault) — proving the collision is with the **broader instruction context** (other
-  operands / destination), not just the index. The materialized reg is also never
-  freed. A correct fix can't be done purely at `108017`; it needs the symbol
-  materialized earlier — in the Select **source-operand preparation**, where the
-  full instruction's register set is locked/tracked and the temp is freed after.
-  Reverted both times to keep a **verified-correct** compiler (a silent miscompiler
-  is worse than a clean compile-error). Highest-leverage next step; needs hands-on
-  register-allocator work, not another blind attempt.
-  **Pinned precisely (2026-06-28, 3rd investigation — diagnostic build, reverted):**
-  the variant reaching `mem()` is **`.load_direct`** (confirmed for all of
-  floatop/math/x86_64), and it's a **constant operand** — e.g. `@abs`'s SSE
-  sign-mask — used as the *base of a `.mem` operand in an instruction body*
-  (`Select.Operand` `.mem`/`.memia`), NOT a `src_temp`. That's why `toBase` (which
-  *does* materialize correctly, via a **tracked** `allocReg(temp_index,…)`+`genSetReg`)
-  never runs on it: `toBase` only fires for `src` operands going through pattern
-  `convert`; body-constant bases are resolved straight at `lower()` (108017).
-  `mem()` lowers the ELF `.load_symbol` via a `.reloc` (RIP-relative) base, but
-  plan9 is non-PIC and deliberately uses `.load_direct`, so that path is unusable.
-  **Why the two prior fixes collided:** during body `emit`, the `dst`/`tmp` temp
-  registers ARE locked (`dst_locks`/`tmp_locks`, 108104-106) but the **`src`
-  registers are not** — so `allocReg(null)` at `lower()` could pick a live `src`
-  reg. The correct fix is a **pre-materialization pass in `emit()` (106161)**, the
-  one layer holding all of `inst[3..7]`: lock src+dst+tmp, materialize any
-  `.load_direct`/`.lea_direct` `.mem`-base into a fresh reg (updating `s.temps[ref]`
-  to `.indirect`, like `toBase`), then free it after. Real multi-part surgery;
-  deferred to a hands-on session (verifiable via floatop/math asserts + full suite,
-  but two miscompiles say don't rush it).
 - **SIMD/vector** — `select`/`shuffle`/`vector`, 3 files. Bisected (2026-06-28):
   `shuffle` crashes on its 1st test (`@shuffle int`), `vector` on
   "vector bin compares with mem.eql" (a `@Vector` compare), `select`'s test bodies
