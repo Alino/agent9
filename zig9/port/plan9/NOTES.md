@@ -366,6 +366,14 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   (integer incl. u128 works correctly); every still-unrunnable file is the suite's
   own self-skips, Plan 9's nature, or Zig's own self-hosted-backend incompleteness
   on softfloat — none is missing plan9 infrastructure.
+  **Mode-independence confirmed by test (2026-06-28):** `OutOfRegisters` is raised by
+  the general `RegisterManager` (`CodeGen.zig:1001`, no plan9 gating). Built compiler_rt
+  un-gated and compiled the same program in **both `-OReleaseSmall` and `-OReleaseFast`
+  — each hits "ran out of registers" exactly 4×, identically.** So no optimization mode
+  dodges it; it's fundamental to the self-hosted allocator on these softfloat fns,
+  target- and mode-independent. (Also: `-OReleaseFast` works on plan9 just like
+  `-OReleaseSmall`; `-ODebug`/`-OReleaseSafe` additionally pull in `ubsan-rt`, whose
+  externs would need the same `extern_got` resolution.)
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
