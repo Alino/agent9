@@ -5,8 +5,8 @@
   "files_ran": 108,
   "files_compile_fail": 6,
   "files_crash": 5,
-  "tests_pass": 1551,
-  "tests_fail": 3,
+  "tests_pass": 1554,
+  "tests_fail": 0,
   "tests_skip": 163,
   "results": [
     {
@@ -26,8 +26,8 @@
     {
       "file": "align",
       "status": "ran",
-      "pass": 24,
-      "fail": 3,
+      "pass": 27,
+      "fail": 0,
       "skip": 4
     },
     {
@@ -276,7 +276,7 @@
     {
       "file": "floatop",
       "status": "compile-fail",
-      "detail": "thread 31240 panic: reached unreachable code"
+      "detail": "thread 36263 panic: reached unreachable code"
     },
     {
       "file": "fn",
@@ -398,7 +398,7 @@
     {
       "file": "math",
       "status": "compile-fail",
-      "detail": "thread 31641 panic: reached unreachable code"
+      "detail": "thread 36662 panic: reached unreachable code"
     },
     {
       "file": "maximum_minimum",
@@ -813,7 +813,7 @@
     {
       "file": "x86_64",
       "status": "compile-fail",
-      "detail": "thread 32978 panic: reached unreachable code"
+      "detail": "thread 38002 panic: reached unreachable code"
     },
     {
       "file": "zon",

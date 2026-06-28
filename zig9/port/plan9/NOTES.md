@@ -58,25 +58,25 @@ macOS-26 host.
   cirno bare metal** (`test/parity/manifests/{qemu,cirno}.json`). Covers int/FP
   arithmetic, structs, tagged unions, generics, comptime, error unions, **heap
   allocation, `std.mem.sort`, `std.AutoHashMap`, `ArrayList`, `std.fmt`**.
-- **Upstream behavior suite: 1551 of Zig's own `test/behavior/*.zig` tests pass**
-  on 9front — full QEMU run **1551 pass / 3 fail / 163 skip across 108/119 files**
-  that compile+run (`test/parity/manifests/behavior-qemu.json`); a **99.8% pass
-  rate among tests that run**. Top files: `cast` 126, `eval` 107, `union` 101,
+- **Upstream behavior suite: 1554 of Zig's own `test/behavior/*.zig` tests pass**
+  on 9front — full QEMU run **1554 pass / 0 fail / 163 skip across 108/119 files**
+  that compile+run (`test/parity/manifests/behavior-qemu.json`); **100% of the
+  tests that run.** Top files: `cast` 126, `eval` 107, `union` 101,
   `array` 66, `error` 64. Run via a minimal plan9 test runner
   (`test/plan9_test_runner.zig`), compiling each file through a `test/`-level root
   that *imports* `behavior/<file>.zig` (so `@typeName` yields `behavior.<file>.X`
   like the upstream aggregate — this turned 7 earlier `@typeName`/`string_literals`
-  "failures" into passes; they were harness artifacts, not plan9 bugs). **The only
-  remaining failures are 3 alignment edge cases (all in `align.zig`):** `align(128)`
-  on a stack local (needs dynamic stack over-alignment in the prologue) and
-  `align(N)` on functions (needs Plan9-linker support) — genuine, minor backend
-  gaps. The remaining ~11 unrunnable files are: SIMD/vector codegen
+  "failures" into passes; they were harness artifacts, not plan9 bugs). **The last
+  3 failures — alignment edge cases in `align.zig` (`align(128)` local const,
+  `align(4)` global, `align(0x1000)` function) — are now fixed by patch 10** (the
+  Plan9 linker honors atom alignment; see below). The remaining ~11 unrunnable files are: SIMD/vector codegen
   (`select`/`shuffle`/`vector` + `reached unreachable` in floatop/math/x86_64 — the
   `mem()` symbol-operand path, ~6), a `format_float` named-symbol extern, a runtime
   `invalid opcode` codegen bug (basic/var_args — they compile now via the SelfInfo
   no-op but a construct mis-codegens), and genuinely-N/A builtins (`@wasmMemorySize`,
   translate-c `@cImport`). The trajectory this session: **9/13-blocked → 752 → 883 →
-  1163 → 1404 → 1440 → 1446 → 1551 (stock test runner + struct)** as each bug was fixed.
+  1163 → 1404 → 1440 → 1446 → 1551 (stock test runner + struct) → 1554, 0 fail
+  (linker alignment, patch 10)** as each bug was fixed.
 
 ### What the 163 skips actually are (faithfulness check, 2026-06-28)
 Audited the skip count against the test source — **the 163 skips are the Zig
@@ -144,6 +144,27 @@ suite skipping *itself*, not gaps this port introduced.** Evidence:
    `.load_symbol`/`.lea_symbol` but not plan9's `.load_direct`/`.lea_direct`.
    Added them (materialize the symbol address via `genSetReg(.lea_direct)`, then
    load the limb at `+limb_index*8`). Unblocked `for`/`memcpy` (+36).
+
+10. **Linker ignored atom alignment (patch 10, `Plan9.zig`) — closed the last 3
+    behavior failures, 1551→1554, 0 fail.** `flushModule` wrote every text/data
+    atom back-to-back (`text_i/data_i += code.len`) with no alignment padding, and
+    `lowerUav` literally `_ = explicit_alignment`. So `align(N)` was silently
+    dropped: a `const x align(128)` (a UAV), a global `foo: u8 align(4)`, and an
+    `align(0x1000)` function all landed at unaligned addresses — the 3 `align.zig`
+    fails. Fix: a `padSegment` helper inserts a zero-fill padding iovec before each
+    atom so `base + seg_i` hits the required boundary (`bases.text`=0x200028 isn't
+    page-aligned, so the pad is computed on the *absolute* vaddr, not the segment
+    offset); function/data-nav alignment comes from `pt.navAlignment`, and UAV
+    alignment is captured into a new `uav_alignment` side-map in `lowerUav`.
+    Subtleties: `pwritevAll` writes the **whole** `iovecs` slice (not `[0..i]`), so
+    the array is grown to `2*atomCount()+4` and unused tail slots are filled with
+    zero-length no-op iovecs; the exact-count `assert` gains `+ n_pad`. `.none`
+    alignment ⇒ no padding, so every non-explicitly-aligned atom keeps its old
+    byte layout — which is *why the corpus stayed 13/13 and the other 105 files
+    were untouched*. Verified: `align.zig` 24/3 → **27/0**, corpus **13/13 on QEMU
+    *and* cirno bare metal** (a layout desync would crash every binary loudly —
+    this is the property that made the fix safe to land autonomously, unlike the
+    `mem()` gap whose miscompiles are silent).
 
 ### Default test runner — WORKS (patches 05/07/09)
 **Zig's stock `zig test` runner now compiles AND runs on 9front** — e.g.
