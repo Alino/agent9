@@ -2,12 +2,12 @@
   "target": "cirno",
   "host": "192.168.88.159:17010",
   "files_total": 40,
-  "files_ran": 38,
+  "files_ran": 39,
   "files_compile_fail": 1,
-  "files_crash": 1,
-  "tests_pass": 667,
+  "files_crash": 0,
+  "tests_pass": 764,
   "tests_fail": 0,
-  "tests_skip": 126,
+  "tests_skip": 130,
   "results": [
     {
       "file": "abs",
@@ -74,8 +74,10 @@
     },
     {
       "file": "basic",
-      "status": "crash",
-      "detail": ""
+      "status": "ran",
+      "pass": 97,
+      "fail": 0,
+      "skip": 4
     },
     {
       "file": "bit_shifting",
@@ -276,7 +278,7 @@
     {
       "file": "floatop",
       "status": "compile-fail",
-      "detail": "thread 39122 panic: reached unreachable code"
+      "detail": "thread 43232 panic: reached unreachable code"
     },
     {
       "file": "fn",

@@ -7,8 +7,8 @@
 #
 # Clean, upstreamable fixes to Zig 0.14.1's experimental x86_64-plan9 target —
 # see NOTES.md / README.md for the why of each.
-#   01-03,05,07,09  lib/std only -> picked up via `zig --zig-lib-dir <tree>/lib` with
-#                               the prebuilt 0.14.1 host toolchain (no rebuild).
+#   01-03,05,07,09,11  lib/std only -> picked up via `zig --zig-lib-dir <tree>/lib`
+#                               with the prebuilt 0.14.1 host toolchain (no rebuild).
 #   04,06,08,10  src/ (backend) -> require REBUILDING the compiler (see linux-build.sh);
 #                           the prebuilt host binary will not have it.
 set -e

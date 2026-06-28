@@ -58,8 +58,8 @@ macOS-26 host.
   cirno bare metal** (`test/parity/manifests/{qemu,cirno}.json`). Covers int/FP
   arithmetic, structs, tagged unions, generics, comptime, error unions, **heap
   allocation, `std.mem.sort`, `std.AutoHashMap`, `ArrayList`, `std.fmt`**.
-- **Upstream behavior suite: 1554 of Zig's own `test/behavior/*.zig` tests pass**
-  on 9front — full QEMU run **1554 pass / 0 fail / 163 skip across 108/119 files**
+- **Upstream behavior suite: 1662 of Zig's own `test/behavior/*.zig` tests pass**
+  on 9front — full QEMU run **1662 pass / 0 fail / 167 skip across 110/119 files**
   that compile+run (`test/parity/manifests/behavior-qemu.json`); **100% of the
   tests that run.** Top files: `cast` 126, `eval` 107, `union` 101,
   `array` 66, `error` 64. Run via a minimal plan9 test runner
@@ -69,14 +69,17 @@ macOS-26 host.
   "failures" into passes; they were harness artifacts, not plan9 bugs). **The last
   3 failures — alignment edge cases in `align.zig` (`align(128)` local const,
   `align(4)` global, `align(0x1000)` function) — are now fixed by patch 10** (the
-  Plan9 linker honors atom alignment; see below). The remaining ~11 unrunnable files are: SIMD/vector codegen
-  (`select`/`shuffle`/`vector` + `reached unreachable` in floatop/math/x86_64 — the
-  `mem()` symbol-operand path, ~6), a `format_float` named-symbol extern, a runtime
-  `invalid opcode` codegen bug (basic/var_args — they compile now via the SelfInfo
-  no-op but a construct mis-codegens), and genuinely-N/A builtins (`@wasmMemorySize`,
-  translate-c `@cImport`). The trajectory this session: **9/13-blocked → 752 → 883 →
-  1163 → 1404 → 1440 → 1446 → 1551 (stock test runner + struct) → 1554, 0 fail
-  (linker alignment, patch 10)** as each bug was fixed.
+  Plan9 linker honors atom alignment; see below). **`basic` (+97) and `var_args`
+  (+11) now run too** — they weren't a codegen bug at all but the SbrkAllocator not
+  honoring alignment, which corrupted the GeneralPurposeAllocator (`std.testing.
+  allocator`); fixed by patch 11. The remaining 9 unrunnable files are: SIMD/vector
+  codegen (`select`/`shuffle`/`vector` crash + `reached unreachable` in
+  floatop/math/x86_64 — the `mem()` symbol-operand path, 6), a `format_float`
+  u128-division compiler-rt extern (`zon`), and genuinely-N/A builtins
+  (`@wasmMemorySize`, translate-c `@cImport`). The trajectory this session:
+  **9/13-blocked → 752 → 883 → 1163 → 1404 → 1440 → 1446 → 1551 (stock runner +
+  struct) → 1554, 0 fail (linker alignment, patch 10) → 1662 (GPA/sbrk alignment,
+  patch 11)** as each bug was fixed.
 
 ### What the 163 skips actually are (faithfulness check, 2026-06-28)
 Audited the skip count against the test source — **the 163 skips are the Zig
@@ -165,6 +168,27 @@ suite skipping *itself*, not gaps this port introduced.** Evidence:
     *and* cirno bare metal** (a layout desync would crash every binary loudly —
     this is the property that made the fix safe to land autonomously, unlike the
     `mem()` gap whose miscompiles are silent).
+
+11. **SbrkAllocator ignored alignment → GPA `@panic("Invalid free")` (patch 11,
+    lib) — unblocked `basic` (+97) and `var_args` (+11), 1554→1662.** Both files
+    "compiled but crashed"; the crash looked like a codegen bug but wasn't. Traced
+    it by bisecting `basic` with a progress-printing runner (died in test
+    *"allocation and looping over 3-byte integer"*), then instrumenting
+    `DebugAllocator.free`: it `@panic`s on a canary mismatch. Root cause: on plan9
+    `std.heap.page_allocator` is `SbrkAllocator(plan9.sbrk)`, and its
+    `allocBigPages` returns `sbrk(...)` verbatim — only page-aligned. But the
+    `DebugAllocator` (= `std.testing.allocator`) uses `default_page_size` = 128 KiB
+    and recovers a slot's base on free by masking `addr & ~(page_size-1)`, which
+    assumes the backing block is `page_size`-aligned. sbrk's 4 KiB alignment broke
+    that → wrong bucket header → bad canary → panic (which aborts under the
+    void-main runner, hence the silent "crash"). Fix: `allocBigPages` burns the
+    break up to `slot_size_bytes` (the slot's natural power-of-two size) before
+    claiming it, so big slots — and the small buckets tiled inside them — are
+    naturally aligned. `u24` codegen, `page_allocator.free`/munmap, and
+    `captureStackTrace` were all ruled out first (each tested in isolation).
+    lib-only (no compiler rebuild). Verified: `basic` 97/0, `var_args` 11/0 on QEMU
+    **and** cirno; corpus 13/13 (no regression). Upstreamable — a real plan9 bug in
+    Zig's own SbrkAllocator that breaks any GeneralPurposeAllocator use.
 
 ### Default test runner — WORKS (patches 05/07/09)
 **Zig's stock `zig test` runner now compiles AND runs on 9front** — e.g.

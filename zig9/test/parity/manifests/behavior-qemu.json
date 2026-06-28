@@ -2,12 +2,12 @@
   "target": "qemu",
   "host": "127.0.0.1:1717",
   "files_total": 119,
-  "files_ran": 108,
+  "files_ran": 110,
   "files_compile_fail": 6,
-  "files_crash": 5,
-  "tests_pass": 1554,
+  "files_crash": 3,
+  "tests_pass": 1662,
   "tests_fail": 0,
-  "tests_skip": 163,
+  "tests_skip": 167,
   "results": [
     {
       "file": "abs",
@@ -74,8 +74,10 @@
     },
     {
       "file": "basic",
-      "status": "crash",
-      "detail": ""
+      "status": "ran",
+      "pass": 97,
+      "fail": 0,
+      "skip": 4
     },
     {
       "file": "bit_shifting",
@@ -276,7 +278,7 @@
     {
       "file": "floatop",
       "status": "compile-fail",
-      "detail": "thread 36263 panic: reached unreachable code"
+      "detail": "thread 40611 panic: reached unreachable code"
     },
     {
       "file": "fn",
@@ -398,7 +400,7 @@
     {
       "file": "math",
       "status": "compile-fail",
-      "detail": "thread 36662 panic: reached unreachable code"
+      "detail": "thread 41008 panic: reached unreachable code"
     },
     {
       "file": "maximum_minimum",
@@ -769,8 +771,10 @@
     },
     {
       "file": "var_args",
-      "status": "crash",
-      "detail": ""
+      "status": "ran",
+      "pass": 11,
+      "fail": 0,
+      "skip": 0
     },
     {
       "file": "vector",
@@ -813,7 +817,7 @@
     {
       "file": "x86_64",
       "status": "compile-fail",
-      "detail": "thread 38002 panic: reached unreachable code"
+      "detail": "thread 42352 panic: reached unreachable code"
     },
     {
       "file": "zon",

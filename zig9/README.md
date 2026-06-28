@@ -13,7 +13,7 @@ upstream behavior test suite runs on real hardware.**
   VM and `cirno` (bare-metal Shuttle 9front)** — including heap allocation,
   `std.mem.sort`, `std.AutoHashMap`, `ArrayList`, `std.fmt`, FP math, generics,
   comptime, tagged unions, error unions.
-- **Upstream behavior suite: 1554 of Zig's own `test/behavior/*.zig` tests pass**
+- **Upstream behavior suite: 1662 of Zig's own `test/behavior/*.zig` tests pass**
   on 9front (`test/parity/manifests/behavior-qemu.json`), via a minimal plan9
   test runner — **0 failures: 100% of the tests the suite considers runnable on
   the self-hosted x86_64 backend.** The 163 "skips" are the suite skipping
@@ -57,11 +57,12 @@ harnesses bake in the right flags (`-target x86_64-plan9 -mcpu=x86_64_v2
 
 ## What does NOT work yet
 
-- SIMD/vector codegen (`@shuffle`/`@select` + a few `reached unreachable`, ~6
-  files) and a `format_float` named-symbol extern — unfinished plan9 backend paths.
-- `basic`/`var_args` compile but hit a runtime `invalid opcode` (a codegen bug in
-  some construct). (Over-alignment — `align(N)` on functions, globals, and local
-  constants — is now handled by the Plan9 linker; see patch 10.)
+- SIMD/vector codegen (`@shuffle`/`@select`/`vector` crash + a few `reached
+  unreachable`, ~6 files) and the `zon` test's `format_float` u128-division
+  compiler-rt extern — unfinished plan9 backend paths.
+- (Fixed since: over-alignment via the Plan9 linker, patch 10; `basic`/`var_args`
+  ran once the SbrkAllocator honored alignment so the GeneralPurposeAllocator
+  stopped corrupting itself, patch 11.)
 - N/A builtins: `@wasmMemorySize` (no wasm runtime), translate-c `@cImport` (no C frontend).
 - Threads (`std.Thread.spawn`) — deferred (rfork); `getCurrentId`/`getCpuCount` stubbed.
 
@@ -74,7 +75,7 @@ The patched compiler is built in a Linux container (the macOS-26 host can't link
 
 ```sh
 zig9/fetch.sh                                   # vendor Zig 0.14.1 (src + host toolchain)
-sh zig9/port/plan9/apply.sh                     # apply the 10 plan9 patches
+sh zig9/port/plan9/apply.sh                     # apply the 11 plan9 patches
 sh zig9/port/plan9/linux-build.sh build         # build the patched compiler in the container
 python3 zig9/test/run_corpus.py qemu            # 13/13 corpus -> test/parity/manifests/
 python3 zig9/test/run_corpus.py cirno           # same, on bare metal
@@ -95,7 +96,7 @@ zig9/
     README.md                   the port archaeology: every fix, every blocker, path forward
     NOTES.md                    running log + headline numbers
     linux-build.sh              build the patched compiler in the Linux container
-    patches/*.patch (01-10)     the fixes; 01-03,05,07,09 lib/std; 04,06,08,10 compiler src
+    patches/*.patch (01-11)     the fixes; 01-03,05,07,09,11 lib/std; 04,06,08,10 compiler src
     apply.sh
   test/
     corpus/*.zig                self-checking feature tests (print "ok <name>")
