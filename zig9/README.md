@@ -13,10 +13,10 @@ upstream behavior test suite runs on real hardware.**
   VM and `cirno` (bare-metal Shuttle 9front)** — including heap allocation,
   `std.mem.sort`, `std.AutoHashMap`, `ArrayList`, `std.fmt`, FP math, generics,
   comptime, tagged unions, error unions.
-- **Upstream behavior suite: 1737 of Zig's own `test/behavior/*.zig` tests pass**
+- **Upstream behavior suite: 1773 of Zig's own `test/behavior/*.zig` tests pass**
   on 9front (`test/parity/manifests/behavior-qemu.json`), via a minimal plan9
-  test runner — **0 failures: 100% of the tests the suite considers runnable on
-  the self-hosted x86_64 backend.** The 263 "skips" are the suite skipping
+  test runner — **0 failures, 0 crashes: 100% of the tests the suite considers
+  runnable on the self-hosted x86_64 backend.** The 291 "skips" are the suite skipping
   *itself* (`error.SkipZigTest`: TODO markers + self-hosted-backend feature
   gates); **zero are plan9-specific** — this port adds no skip gate and hides no
   failure behind one. See `port/plan9/NOTES.md`.
@@ -43,7 +43,7 @@ format. **0.14.1 is the newest release that can target 9front at all** (verified
 - `std.mem` (sort, indexOf, split…), `std.fmt`, raw `std.os.plan9` syscalls
 - **`!void` main, `@errorName`, `std.testing.expectError`** (error-name table via GOT)
 - Correct IEEE FP on bare metal (FP-exception masking — proven necessary on cirno)
-- A large fraction of Zig's upstream `test/behavior` suite (1737 tests)
+- A large fraction of Zig's upstream `test/behavior` suite (1773 tests)
 
 Rule for source that compiles today: build `-OReleaseSmall`/`-OReleaseFast`
 (safety-on modes trip a backend codegen bug). The `host/zig9` driver and the test
@@ -57,17 +57,17 @@ harnesses bake in the right flags (`-target x86_64-plan9 -mcpu=x86_64_v2
 
 ## What does NOT work yet
 
-- SIMD/vector codegen (`@shuffle`/`@select`/`vector` crash, 3 files) — the
-  self-hosted x86_64 vector backend is incomplete upstream.
 - Named external symbols / compiler-rt (`x86_64`'s u128 division, `zon`'s
   `format_float`) — plan9 has no `getGlobalSymbol`; a substantial unimplemented
-  feature, not a path bug.
+  feature, not a path bug. The only 2 unrunnable files that aren't platform-N/A.
 - N/A on Plan 9: `@wasmMemorySize` (no wasm runtime), translate-c `@cImport`
   (no C frontend).
-- (Fixed since: over-alignment via the Plan9 linker, patch 10; the GeneralPurposeAllocator
-  via the SbrkAllocator honoring alignment, patch 11; the `mem()` symbol-base
-  keystone — `floatop`/`math` now run — via tracked register materialization, patch 12.)
 - Threads (`std.Thread.spawn`) — deferred (rfork); `getCurrentId`/`getCpuCount` stubbed.
+- (Fixed since: over-alignment via the Plan9 linker, patch 10; the GeneralPurposeAllocator
+  via the SbrkAllocator honoring alignment, patch 11; the `mem()` symbol-base keystone
+  (`floatop`/`math`) via tracked register materialization, patch 12; **SIMD —
+  `@shuffle`/`@select`/`vector` — via UAV natural alignment, patch 13** (the pshufb
+  control-mask was under-aligned, faulting legacy SSE).)
 
 See `port/plan9/README.md` → "Still open".
 
@@ -78,7 +78,7 @@ The patched compiler is built in a Linux container (the macOS-26 host can't link
 
 ```sh
 zig9/fetch.sh                                   # vendor Zig 0.14.1 (src + host toolchain)
-sh zig9/port/plan9/apply.sh                     # apply the 12 plan9 patches
+sh zig9/port/plan9/apply.sh                     # apply the 13 plan9 patches
 sh zig9/port/plan9/linux-build.sh build         # build the patched compiler in the container
 python3 zig9/test/run_corpus.py qemu            # 13/13 corpus -> test/parity/manifests/
 python3 zig9/test/run_corpus.py cirno           # same, on bare metal
@@ -99,7 +99,7 @@ zig9/
     README.md                   the port archaeology: every fix, every blocker, path forward
     NOTES.md                    running log + headline numbers
     linux-build.sh              build the patched compiler in the Linux container
-    patches/*.patch (01-12)     the fixes; 01-03,05,07,09,11 lib/std; 04,06,08,10,12 compiler src
+    patches/*.patch (01-13)     the fixes; 01-03,05,07,09,11 lib/std; 04,06,08,10,12,13 compiler src
     apply.sh
   test/
     corpus/*.zig                self-checking feature tests (print "ok <name>")

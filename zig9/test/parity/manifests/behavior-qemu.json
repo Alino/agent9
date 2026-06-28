@@ -2,12 +2,12 @@
   "target": "qemu",
   "host": "127.0.0.1:1717",
   "files_total": 119,
-  "files_ran": 112,
+  "files_ran": 115,
   "files_compile_fail": 4,
-  "files_crash": 3,
-  "tests_pass": 1737,
+  "files_crash": 0,
+  "tests_pass": 1773,
   "tests_fail": 0,
-  "tests_skip": 263,
+  "tests_skip": 291,
   "results": [
     {
       "file": "abs",
@@ -576,13 +576,17 @@
     },
     {
       "file": "select",
-      "status": "crash",
-      "detail": ""
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 2
     },
     {
       "file": "shuffle",
-      "status": "crash",
-      "detail": ""
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 3
     },
     {
       "file": "sizeof_and_typeof",
@@ -782,8 +786,10 @@
     },
     {
       "file": "vector",
-      "status": "crash",
-      "detail": ""
+      "status": "ran",
+      "pass": 34,
+      "fail": 0,
+      "skip": 23
     },
     {
       "file": "void",

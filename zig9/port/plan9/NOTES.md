@@ -58,10 +58,10 @@ macOS-26 host.
   cirno bare metal** (`test/parity/manifests/{qemu,cirno}.json`). Covers int/FP
   arithmetic, structs, tagged unions, generics, comptime, error unions, **heap
   allocation, `std.mem.sort`, `std.AutoHashMap`, `ArrayList`, `std.fmt`**.
-- **Upstream behavior suite: 1737 of Zig's own `test/behavior/*.zig` tests pass**
-  on 9front — full QEMU run **1737 pass / 0 fail / 263 skip across 112/119 files**
-  that compile+run (`test/parity/manifests/behavior-qemu.json`); **100% of the
-  tests that run.** Top files: `cast` 126, `eval` 107, `union` 101,
+- **Upstream behavior suite: 1773 of Zig's own `test/behavior/*.zig` tests pass**
+  on 9front — full QEMU run **1773 pass / 0 fail / 291 skip across 115/119 files**
+  that compile+run, **0 crashes** (`test/parity/manifests/behavior-qemu.json`);
+  **100% of the tests that run.** Top files: `cast` 126, `eval` 107, `union` 101,
   `array` 66, `error` 64. Run via a minimal plan9 test runner
   (`test/plan9_test_runner.zig`), compiling each file through a `test/`-level root
   that *imports* `behavior/<file>.zig` (so `@typeName` yields `behavior.<file>.X`
@@ -75,14 +75,19 @@ macOS-26 host.
   allocator`); fixed by patch 11. **`floatop` (+25) and `math` (+50) now run too —
   the `mem()` keystone is fixed (patch 12)**: a symbol const used as a memory-operand
   base is now materialized into a register via *tracked* `toBase` (the prior two
-  attempts used untracked `allocReg(null)` and miscompiled). The remaining 7
-  unrunnable files are: SIMD/vector codegen (`select`/`shuffle`/`vector` crash, 3),
-  the named-external / compiler-rt-extern feature (`x86_64`'s u128 ops + `zon`'s
-  `format_float`, 2 — `x86_64` advanced *past* `mem()` to this), and genuinely-N/A
-  builtins (`@wasmMemorySize`, translate-c `@cImport`, 2). The trajectory this session:
+  attempts used untracked `allocReg(null)` and miscompiled). **`select`/`shuffle`/
+  `vector` (+36) now run too — and crashes hit 0** — they weren't upstream-incomplete
+  vector codegen but a plan9 bug: the linker under-aligned anonymous const data, so
+  a 16-byte `@shuffle` pshufb mask / spilled `@Vector` used as a legacy-SSE memory
+  operand GP-faulted; fixed by patch 13 (`lowerUav` floors alignment at the value's
+  natural ABI alignment). The remaining 4 unrunnable files are all compile-fail: the
+  named-external / compiler-rt-extern feature (`x86_64`'s u128 ops + `zon`'s
+  `format_float`, 2) and genuinely-N/A builtins (`@wasmMemorySize`, translate-c
+  `@cImport`, 2). The trajectory this session:
   **9/13-blocked → 752 → 883 → 1163 → 1404 → 1440 → 1446 → 1551 (stock runner +
   struct) → 1554, 0 fail (linker alignment, patch 10) → 1662 (GPA/sbrk alignment,
-  patch 11) → 1737 (mem() symbol-base keystone, patch 12)** as each bug was fixed.
+  patch 11) → 1737 (mem() symbol-base keystone, patch 12) → 1773, 0 crashes
+  (UAV natural alignment, patch 13)** as each bug was fixed.
 
 ### What the 163 skips actually are (faithfulness check, 2026-06-28)
 Audited the skip count against the test source — **the 163 skips are the Zig
@@ -230,14 +235,21 @@ suite **1737/0**, corpus **13/13**, **zero regressions** (the change is
 plan9-guarded and only fires for symbol `.mem` bases). `x86_64` advanced *past*
 this to the compiler-rt extern gap below.
 
-### Other still-open backend gaps
-- **SIMD/vector** — `select`/`shuffle`/`vector`, 3 files. Bisected (2026-06-28):
-  `shuffle` crashes on its 1st test (`@shuffle int`), `vector` on
-  "vector bin compares with mem.eql" (a `@Vector` compare), `select`'s test bodies
-  *run* under a minimal runner but the full binary mis-runs `@select` — i.e. genuine
-  **vector codegen** gaps, not incidental. The self-hosted x86_64 vector backend is
-  incomplete upstream (these files are ~44% `stage2_x86_64`-skipped). Deep, and a
-  wrong fix miscompiles silently like `mem()` — not a safe blind target.
+### SIMD/vector — FIXED (patch 13), was an alignment bug, NOT upstream-incomplete
+**`select`/`shuffle`/`vector` (+36, and crashes → 0), fixed 2026-06-28.** I first
+mis-judged these as "genuine upstream vector-codegen gaps" — wrong. Instrumented
+`@shuffle` to the exact op: it *compiles* but hard-faults at runtime *inside the
+shuffle* (not a `mem()` compile error). Root cause: the general shuffle path uses a
+16-byte `pshufb` control-mask constant (and spilled `@Vector`s), and a **legacy
+(non-VEX) SSE memory operand GP-faults if unaligned**. `Plan9.lowerUav` stored
+`explicit_alignment orelse 1` — but auto-generated consts arrive with
+`explicit_alignment == .none`, so the mask landed 1-aligned. Fix (patch 13): floor
+the stored alignment at the value's natural ABI alignment
+(`uav_ty.abiAlignment(zcu)`), so a 16-byte vector const is 16-aligned. Verified:
+`vector` 34/0, `shuffle` 1/0, `select` 1/0 — their result asserts *pass* — on QEMU
+**and cirno**; full suite **1773/0, 0 crashes**, corpus 13/13, zero regressions.
+Lesson: "looks like upstream incompleteness" was, again, a plan9-specific alignment
+bug (cf. patches 10/11) — worth instrumenting before writing something off.
 - **Named external symbols / compiler-rt** (`zon` → `format_float`'s u128 `/`,`%`
   = `__udivti3`/`__umodti3`; and `import_c_keywords` → any extern call). CONFIRMED
   (2026-06-28) to be a *substantial unimplemented feature*, not a one-liner:
