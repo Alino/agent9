@@ -1,0 +1,150 @@
+--- a/src/arch/x86_64/CodeGen.zig	2026-06-28 19:48:30
++++ b/src/arch/x86_64/CodeGen.zig	2026-06-28 19:43:42
+@@ -96259,6 +96259,24 @@
+         switch (tag) {
+             .mov => {},
+             .call => try self.asmRegister(.{ ._, .call }, scratch_reg),
++            else => unreachable,
++        }
++    } else if (self.bin_file.cast(.plan9)) |p9| {
++        // zig9: plan9 is non-PIC; a named extern (a libcall like __udivti3, which
++        // with the .zcu compiler_rt strat is a real in-module exported fn) is
++        // reached through a GOT slot at a fixed ds-relative address, exactly like a
++        // nav call. The slot is filled at flush from the like-named export sym.
++        const got_addr = try p9.getExternGotAddr(callee);
++        const mem_op: Memory = .{ .base = .{ .reg = .ds }, .mod = .{ .rm = .{
++            .size = .qword,
++            .disp = @intCast(got_addr),
++        } } };
++        switch (tag) {
++            .call => try self.asmMemory(.{ ._, .call }, mem_op),
++            .mov => {
++                const scratch_reg = abi.getCAbiLinkerScratchReg(self.target.cCallingConvention().?);
++                try self.asmRegisterMemory(.{ ._, .mov }, scratch_reg, mem_op);
++            },
+             else => unreachable,
+         }
+     } else return self.fail("TODO implement calling extern functions", .{});
+@@ -107090,7 +107108,19 @@
+                             return cg.fail("external symbols unimplemented for {s}", .{@tagName(cg.bin_file.tag)}),
+                     } }), true };
+                 },
+-                .symbol => |symbol_spec| .{ try cg.tempInit(spec.type, .{ .lea_symbol = .{
++                .symbol => |symbol_spec| if (cg.bin_file.cast(.plan9)) |p9| plan9: {
++                    // zig9: plan9 has no RIP-relative `.lea_symbol`; load the named
++                    // extern's address from its GOT slot into a register (the slot
++                    // is filled at flush from the like-named export). Mirrors the
++                    // `.lazy_symbol` plan9 case above.
++                    const got_addr = try p9.getExternGotAddr(symbol_spec.name);
++                    const tmp = try cg.tempAllocReg(spec.type, abi.RegisterClass.gp);
++                    try cg.asmRegisterMemory(.{ ._, .mov }, tmp.tracking(cg).short.getReg().?, .{
++                        .base = .{ .reg = .ds },
++                        .mod = .{ .rm = .{ .size = .qword, .disp = @intCast(got_addr) } },
++                    });
++                    break :plan9 .{ tmp, true };
++                } else .{ try cg.tempInit(spec.type, .{ .lea_symbol = .{
+                     .sym_index = if (cg.bin_file.cast(.elf)) |elf_file|
+                         try elf_file.getGlobalSymbol(symbol_spec.name, symbol_spec.lib)
+                     else if (cg.bin_file.cast(.macho)) |macho_file|
+--- a/src/link/Plan9.zig	2026-06-28 19:48:30
++++ b/src/link/Plan9.zig	2026-06-28 19:40:10
+@@ -61,6 +61,11 @@
+ /// When `updateExports` is called, we store the export indices here, to be used
+ /// during flush.
+ nav_exports: std.AutoArrayHashMapUnmanaged(InternPool.Nav.Index, []Zcu.Export.Index) = .empty,
++/// Named external symbols referenced by libcalls (e.g. compiler_rt `__udivti3`),
++/// each given a GOT slot. With the `.zcu` compiler_rt strat these resolve to real
++/// in-module exported functions; the slot is filled at flush from the export sym
++/// of the same name. Maps name -> got index.
++extern_got: std.StringHashMapUnmanaged(usize) = .empty,
+ 
+ lazy_syms: LazySymbolTable = .{},
+ 
+@@ -561,6 +566,22 @@
+     }
+ }
+ 
++/// Get the GOT vaddr for a named external symbol (a libcall callee), allocating a
++/// slot on first use. The slot is filled at flush from the like-named export sym.
++/// The backend emits `call qword ptr ds:[addr]` against the returned address, just
++/// like a normal nav call.
++pub fn getExternGotAddr(self: *Plan9, name: []const u8) !u64 {
++    const gpa = self.base.comp.gpa;
++    const gop = try self.extern_got.getOrPut(gpa, name);
++    if (!gop.found_existing) {
++        gop.key_ptr.* = try gpa.dupe(u8, name);
++        gop.value_ptr.* = self.allocateGotIndex();
++    }
++    const target = self.base.comp.root_mod.resolved_target.result;
++    const ptr_bytes = @divExact(target.ptrBitWidth(), 8);
++    return self.bases.data + gop.value_ptr.* * ptr_bytes;
++}
++
+ pub fn flush(
+     self: *Plan9,
+     arena: Allocator,
+@@ -679,7 +700,7 @@
+     }
+     // make sure the got table is good
+     const atom_count = self.atomCount();
+-    assert(self.got_len == atom_count + self.got_index_free_list.items.len);
++    assert(self.got_len == atom_count + self.extern_got.count() + self.got_index_free_list.items.len);
+     const got_size = self.got_len * if (!self.sixtyfour_bit) @as(u32, 4) else 8;
+     var got_table = try gpa.alloc(u8, got_size);
+     defer gpa.free(got_table);
+@@ -891,6 +912,29 @@
+             }
+         }
+     }
++    // Resolve named external libcall targets (e.g. compiler_rt __udivti3): fill
++    // each extern's GOT slot with the address of the like-named symbol. With the
++    // `.zcu` compiler_rt strat these are real in-module exported functions, so
++    // addNavExports (run in the loops above) has already put a sym of that name in
++    // self.syms with the function's address. An unresolved name is left 0.
++    {
++        var it_ext = self.extern_got.iterator();
++        while (it_ext.next()) |entry| {
++            const name = entry.key_ptr.*;
++            const got_index = entry.value_ptr.*;
++            const addr: u64 = for (self.syms.items) |sym| {
++                if (mem.eql(u8, sym.name, name)) break sym.value;
++            } else {
++                log.debug("plan9: unresolved extern symbol '{s}'", .{name});
++                continue;
++            };
++            if (!self.sixtyfour_bit) {
++                mem.writeInt(u32, got_table[got_index * 4 ..][0..4], @intCast(addr), target.cpu.arch.endian());
++            } else {
++                mem.writeInt(u64, got_table[got_index * 8 ..][0..8], addr, target.cpu.arch.endian());
++            }
++        }
++    }
+     var sym_buf = std.ArrayList(u8).init(gpa);
+     try self.writeSyms(&sym_buf);
+     const syms = try sym_buf.toOwnedSlice();
+@@ -1201,6 +1245,11 @@
+         gpa.free(self.syms.items[sym_index].name);
+     }
+     self.uav_alignment.deinit(gpa);
++    {
++        var it = self.extern_got.keyIterator();
++        while (it.next()) |k| gpa.free(k.*);
++        self.extern_got.deinit(gpa);
++    }
+     self.data_nav_table.deinit(gpa);
+     for (self.nav_exports.values()) |export_indices| {
+         gpa.free(export_indices);
+--- a/src/Compilation.zig	2026-06-28 19:48:31
++++ b/src/Compilation.zig	2026-06-28 19:40:41
+@@ -1309,6 +1309,11 @@
+             const want = options.want_compiler_rt orelse is_exe_or_dyn_lib;
+             if (!want) break :s .none;
+             if (have_zcu and output_mode == .Obj) break :s .zcu;
++            // zig9: plan9 links no separate objects and canBuildLibCompilerRt is
++            // false for it, so .lib/.obj leave libcalls unresolved. Compile
++            // compiler_rt INTO the module as navs so __udivti3 & co are real
++            // exported functions the self-hosted linker resolves via extern_got.
++            if (have_zcu and options.root_mod.resolved_target.result.os.tag == .plan9) break :s .zcu;
+             if (is_exe_or_dyn_lib) break :s .lib;
+             break :s .obj;
+         };

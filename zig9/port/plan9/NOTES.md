@@ -316,8 +316,29 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   multi-layer infra rather than a single-mechanism bug. Plan9's nav calls already
   go through `call qword ptr ds:[GOT]` (`getOffsetTableAddress`), so an alternative
   is a name→GOT-slot resolved at flush — but the `got_len == atomCount` assert
-  (Plan9 flush) means extern GOT slots need accounting for. Either way: a focused
-  hands-on change, scoped here, deliberately not rushed build-broken at session end.
+  (Plan9 flush) means extern GOT slots need accounting for.
+  **IMPLEMENTED IT — and it WORKS (2026-06-28).** Took the GOT-slot route (cleaner
+  than the by-name reloc — no Emit machinery needed, since plan9 already calls navs
+  via `call ds:[GOT]` at a codegen-time-known address). Added: `extern_got` map +
+  `getExternGotAddr` (name→GOT slot, vaddr known at codegen) in `Plan9.zig`; a flush
+  pass that fills each slot from the like-named export sym `addNavExports` creates;
+  the `got_len` assert += `extern_got.count()`; and plan9 arms in *both*
+  `genExternSymbolRef` (`.lib` calls → `call ds:[GOT]`) and the `.symbol` Select
+  operand (107111 → `mov reg, ds:[GOT]`). With `.zcu` strat on, **every "external
+  symbols unimplemented" error disappeared** — compiler_rt's internal libcalls
+  (`__muloti4`→`__multi3`, …) all resolve. **So the plan9 *port-side* compiler-rt
+  work is essentially done.** The new (and now the *only*) blocker is **upstream**:
+  `.zcu` force-compiles ALL of compiler_rt, and the f16 softfloat functions
+  (`__powihf2`, `__mulhc3`) hit **"ran out of registers (Zig compiler bug)"** — the
+  self-hosted x86_64 backend's own register-allocator limitation (the same
+  incompleteness behind the suite's `stage2_x86_64` self-skips), not a plan9 issue.
+  Because `.zcu` is all-or-nothing (and without it `genExternSymbolRef` would turn
+  honest compile-errors into runtime faults), it can't ship until either Zig fixes
+  that backend limit or compiler_rt is made to skip the f16 fns on plan9. **The
+  proven implementation is saved at `port/plan9/wip-compiler-rt-symbol-resolution.patch`**
+  (not in `apply.sh` — inert without `.zcu`); reverted from the tree so the committed
+  compiler stays the verified 1773. This is the real frontier now: a Zig-backend
+  limitation, not missing plan9 infrastructure.
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
