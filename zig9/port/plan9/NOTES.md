@@ -226,6 +226,25 @@ and is faster), but the stock runner is now a working option.
   Reverted both times to keep a **verified-correct** compiler (a silent miscompiler
   is worse than a clean compile-error). Highest-leverage next step; needs hands-on
   register-allocator work, not another blind attempt.
+  **Pinned precisely (2026-06-28, 3rd investigation — diagnostic build, reverted):**
+  the variant reaching `mem()` is **`.load_direct`** (confirmed for all of
+  floatop/math/x86_64), and it's a **constant operand** — e.g. `@abs`'s SSE
+  sign-mask — used as the *base of a `.mem` operand in an instruction body*
+  (`Select.Operand` `.mem`/`.memia`), NOT a `src_temp`. That's why `toBase` (which
+  *does* materialize correctly, via a **tracked** `allocReg(temp_index,…)`+`genSetReg`)
+  never runs on it: `toBase` only fires for `src` operands going through pattern
+  `convert`; body-constant bases are resolved straight at `lower()` (108017).
+  `mem()` lowers the ELF `.load_symbol` via a `.reloc` (RIP-relative) base, but
+  plan9 is non-PIC and deliberately uses `.load_direct`, so that path is unusable.
+  **Why the two prior fixes collided:** during body `emit`, the `dst`/`tmp` temp
+  registers ARE locked (`dst_locks`/`tmp_locks`, 108104-106) but the **`src`
+  registers are not** — so `allocReg(null)` at `lower()` could pick a live `src`
+  reg. The correct fix is a **pre-materialization pass in `emit()` (106161)**, the
+  one layer holding all of `inst[3..7]`: lock src+dst+tmp, materialize any
+  `.load_direct`/`.lea_direct` `.mem`-base into a fresh reg (updating `s.temps[ref]`
+  to `.indirect`, like `toBase`), then free it after. Real multi-part surgery;
+  deferred to a hands-on session (verifiable via floatop/math asserts + full suite,
+  but two miscompiles say don't rush it).
 - **SIMD/vector** — `select`/`shuffle`/`vector`, 3 files. Bisected (2026-06-28):
   `shuffle` crashes on its 1st test (`@shuffle int`), `vector` on
   "vector bin compares with mem.eql" (a `@Vector` compare), `select`'s test bodies
