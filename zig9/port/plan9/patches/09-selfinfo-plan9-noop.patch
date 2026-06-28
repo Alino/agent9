@@ -1,0 +1,56 @@
+--- a/lib/std/debug/SelfInfo.zig
++++ b/lib/std/debug/SelfInfo.zig
+@@ -129,6 +129,12 @@
+         return self.lookupModuleHaiku(address);
+     } else if (builtin.target.cpu.arch.isWasm()) {
+         return self.lookupModuleWasm(address);
++    } else if (native_os == .plan9) {
++        // zig9: Plan 9 has no ELF/DWARF/mmap — no module debug info. Returning
++        // here keeps the ELF reader (lookupModuleDl -> readElfDebugInfo -> mmap)
++        // out of the compile for plan9, so std.debug / the default test runner
++        // build (with empty backtraces).
++        return error.MissingDebugInfo;
+     } else {
+         return self.lookupModuleDl(address);
+     }
+@@ -145,6 +151,8 @@
+     } else if (native_os == .haiku) {
+         return null;
+     } else if (builtin.target.cpu.arch.isWasm()) {
++        return null;
++    } else if (native_os == .plan9) {
+         return null;
+     } else {
+         return self.lookupModuleNameDl(address);
+@@ -815,6 +823,31 @@
+             return null;
+         }
+     },
++    // zig9: Plan 9 has no ELF/DWARF debug info — a no-op Module that satisfies the
++    // interface debug.zig expects. getModuleForAddress errors before any of these
++    // are reached at runtime; they exist only so std.debug compiles. Backtraces
++    // are empty (Plan 9 debugs via acid, not DWARF).
++    .plan9 => struct {
++        base_address: usize = 0,
++        unwind_info: ?[]const u8 = null,
++        eh_frame: ?[]const u8 = null,
++        pub fn deinit(self: *@This(), allocator: Allocator) void {
++            _ = self;
++            _ = allocator;
++        }
++        pub fn getSymbolAtAddress(self: *@This(), allocator: Allocator, address: usize) !std.debug.Symbol {
++            _ = self;
++            _ = allocator;
++            _ = address;
++            return .{};
++        }
++        pub fn getDwarfInfoForAddress(self: *@This(), allocator: Allocator, address: usize) !?*Dwarf {
++            _ = self;
++            _ = allocator;
++            _ = address;
++            return null;
++        }
++    },
+     else => Dwarf,
+ };
+ 

@@ -1,0 +1,91 @@
+{
+  "target": "qemu",
+  "host": "127.0.0.1:1717",
+  "zig_version": "0.14.1",
+  "compiler": "zig9-patched (container)",
+  "optimize": "ReleaseSmall",
+  "total": 13,
+  "passed": 13,
+  "compile_failed": 0,
+  "run_failed": 0,
+  "results": [
+    {
+      "name": "01_arith",
+      "compile": true,
+      "run": true,
+      "detail": "ok 01_arith (43)"
+    },
+    {
+      "name": "02_floats",
+      "compile": true,
+      "run": true,
+      "detail": "ok 02_floats"
+    },
+    {
+      "name": "03_structs",
+      "compile": true,
+      "run": true,
+      "detail": "ok 03_structs"
+    },
+    {
+      "name": "04_slices",
+      "compile": true,
+      "run": true,
+      "detail": "ok 04_slices"
+    },
+    {
+      "name": "05_strings",
+      "compile": true,
+      "run": true,
+      "detail": "ok 05_strings"
+    },
+    {
+      "name": "06_alloc",
+      "compile": true,
+      "run": true,
+      "detail": "ok 06_alloc"
+    },
+    {
+      "name": "07_enums",
+      "compile": true,
+      "run": true,
+      "detail": "ok 07_enums"
+    },
+    {
+      "name": "08_bitops",
+      "compile": true,
+      "run": true,
+      "detail": "ok 08_bitops"
+    },
+    {
+      "name": "09_errors",
+      "compile": true,
+      "run": true,
+      "detail": "ok 09_errors"
+    },
+    {
+      "name": "10_hashmap",
+      "compile": true,
+      "run": true,
+      "detail": "ok 10_hashmap"
+    },
+    {
+      "name": "11_recursion",
+      "compile": true,
+      "run": true,
+      "detail": "ok 11_recursion"
+    },
+    {
+      "name": "12_comptime",
+      "compile": true,
+      "run": true,
+      "detail": "ok 12_comptime"
+    },
+    {
+      "name": "13_optionals",
+      "compile": true,
+      "run": true,
+      "detail": "ok 13_optionals"
+    }
+  ]
+}

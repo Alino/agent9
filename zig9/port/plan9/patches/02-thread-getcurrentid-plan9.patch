@@ -1,0 +1,55 @@
+--- a/lib/std/Thread.zig
++++ b/lib/std/Thread.zig
+@@ -108,6 +108,8 @@
+     LinuxThreadImpl
+ else if (native_os == .wasi)
+     WasiThreadImpl
++else if (native_os == .plan9)
++    Plan9ThreadImpl
+ else
+     UnsupportedImpl;
+ 
+@@ -559,6 +561,43 @@
+     }
+ };
+ 
++// zig9: Plan 9 has no POSIX threads. We implement just the two query methods the
++// std panic/debug/runtime path needs (getCurrentId, getCpuCount); real thread
++// spawn over rfork(RFMEM)+semaphores is deferred. Thread id is the Plan 9 pid
++// from the _tos page; CPU count is reported as 1 (single-threaded compiler use).
++const Plan9ThreadImpl = struct {
++    pub const ThreadHandle = void;
++
++    fn getCurrentId() usize {
++        return std.os.plan9.getpid();
++    }
++
++    fn getCpuCount() !usize {
++        return 1;
++    }
++
++    fn spawn(config: SpawnConfig, comptime f: anytype, args: anytype) !Impl {
++        return unsupported(.{ config, f, args });
++    }
++
++    fn getHandle(self: Impl) ThreadHandle {
++        return unsupported(self);
++    }
++
++    fn detach(self: Impl) void {
++        return unsupported(self);
++    }
++
++    fn join(self: Impl) void {
++        return unsupported(self);
++    }
++
++    fn unsupported(unused: anytype) noreturn {
++        _ = unused;
++        @compileError("Thread spawn/join unimplemented for plan9 (zig9)");
++    }
++};
++
+ const WindowsThreadImpl = struct {
+     pub const ThreadHandle = windows.HANDLE;
+ 

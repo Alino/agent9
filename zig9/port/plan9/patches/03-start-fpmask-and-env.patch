@@ -1,0 +1,43 @@
+--- a/lib/std/start.zig
++++ b/lib/std/start.zig
+@@ -500,7 +500,14 @@
+ 
+     const envp_optional: [*:null]?[*:0]u8 = @ptrCast(@alignCast(argv + argc + 1));
+     var envp_count: usize = 0;
+-    while (envp_optional[envp_count]) |_| : (envp_count += 1) {}
++    // zig9: Plan 9 has NO envp array on the entry stack — the kernel lays out
++    // only {argc, argv[0..argc], null}. Walking past argv would read undefined
++    // stack memory (it terminated quickly in testing, but it is UB and can
++    // fault). Leave the count at 0 -> empty environment. The real environment
++    // lives as files under /env and should be surfaced via std.process later.
++    if (native_os != .plan9) {
++        while (envp_optional[envp_count]) |_| : (envp_count += 1) {}
++    }
+     const envp = @as([*][*:0]u8, @ptrCast(envp_optional))[0..envp_count];
+ 
+     if (native_os == .linux) {
+@@ -614,6 +621,24 @@
+     std.os.argv = argv[0..argc];
+     std.os.environ = envp;
+ 
++    // zig9: bare-metal 9front leaves the x87/SSE FP exceptions UNMASKED, so a
++    // divide-by-zero / invalid / overflow raises a hardware trap that kills the
++    // process instead of yielding IEEE Inf/NaN (cc9 + node9 found this on real
++    // hardware; QEMU's TCG FPU masks it, hiding the bug). Mask all FP exceptions
++    // on the main thread: MXCSR=0x1F80, x87 control word=0x037F.
++    if (native_os == .plan9 and native_arch == .x86_64) {
++        const mxcsr: u32 = 0x1F80;
++        asm volatile ("ldmxcsr %[m]"
++            :
++            : [m] "m" (mxcsr),
++        );
++        const cw: u16 = 0x037F;
++        asm volatile ("fldcw %[c]"
++            :
++            : [c] "m" (cw),
++        );
++    }
++
+     std.debug.maybeEnableSegfaultHandler();
+     maybeIgnoreSigpipe();
+ 

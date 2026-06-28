@@ -1,0 +1,64 @@
+--- a/src/arch/x86_64/CodeGen.zig
++++ b/src/arch/x86_64/CodeGen.zig
+@@ -101017,7 +101017,26 @@
+             .lea_symbol => |sym_off| {
+                 assert(limb_index == 0);
+                 new_temp_index.tracking(cg).* = .init(.{ .lea_symbol = sym_off });
++            },
++            // zig9: plan9's non-PIC direct-symbol forms (no `.reloc` base / per-limb
++            // disp). Materialize the symbol's absolute address, then load the limb.
++            .load_direct => |sym_index| {
++                const new_reg =
++                    try cg.register_manager.allocReg(new_temp_index.toIndex(), abi.RegisterClass.gp);
++                new_temp_index.tracking(cg).* = .init(.{ .register = new_reg });
++                try cg.genSetReg(new_reg, .usize, .{ .lea_direct = sym_index }, .{});
++                try cg.asmRegisterMemory(.{ ._, .mov }, new_reg.to64(), .{
++                    .base = .{ .reg = new_reg.to64() },
++                    .mod = .{ .rm = .{
++                        .size = .qword,
++                        .disp = @as(u31, limb_index) * 8,
++                    } },
++                });
+             },
++            .lea_direct => |sym_index| {
++                assert(limb_index == 0);
++                new_temp_index.tracking(cg).* = .init(.{ .lea_direct = sym_index });
++            },
+             .load_frame => |frame_addr| {
+                 const new_reg =
+                     try cg.register_manager.allocReg(new_temp_index.toIndex(), abi.RegisterClass.gp);
+@@ -101400,8 +101419,13 @@
+                         try ptr.tracking(cg).short.deref().mem(cg, .{ .size = .byte }),
+                     );
+                 },
+-                .lea_frame, .lea_symbol => continue :val_to_gpr,
+-                .memory, .indirect, .load_frame, .load_symbol => {
++                // zig9: .lea_direct/.load_direct are the non-PIC symbol forms the
++                // plan9 target uses where ELF/etc. use .lea_symbol/.load_symbol.
++                // They were missing here, so storing a value that lives at a
++                // direct symbol address hit the `else` panic ("store: [direct:N]").
++                // Handle them exactly like their symbol siblings.
++                .lea_frame, .lea_symbol, .lea_direct => continue :val_to_gpr,
++                .memory, .indirect, .load_frame, .load_symbol, .load_direct => {
+                     var val_ptr = try cg.tempInit(.usize, val_mcv.address());
+                     var len = try cg.tempInit(.usize, .{ .immediate = val_ty.abiSize(cg.pt.zcu) });
+                     try ptr.memcpy(&val_ptr, &len, cg);
+@@ -107040,6 +107064,18 @@
+                             else => ty.toIntern(),
+                         },
+                     };
++                    // zig9: plan9 reaches a lazy symbol via the GOT (ds-relative),
++                    // which only genLazySymbolRef knows how to emit — the
++                    // .lea_symbol operand path (Select/Lower) has no plan9 case.
++                    // Materialize the symbol's address into a register here so
++                    // downstream code sees a plain register operand. This is what
++                    // unblocks @errorName tables / std.testing / the default
++                    // test runner / `!void` main.
++                    if (cg.bin_file.cast(.plan9)) |_| {
++                        const tmp = try cg.tempAllocReg(.usize, abi.RegisterClass.gp);
++                        try cg.genLazySymbolRef(.lea, tmp.tracking(cg).short.getReg().?, lazy_symbol);
++                        return .{ tmp, true };
++                    }
+                     return .{ try cg.tempInit(.usize, .{ .lea_symbol = .{
+                         .sym_index = if (cg.bin_file.cast(.elf)) |elf_file|
+                             elf_file.zigObjectPtr().?.getOrCreateMetadataForLazySymbol(elf_file, pt, lazy_symbol) catch |err|

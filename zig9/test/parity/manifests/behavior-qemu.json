@@ -1,0 +1,824 @@
+{
+  "target": "qemu",
+  "host": "127.0.0.1:1717",
+  "files_total": 119,
+  "files_ran": 108,
+  "files_compile_fail": 6,
+  "files_crash": 5,
+  "tests_pass": 1551,
+  "tests_fail": 3,
+  "tests_skip": 163,
+  "results": [
+    {
+      "file": "abs",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 4
+    },
+    {
+      "file": "addrspace_and_linksection",
+      "status": "ran",
+      "pass": 9,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "align",
+      "status": "ran",
+      "pass": 24,
+      "fail": 3,
+      "skip": 4
+    },
+    {
+      "file": "alignof",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "array",
+      "status": "ran",
+      "pass": 66,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "asm",
+      "status": "ran",
+      "pass": 5,
+      "fail": 0,
+      "skip": 2
+    },
+    {
+      "file": "async_fn",
+      "status": "ran",
+      "pass": 0,
+      "fail": 0,
+      "skip": 65
+    },
+    {
+      "file": "atomics",
+      "status": "ran",
+      "pass": 13,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "await_struct",
+      "status": "ran",
+      "pass": 0,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "basic",
+      "status": "crash",
+      "detail": ""
+    },
+    {
+      "file": "bit_shifting",
+      "status": "ran",
+      "pass": 4,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "bitcast",
+      "status": "ran",
+      "pass": 20,
+      "fail": 0,
+      "skip": 4
+    },
+    {
+      "file": "bitreverse",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 4
+    },
+    {
+      "file": "bool",
+      "status": "ran",
+      "pass": 6,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "builtin_functions_returning_void_or_noreturn",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "byteswap",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 4
+    },
+    {
+      "file": "byval_arg_var",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "call",
+      "status": "ran",
+      "pass": 22,
+      "fail": 0,
+      "skip": 5
+    },
+    {
+      "file": "cast",
+      "status": "ran",
+      "pass": 126,
+      "fail": 0,
+      "skip": 15
+    },
+    {
+      "file": "cast_int",
+      "status": "ran",
+      "pass": 6,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "comptime_memory",
+      "status": "ran",
+      "pass": 24,
+      "fail": 0,
+      "skip": 8
+    },
+    {
+      "file": "const_slice_child",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "decl_literals",
+      "status": "ran",
+      "pass": 7,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "decltest",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "defer",
+      "status": "ran",
+      "pass": 11,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "destructure",
+      "status": "ran",
+      "pass": 10,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "duplicated_test_names",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "empty_union",
+      "status": "ran",
+      "pass": 8,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "enum",
+      "status": "ran",
+      "pass": 49,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "error",
+      "status": "ran",
+      "pass": 64,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "eval",
+      "status": "ran",
+      "pass": 107,
+      "fail": 0,
+      "skip": 3
+    },
+    {
+      "file": "export_builtin",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "export_c_keywords",
+      "status": "ran",
+      "pass": 0,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "export_keyword",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "export_self_referential_type_info",
+      "status": "ran",
+      "pass": 0,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "extern",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 3
+    },
+    {
+      "file": "extern_struct_zero_size_fields",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "field_parent_ptr",
+      "status": "ran",
+      "pass": 16,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "floatop",
+      "status": "compile-fail",
+      "detail": "thread 31240 panic: reached unreachable code"
+    },
+    {
+      "file": "fn",
+      "status": "ran",
+      "pass": 45,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "fn_delegation",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "fn_in_struct_in_comptime",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "for",
+      "status": "ran",
+      "pass": 27,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "generics",
+      "status": "ran",
+      "pass": 36,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "globals",
+      "status": "ran",
+      "pass": 10,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "hasdecl",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "hasfield",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "if",
+      "status": "ran",
+      "pass": 14,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "import",
+      "status": "ran",
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "import_c_keywords",
+      "status": "compile-fail",
+      "detail": "vendor/zig/test/behavior/import_c_keywords.zig:29:1: error: TODO implement calling extern functions"
+    },
+    {
+      "file": "incomplete_struct_param_tld",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "inline_switch",
+      "status": "ran",
+      "pass": 10,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "int128",
+      "status": "ran",
+      "pass": 4,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "int_comparison_elision",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "ir_block_deps",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "lower_strlit_to_vector",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "math",
+      "status": "compile-fail",
+      "detail": "thread 31641 panic: reached unreachable code"
+    },
+    {
+      "file": "maximum_minimum",
+      "status": "ran",
+      "pass": 11,
+      "fail": 0,
+      "skip": 6
+    },
+    {
+      "file": "member_func",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "memcpy",
+      "status": "ran",
+      "pass": 9,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "memset",
+      "status": "ran",
+      "pass": 9,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "merge_error_sets",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "muladd",
+      "status": "ran",
+      "pass": 0,
+      "fail": 0,
+      "skip": 9
+    },
+    {
+      "file": "multiple_externs_with_conflicting_types",
+      "status": "ran",
+      "pass": 0,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "namespace_depends_on_compile_var",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "nan",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "null",
+      "status": "ran",
+      "pass": 13,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "optional",
+      "status": "ran",
+      "pass": 30,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "packed-struct",
+      "status": "ran",
+      "pass": 39,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "packed-union",
+      "status": "ran",
+      "pass": 6,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "packed_struct_explicit_backing_int",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "pointers",
+      "status": "ran",
+      "pass": 43,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "popcount",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "prefetch",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "ptrcast",
+      "status": "ran",
+      "pass": 26,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "ptrfromint",
+      "status": "ran",
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "pub_enum",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "ref_var_in_if_after_if_2nd_switch_prong",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "reflection",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "return_address",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "saturating_arithmetic",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 6
+    },
+    {
+      "file": "select",
+      "status": "crash",
+      "detail": ""
+    },
+    {
+      "file": "shuffle",
+      "status": "crash",
+      "detail": ""
+    },
+    {
+      "file": "sizeof_and_typeof",
+      "status": "ran",
+      "pass": 26,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "slice",
+      "status": "ran",
+      "pass": 53,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "slice_sentinel_comptime",
+      "status": "ran",
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "src",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "string_literals",
+      "status": "ran",
+      "pass": 9,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "struct",
+      "status": "ran",
+      "pass": 105,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "struct_contains_null_ptr_itself",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "struct_contains_slice_of_itself",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "switch",
+      "status": "ran",
+      "pass": 46,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "switch_loop",
+      "status": "ran",
+      "pass": 7,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "switch_on_captured_error",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "switch_prong_err_enum",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "switch_prong_implicit_cast",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "this",
+      "status": "ran",
+      "pass": 4,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "threadlocal",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "truncate",
+      "status": "ran",
+      "pass": 10,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "try",
+      "status": "ran",
+      "pass": 6,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "tuple",
+      "status": "ran",
+      "pass": 36,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "tuple_declarations",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "type",
+      "status": "ran",
+      "pass": 39,
+      "fail": 0,
+      "skip": 1
+    },
+    {
+      "file": "type_info",
+      "status": "ran",
+      "pass": 38,
+      "fail": 0,
+      "skip": 2
+    },
+    {
+      "file": "typename",
+      "status": "ran",
+      "pass": 8,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "undefined",
+      "status": "ran",
+      "pass": 6,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "underscore",
+      "status": "ran",
+      "pass": 2,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "union",
+      "status": "ran",
+      "pass": 101,
+      "fail": 0,
+      "skip": 2
+    },
+    {
+      "file": "union_with_members",
+      "status": "ran",
+      "pass": 1,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "usingnamespace",
+      "status": "ran",
+      "pass": 9,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "var_args",
+      "status": "crash",
+      "detail": ""
+    },
+    {
+      "file": "vector",
+      "status": "crash",
+      "detail": ""
+    },
+    {
+      "file": "void",
+      "status": "ran",
+      "pass": 5,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "wasm",
+      "status": "compile-fail",
+      "detail": "vendor/zig/test/behavior/wasm.zig:8:16: error: builtin @wasmMemorySize is available when targeting WebAssembly; targeted CPU architecture is x86_64"
+    },
+    {
+      "file": "while",
+      "status": "ran",
+      "pass": 27,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "widening",
+      "status": "ran",
+      "pass": 4,
+      "fail": 0,
+      "skip": 2
+    },
+    {
+      "file": "wrapping_arithmetic",
+      "status": "ran",
+      "pass": 3,
+      "fail": 0,
+      "skip": 0
+    },
+    {
+      "file": "x86_64",
+      "status": "compile-fail",
+      "detail": "thread 32978 panic: reached unreachable code"
+    },
+    {
+      "file": "zon",
+      "status": "compile-fail",
+      "detail": "vendor/zig/lib/std/fmt/format_float.zig:122:1: error: external symbols unimplemented for plan9"
+    }
+  ]
+}
