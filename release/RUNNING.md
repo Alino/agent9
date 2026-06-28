@@ -2,14 +2,19 @@
 
 You need two things:
 1. **QEMU 7.2+** on your host.
-2. **agent9-v0.4.0.qcow2** — the disk image. Download from the
-   GitHub Releases page. New in v0.4.0: **cc9** — modern C++ on 9front
-   (clang/LLVM cross-toolchain). The image ships the opt-in **W^X kernel
-   patch** (off by default) and cc9 C++ demos under `/usr/glenda/cc9/`
-   (run `/usr/glenda/cc9/RUNDEMOS`); the compiler runs on your host. v0.3.0
-   added **node9** — a Node.js-compatible runtime running the real npm
-   (`node` / `npm` on PATH). v0.2.0 added the python9 CPython 3.11 port
-   (`python` on PATH) and pi9 at feature parity with upstream pi.
+2. **agent9-v0.5.0.qcow2** — the disk image. Download from the
+   GitHub Releases page. New in v0.5.0: **cc9** — modern C++ on 9front —
+   now also compiles **on the box** (a reduced native clang + `ld.lld`), and
+   the image ships seven prebuilt C++ demos under `/usr/glenda/cc9/` (run
+   `/usr/glenda/cc9/RUNDEMOS`): **Stockfish** (self-verifying bench), a
+   raytracer, nlohmann/json, STL, exceptions, threads, and a brainfuck JIT.
+   The C++ runtime is validated against the upstream libc++ / libc++abi /
+   libunwind conformance suites. The image also carries the opt-in **W^X
+   kernel patch** (off by default). v0.4.0 introduced cc9 (clang/LLVM
+   cross-toolchain). v0.3.0 added **node9** — a Node.js-compatible runtime
+   running the real npm (`node` / `npm` on PATH). v0.2.0 added the python9
+   CPython 3.11 port (`python` on PATH) and pi9 at feature parity with
+   upstream pi.
 
 Drop the qcow2 next to the run script for your OS, then run it.
 
@@ -149,7 +154,7 @@ fidelity/limitations write-up and stock-9front install steps.
 
 The qcow2 stores all your state — sessions, downloaded files, edited
 source. Back up the qcow2 file to back up your environment. Snapshot
-with `qemu-img snapshot -c name agent9-v0.4.0.qcow2` between
+with `qemu-img snapshot -c name agent9-v0.5.0.qcow2` between
 experiments.
 
 ## Troubleshooting
