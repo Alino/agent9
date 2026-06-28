@@ -26,7 +26,7 @@ with `SG_EXEC`. A compromised process can still opt in, so "gate on" is a
 genuinely lower-security mode — that is inherent to allowing JIT anywhere; the
 per-segment flag just limits the blast radius to code that asks.
 
-## Verified (QEMU dev VM, 2026-06-25), full truth table
+## Verified — the full truth table
 
 | `wxallow` | segment            | result               |
 |-----------|--------------------|----------------------|
@@ -74,9 +74,7 @@ Enable the gate (optional — leave out for secure default):
 echo wxallow=1 >> /n/9fat/plan9.ini
 ```
 
-Reboot (`fshalt -r`). This dev VM's boot is interactive (bootargs prompt, then
-`user[glenda]`); a headless reboot needs those answered (e.g. QEMU
-`sendkey ret`) — or configure auto-login for true unattended boot.
+Reboot (`fshalt -r`) to boot the patched kernel.
 
 ## Userspace use
 
