@@ -226,12 +226,26 @@ and is faster), but the stock runner is now a working option.
   Reverted both times to keep a **verified-correct** compiler (a silent miscompiler
   is worse than a clean compile-error). Highest-leverage next step; needs hands-on
   register-allocator work, not another blind attempt.
-- **SIMD/vector** — `select`/`shuffle`/`vector` crash and `reached unreachable`
-  (vector codegen). ~3 files. Deep.
-- **`format_float` external symbol** — a *named* (`.symbol`, not `.lazy_symbol`)
-  extern that plan9's backend doesn't resolve (no name-keyed `getGlobalSymbol`).
+- **SIMD/vector** — `select`/`shuffle`/`vector`, 3 files. Bisected (2026-06-28):
+  `shuffle` crashes on its 1st test (`@shuffle int`), `vector` on
+  "vector bin compares with mem.eql" (a `@Vector` compare), `select`'s test bodies
+  *run* under a minimal runner but the full binary mis-runs `@select` — i.e. genuine
+  **vector codegen** gaps, not incidental. The self-hosted x86_64 vector backend is
+  incomplete upstream (these files are ~44% `stage2_x86_64`-skipped). Deep, and a
+  wrong fix miscompiles silently like `mem()` — not a safe blind target.
+- **Named external symbols / compiler-rt** (`zon` → `format_float`'s u128 `/`,`%`
+  = `__udivti3`/`__umodti3`; and `import_c_keywords` → any extern call). CONFIRMED
+  (2026-06-28) to be a *substantial unimplemented feature*, not a one-liner:
+  plan9 has **no `getGlobalSymbol`** (0 in `Plan9.zig`), `genExternSymbolRef`
+  (`CodeGen.zig:96264`) is **COFF-only** → `fail("TODO implement calling extern
+  functions")`, the `.symbol` Select operand fails at `CodeGen.zig:107101`
+  ("external symbols unimplemented for plan9"), and `Plan9.getDeclVAddr` has
+  "TODO handle other extern variables and functions". There is **nothing to
+  resolve against** — compiler-rt isn't linked as a separate object in the single
+  a.out model, so this needs name-keyed symbol resolution + compiler-rt-as-navs
+  integration. Real feature, uncertain feasibility; would risk the verified result.
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
-  genuinely N/A for plan9.
+  genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
 ### Zig's std-lib test suite on plan9 (investigated)
 Beyond `test/behavior`, Zig's std modules carry `test{}` blocks. Running them on
