@@ -286,6 +286,19 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   next-session path, if attempted: flip plan9 to `.zcu` strat, confirm compiler_rt
   even *compiles* for plan9, then add a name→nav-export resolution in
   `genExternSymbolRef` + `Plan9` flush. Real work, real risk — not a blind change.
+  **TRIED IT (2026-06-28, reverted):** flipped plan9 to `.zcu` strat — it
+  force-compiles all of compiler_rt into every program and immediately **broke the
+  build** (even `01_arith`): `genMulDivBinOp` (`CodeGen.zig:89364`) does
+  `mat_rhs_mcv.register_pair[1]` after a switch that materializes `.load_symbol`
+  but not plan9's `.load_direct`, so a 128-bit const operand panics
+  ("register_pair while load_direct active") — same class as the keystone. The
+  per-site fix is mechanical (add `.load_direct,.lea_direct` to the materialize
+  switch) but there are **~12 such `.load_symbol`-materialize sites**, likely
+  *other* compiler_rt codegen classes behind them (f128/softfloat), AND the
+  symbol-resolution infra still on top — a genuine multi-stage project with the
+  build broken throughout. Confirmed by experiment, not assumed; reverted to keep
+  the verified 1773. The `.zcu` one-liner + the 12-site materialize sweep are the
+  concrete first steps for a hands-on session.
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
