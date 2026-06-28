@@ -307,6 +307,17 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   (one `Reloc` variant + ~2 backend arms + ~1 flush lookup) — `.zcu` strat reverted
   for now so the committed compiler stays the verified 1773, but patch 14 (the
   cascade) is kept because it's a correct keystone-class fix on its own.
+  **The one genuinely-hard part (traced):** the backend references an extern via
+  `asmImmediate(.{._,.call}, .rel(.{ .sym_index = … }))` (ELF/MachO) — the `.rel`
+  Immediate + Emit reloc machinery is **sym_index-centric for every target**, so
+  plan9 needs a *new* by-name path threaded through `Immediate`→`Emit`→`addReloc`
+  (the `.symbol` operand at 107101 has the same shape). Not a one-liner: it's the
+  emit-layer plumbing, which is why this is the first gap this session that's real
+  multi-layer infra rather than a single-mechanism bug. Plan9's nav calls already
+  go through `call qword ptr ds:[GOT]` (`getOffsetTableAddress`), so an alternative
+  is a name→GOT-slot resolved at flush — but the `got_len == atomCount` assert
+  (Plan9 flush) means extern GOT slots need accounting for. Either way: a focused
+  hands-on change, scoped here, deliberately not rushed build-broken at session end.
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
