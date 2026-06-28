@@ -353,8 +353,19 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   needs the trap PC to chase. And `.zcu` force-compiles compiler_rt into *every*
   binary (bigger/slower), with no suite gain, so it's not worth shipping. Reverted
   to the clean 1773; WIP (now 4 files) preserves the complete, proven approach.
-  Net: the plan9 port-side is done and proven; the last two files are blocked by an
-  upstream register limit (`x86_64`) and a u128-division runtime bug (`zon`).
+  **Chased `zon`'s crash to the end (2026-06-28):** isolated u128 division
+  (`__udivti3`/`__umodti3`) in a standalone test — it **compiles, resolves, and
+  computes the correct quotient/remainder** (`ok zz_u128`). So u128 division is NOT
+  the problem. Bisected `zon`: it dies in its **"floats" test**, whose `T` struct
+  is literally `.{ f16, f32, f64, f128, … }` — it needs **f16 and f128 softfloat**,
+  which is the *same* upstream register-exhaustion limit (gated → missing fn → GOT
+  slot 0 → fault; un-gated → won't compile). **So both remaining "real" files are
+  the identical upstream blocker:** `x86_64` and `zon` each need f16/f80/f128
+  softfloat the self-hosted backend can't compile. **Conclusion: there is NO
+  remaining plan9 port bug.** The port-side compiler-rt path is proven end-to-end
+  (integer incl. u128 works correctly); every still-unrunnable file is the suite's
+  own self-skips, Plan 9's nature, or Zig's own self-hosted-backend incompleteness
+  on softfloat — none is missing plan9 infrastructure.
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
