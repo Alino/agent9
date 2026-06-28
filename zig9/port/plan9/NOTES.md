@@ -277,6 +277,15 @@ bug (cf. patches 10/11) — worth instrumenting before writing something off.
   doesn't exist here. So this spans force-analysis-by-name + a name→nav map +
   linker registration — genuinely new infra, unlike the 3 gaps this session that
   *looked* upstream-incomplete but were one-mechanism plan9 bugs (alloc/mem/align).
+  **Most decisive (`Compilation.zig`):** `canBuildLibCompilerRt` returns **`false`
+  for plan9** outright — compiler_rt is never built, so there is no object and no
+  navs. The only in-module alternative is the `.zcu` `RtStrat`, which
+  `@import("compiler_rt")` and **force-compiles *all* of it** (incl. f16/f128
+  softfloat) into the program; on plan9 that risks tripping still-unimplemented
+  codegen paths and **breaking the verified build** for a 2-file payoff. The
+  next-session path, if attempted: flip plan9 to `.zcu` strat, confirm compiler_rt
+  even *compiles* for plan9, then add a name→nav-export resolution in
+  `genExternSymbolRef` + `Plan9` flush. Real work, real risk — not a blind change.
 - `@wasmMemorySize` (wasm.zig) and translate-c `@cImport` (import_c_keywords) are
   genuinely N/A for plan9 (no wasm runtime, no C frontend).
 
