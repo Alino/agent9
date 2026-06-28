@@ -97,7 +97,8 @@ long sysconf(int name) {
 	default: return -1;
 	}
 }
-int   getpid(void)  { return 1; }            /* TODO: read /dev/pid or Tos */
+extern unsigned cc9_tos_pid(void);           /* Plan 9 _tos.pid, captured in crt0 */
+int   getpid(void)  { unsigned p = cc9_tos_pid(); return p ? (int)p : 1; }
 int   getppid(void) { return 0; }
 unsigned int getuid(void)  { return 0; }
 unsigned int geteuid(void) { return 0; }
@@ -138,7 +139,10 @@ void *bsearch(const void *key, const void *base, n9size_t n, n9size_t sz,
 	return 0;
 }
 
-/* xorshift PRNG — LLVM only uses rand() for jitter/tmp-name salting. */
+/* xorshift PRNG — LLVM only uses rand() for jitter/tmp-name salting. Default seed
+ * is fixed on purpose: C requires rand() with no prior srand() to reproduce the
+ * srand(1) sequence (C11 7.22.2.2), so callers wanting per-run randomness must
+ * srand() themselves (the Plan 9 source is /dev/random, already used in fs.c). */
 static uint64_t rng_state = 0x2545F4914F6CDD1DULL;
 void srand(unsigned s) { rng_state = s ? s : 1; }
 void srandom(unsigned s) { srand(s); }

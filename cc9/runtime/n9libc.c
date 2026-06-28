@@ -698,6 +698,19 @@ int clock_gettime(int clk, void *tsp){
 }
 long time(long *t){ long s = (long)(n9_nsec()/1000000000ULL); if(t)*t=s; return s; }
 
+/* clock(): process CPU time — the Plan 9 way is the Tos cycle counter (captured
+ * in crt0), NOT the wall clock. pcycles/cyclefreq is CPU seconds; scale to
+ * CLOCKS_PER_SEC (1e6). The divide is split so pcycles*1e6 can't overflow 64 bits.
+ * No cycle clock (cyclefreq==0) -> POSIX (clock_t)-1. */
+extern long long cc9_tos_pcycles(void);
+extern unsigned long long cc9_tos_cyclefreq(void);
+long clock(void){
+	unsigned long long f = cc9_tos_cyclefreq();
+	if(f == 0) return -1;
+	unsigned long long c = (unsigned long long)cc9_tos_pcycles();
+	return (long)((c / f) * 1000000ULL + ((c % f) * 1000000ULL) / f);
+}
+
 /* <fenv.h> (rounding mode + IEEE exception-flag inspection) is implemented for
  * real in runtime/fenv.c — the no-op stubs that used to shadow it lived here and
  * were deleted so fenv.o gets linked. */

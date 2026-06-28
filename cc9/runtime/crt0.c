@@ -222,12 +222,39 @@ __attribute__((section(".cc9stack"), aligned(16), used)) char __cc9_main_stack[C
  * parses argv from it. */
 unsigned long __cc9_ksp = 0;
 
+/* Plan 9 per-process Top-Of-Stack page. The kernel passes its address in AX at
+ * _start (saved there); libc's name for it is `_tos`. It carries the pid and the
+ * process cycle counters — the native source for getpid()/clock(), with no
+ * syscall. _tos sits 72 bytes below USTKTOP (0x7ffffffff000) and is exactly 72
+ * bytes; an rfork(RFMEM) thread reading it gets ITS OWN Tos (own pid/cycles).
+ *
+ * Offsets are NOT computed from a portable mirror of <tos.h> — Plan 9 amd64 is
+ * non-LP64 and the kernel's prof-header padding doesn't match what clang would lay
+ * out, so the leading prof block is treated as opaque bytes. The tail offsets here
+ * were verified by dumping _tos on the target (cirno): cyclefreq@40, pcycles@56,
+ * pid@64 — cyclefreq read back as the 1.5 GHz CPU clock and pid as the live pid. */
+typedef struct {
+	unsigned long long _prof[5];    /* opaque prof header: 40 bytes, unused */
+	unsigned long long cyclefreq;   /* @40: cycle-clock Hz, 0 if the machine has none */
+	long long kcycles;              /* @48: cycles spent in kernel */
+	long long pcycles;              /* @56: cycles spent in process (kernel+user) */
+	unsigned pid;                   /* @64 */
+	unsigned clock;                 /* @68 */
+} Cc9Tos;
+void *__cc9_tos = 0;   /* = AX at _start: the Plan 9 _tos pointer */
+unsigned          cc9_tos_pid(void)       { Cc9Tos *t = __cc9_tos; return t ? t->pid : 0; }
+long long         cc9_tos_pcycles(void)   { Cc9Tos *t = __cc9_tos; return t ? t->pcycles : 0; }
+unsigned long long cc9_tos_cyclefreq(void){ Cc9Tos *t = __cc9_tos; return t ? t->cyclefreq : 0; }
+
 #ifdef CC9_STAGE_MARK
 char cc9_Ymsg[] = "<STG:Y>";   /* written by _start before any stack switch (raw syscall) */
 #endif
 __attribute__((naked, used)) void _start(void)
 {
 	__asm__ volatile(
+		/* AX holds the Plan 9 _tos pointer at entry — save it before anything
+		 * (the STAGE block below clobbers rax). */
+		"movq %rax, __cc9_tos(%rip)\n\t"
 #ifdef CC9_STAGE_MARK
 		/* raw pwrite("<STG:Y>", fd 2) on the kernel entry stack (valid here), to prove
 		 * _start actually runs. rsp is restored (net +/-48) before saving __cc9_ksp. */

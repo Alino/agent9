@@ -99,7 +99,11 @@ static int cc9_contains(const char *h, const char *n){
 /* Map the Plan 9 last-error string (errors are text on Plan 9) to a POSIX errno.
  * Substring-matches the common kernel messages; falls back to ENOENT for the
  * unrecognized (the historical cc9 default). std::filesystem error_code checks
- * (e.g. temp_directory_path expecting permission_denied) depend on this. */
+ * (e.g. temp_directory_path expecting permission_denied) depend on this.
+ * ponytail: substring table, inherently lossy — Plan 9 has no errno, so the
+ * mapping can only ever be best-effort. Upgrade path is to add cases as new
+ * kernel strings surface (not to restructure); the raw errstr is the source of
+ * truth and could instead be threaded into std::system_error::what() verbatim. */
 int cc9_errno_from_errstr(void){
 	/* errstr fills the buffer (kernel NUL-terminates) but its return value is not
 	 * the length — read the buffer directly. */
@@ -317,8 +321,8 @@ void __cc9_build_environ(void){
 }
 
 /* mkstemp: replace the trailing "XXXXXX" with a unique suffix and create the
- * file O_EXCL (reusing open()). Plan 9 getpid() is a stub, so seed uniqueness
- * from /dev/random; a static counter keeps successive calls in one process
+ * file O_EXCL (reusing open()). Seed uniqueness from /dev/random (kernel
+ * entropy); a static counter keeps successive calls in one process
  * distinct. The libc++ test framework (platform_support.h) needs this. */
 int mkstemp(char *tmpl){
 	int len = tmpl ? (int)strlen(tmpl) : 0;

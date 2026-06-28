@@ -121,8 +121,8 @@ packaged into `lib/libcc9cxx.a` (+ `lib/libcc9m.a`, openlibm).
 | Piece | What it provides |
 |---|---|
 | `n9syscall.s` | SysV→Plan 9 syscall thunks (read/write/open/brk/rfork/sem*/stat/dup/pipe/await/…). |
-| `crt0.c` | `_start`, real `argc`/`argv` + `environ` (from `/env`), init/fini arrays, `atexit` with `[basic.start.term]` ordering, the main stack (shared via RFMEM), startup FP-exception masking. |
-| `n9libc.c` | freestanding libc: heap over `brk`, `mem*`/`str*`, `strto*`, ctype, `strftime`, `div`/`ldiv`, time over `/dev/bintime`, GCC atomics. |
+| `crt0.c` | `_start`, real `argc`/`argv` + `environ` (from `/env`), init/fini arrays, `atexit` with `[basic.start.term]` ordering, the main stack (shared via RFMEM), startup FP-exception masking; captures the `_tos` page (pid + cycle counters) the kernel hands in `AX`. |
+| `n9libc.c` | freestanding libc: heap over `brk`, `mem*`/`str*`, `strto*`, ctype, `strftime`, `div`/`ldiv`, wall time over `/dev/bintime`, `clock()` CPU time over the `_tos` cycle counters, GCC atomics. |
 | `printf.c`, `stdio.c` | `vsnprintf`/`vsscanf` with float conversion; a `FILE` layer over Plan 9 fds (incl. `fmemopen`). |
 | `fs.c` | POSIX-over-9P (`open`/`stat`/`read`/`dir`/`wstat`, errno from Plan 9 error strings) backing `std::filesystem` and `std::fstream`. |
 | `pthread.c` | pthreads over `rfork(RFMEM)`: create/join/detach, mutex, a **FIFO-queue condition variable** (per-waiter semaphores — no lost wakeups), `once`, TLS / emulated-TLS with POSIX key destructors at thread exit. |
@@ -130,6 +130,38 @@ packaged into `lib/libcc9cxx.a` (+ `lib/libcc9m.a`, openlibm).
 | `cxxrt.cpp`, `exception_ptr.cpp` | `operator new/delete` (all replaceable forms), thread-safe static guards, `std::exception_ptr`. |
 | libc++abi runtime | the DWARF exception runtime, RTTI, and the Itanium demangler (readable terminate/fault messages). |
 | `lib/libcc9m.a` | openlibm cross-compiled for the target — correctly-rounded libm with 80-bit `long double`. |
+
+## Done the Plan 9 way
+
+A note for Plan 9 purists: where a POSIX / libc++ surface meets the kernel, cc9
+binds the **native Plan 9 primitive** rather than emulating a Unix one. The bridge
+reaches the system through syscalls and synthetic files — nothing else — so the
+standard library sits on real Plan 9 mechanisms, not a shadow libc.
+
+| libc++ / POSIX surface | Plan 9 primitive it binds to |
+|---|---|
+| `std::mutex`, `std::condition_variable` | `semacquire`/`semrelease` (native counting semaphores; the condvar is a per-waiter semaphore FIFO — no lost wakeups, no thundering herd) |
+| `std::thread` | `rfork(RFPROC\|RFMEM\|RFNOWAIT)` with shared-memory stacks |
+| `fork`, `exec`, `system` | `rfork` / `exec` / `await` |
+| `<chrono>` system & steady clocks | `/dev/bintime` |
+| `std::clock()` CPU time, `getpid()` | the `_tos` page — `pcycles`/`cyclefreq` and `pid`, read with no syscall |
+| `getenv` / `setenv` / `environ` | `/env` |
+| `std::random_device`, `mkstemp` entropy | `/dev/random` |
+| `std::filesystem`, `<fstream>` | the 9P `stat`/`wstat` wire format, `Qid.path` as `st_ino`, `DMDIR`, `create`'s truncate-on-open, `fd2path` for the `*at` family |
+| an uncaught hardware fault | a `notify()` note handler that prints the kernel note string before the process exits |
+| `SIGALRM` / `setitimer` | Plan 9 `alarm(2)` notes |
+
+The honest exceptions — and *why* they can't be the Plan 9 way:
+
+- **`errno`.** Plan 9 has none; errors are text. cc9 must synthesize
+  `errno` / `std::error_code` by matching the kernel `errstr` string, because that
+  is the contract libc++ is written against. The raw `errstr` stays the source of
+  truth; the mapping is best-effort by nature, not by neglect.
+- **No libc9.** cc9 is internally System V and cannot link Plan 9's own C library
+  (the stack-args calling convention is incompatible), so wire-format helpers like
+  `convM2D`/`convD2M` are reimplemented in the bridge rather than called.
+- **`mmap`, POSIX signal *delivery*, an LP64 `long`** — no kernel analogue exists;
+  these are stubbed or adapted, never faked beyond what the STL actually needs.
 
 ## Conformance
 
