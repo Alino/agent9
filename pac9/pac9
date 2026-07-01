@@ -170,7 +170,9 @@ fn install_one {
 		@{ cd $dir/$subdir && build $dir/$subdir }
 		# build runs in a subshell, so its exit can't abort us — check
 		# the status and bail before recording a failed build as installed.
-		if(! ~ $status 0){
+		# success is '' (an external cmd like mk exits(nil)) or '0' (an rc
+		# builtin) — accept both, else a clean `mk install` reads as failure.
+		if(! ~ $status 0 ''){
 			echo 'pac9: build failed for '$name'; not installed (source cached in '$dir')' >[1=2]
 			exit build
 		}
