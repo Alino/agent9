@@ -52,7 +52,7 @@ pac9 fetches, builds, and installs a package in a single command:
 ```rc
 pac9 install pi9
 pac9 install python9
-pac9 install https://example.com/some/repo
+pac9 install https://github.com/user/repo    # any external git repo
 ```
 
 There's nothing clever under the hood, and that's the point. 9front already
@@ -100,9 +100,19 @@ Pass as many packages as you like in one command, as the last two rows show. If 
 package declares dependencies, pac9 installs the missing ones first — `pac9
 install pi9` brings vts and vtwin along without you asking.
 
-Anything that isn't a known name is treated as a git URL: pac9 clones it and runs
-`mk install`, so any repo that follows the standard `mkfile` layout installs the
-same way. `pac9 list` shows what's installed; `pac9 uninstall <name>` removes it.
+Anything that isn't a known name is treated as a **git URL** — pac9 clones it and
+builds it if it follows a convention it recognises: a Plan 9 `mkfile`
+(`mk install`), a `build.rc`, or an autotools/POSIX `configure`/`Makefile` (built
+under APE, `ape/sh configure` → `ape/make install`). So an external repo laid out
+the 9front way installs with just its URL, no registry entry needed.
+
+Repos that need a POSIX environment 9front's APE can't fully provide are still
+cloned, but you finish the build by hand — e.g. `pac9 install
+https://github.com/dharmatech/ocaml` fetches the OCaml Plan 9 port, but its
+autoconf `configure` doesn't complete under APE (missing `expr`, `sed`
+differences), so pac9 leaves the source in `$home/src/pac9/ocaml` for you rather
+than recording a failed install. `pac9 list` shows what's installed; `pac9
+uninstall <name>` removes it.
 
 The large ports — python9, node9, cc9, pi9 — install as prebuilt tarballs rather
 than building on the box, since their sources are too big to compile on the VM in
