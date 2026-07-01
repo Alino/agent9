@@ -1,0 +1,13 @@
+# Upstream Mesa is fetched by fetch.sh, never committed.
+vendor/
+# Host meson/ninja generate+oracle build tree (large, machine-specific).
+build-gen/
+host/compile_commands.json
+host/harvest.json
+# cc9 build products.
+_out/
+*.o
+*.elf
+*.aout
+# Delivered goldens are committed; scratch captures are not.
+test/_captures/

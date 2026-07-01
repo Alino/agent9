@@ -1,0 +1,32 @@
+--- a/src/util/os_misc.c
++++ b/src/util/os_misc.c
+@@ -69,7 +69,7 @@
+ #elif DETECT_OS_WINDOWS
+ #  include <windows.h>
+ #else
+-#error unexpected platform in os_sysinfo.c
++#  include <unistd.h>  /* ported: Plan 9 / generic — no special sysinfo headers */
+ #endif
+ 
+ 
+@@ -312,7 +312,8 @@
+    *size = status.ullTotalPhys;
+    return (ret == true);
+ #else
+-#error unexpected platform in os_misc.c
++   /* ported: Plan 9 — total physical memory is not queryable; report unknown. */
++   (void)size;
+    return false;
+ #endif
+ }
+@@ -406,7 +407,8 @@
+    mib[1] = HW_PAGESIZE;
+    return (sysctl(mib, 2, size, &len, NULL, 0) == 0);
+ #else
+-#error unexpected platform in os_sysinfo.c
+-   return false;
++   /* ported: Plan 9 amd64 — page size is 4096. */
++   *size = 4096;
++   return true;
+ #endif
+ }

@@ -1,0 +1,50 @@
+{
+ "target": "qemu",
+ "host": "mesa-24.0.9-softpipe",
+ "total": 6,
+ "pass": 6,
+ "results": [
+  {
+   "name": "01_clear_color",
+   "size": 12961096,
+   "status": "pass",
+   "pass_pct": 100.0,
+   "detail": "PASS 100.00% within|\u0394|<=2  max\u0394=0  off=0/12288  (64x64)"
+  },
+  {
+   "name": "02_triangle",
+   "size": 12963376,
+   "status": "pass",
+   "pass_pct": 100.0,
+   "detail": "PASS 100.00% within|\u0394|<=2  max\u0394=0  off=0/12288  (64x64)"
+  },
+  {
+   "name": "03_shaded_triangle",
+   "size": 12963088,
+   "status": "pass",
+   "pass_pct": 100.0,
+   "detail": "PASS 100.00% within|\u0394|<=2  max\u0394=0  off=0/12288  (64x64)"
+  },
+  {
+   "name": "04_textured_quad",
+   "size": 12963376,
+   "status": "pass",
+   "pass_pct": 100.0,
+   "detail": "PASS 100.00% within|\u0394|<=2  max\u0394=0  off=0/12288  (64x64)"
+  },
+  {
+   "name": "05_instanced_quads",
+   "size": 12963488,
+   "status": "pass",
+   "pass_pct": 100.0,
+   "detail": "PASS 100.00% within|\u0394|<=2  max\u0394=0  off=0/12288  (64x64)"
+  },
+  {
+   "name": "06_depth_blend",
+   "size": 12963240,
+   "status": "pass",
+   "pass_pct": 100.0,
+   "detail": "PASS 100.00% within|\u0394|<=2  max\u0394=0  off=0/12288  (64x64)"
+  }
+ ]
+}

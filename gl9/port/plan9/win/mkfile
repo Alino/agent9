@@ -1,0 +1,9 @@
+</$objtype/mkfile
+BIN=/$objtype/bin
+
+TARG=gl9win
+OFILES=gl9win.$O
+
+</sys/src/cmd/mkone
+
+$O.out:	/$objtype/lib/libdraw.a /$objtype/lib/libc.a
