@@ -1,53 +1,30 @@
 # agent9
 
-A Windows XP-themed desktop environment for [9front](http://9front.org)
-(Plan 9 from Bell Labs), plus a native Plan 9 LLM coding agent, plus a
-working web browser. All running as a single QEMU image you can boot
-in 15 seconds.
+A Windows XP-style desktop for [9front](http://9front.org) (Plan 9 from Bell
+Labs), a Plan 9-native LLM coding agent, and a web browser. Boot the whole thing
+as one QEMU image in about fifteen seconds, or install the pieces onto your own
+9front with `pac9`, the package manager in this repo.
 
 ![Start menu open, with the Pi9 LLM agent already running in vtwin in the background](docs/start-menu-and-pi9.png)
 
-The Start menu shows the launcher's app list (Pi9, Rc Shell, Stats,
-Acme, Faces, Files, Clock, Reboot, Halt). The vtwin window behind it
-is running pi9 — the cyan title bar reads `pi9— moonshotai/kimi-k2.5`.
+The Start menu shows the launcher's app list (Pi9, Rc Shell, Stats, Acme, Faces,
+Files, Clock, Reboot, Halt). The vtwin window behind it is running pi9 — the cyan
+title bar reads `pi9 — moonshotai/kimi-k2.5`.
 
 ## Built with AI
 
 Most of agent9 — pi9, the python9 and node9 ports, the desktop plumbing — was
 written with heavy AI assistance (Claude, with some Hermes), and the commit
-history reflects that. The work and the results are real: pi9 is dogfooded daily,
-python9 scores 100% parity on CPython's own core regression batch, and node9 runs
-the real npm with 30/30 popular packages installing and running. I'd rather say so
-up front than leave it to the log.
+history shows it. The results are real: pi9 gets dogfooded daily, python9 scores
+100% parity on CPython's own core regression batch, and node9 runs the real npm
+with 30 of 30 popular packages installing and running. I'd rather say so up front
+than leave you to find it in the log.
 
-## What's in the box
+## Two ways to get it
 
-| Component   | Role | Lang |
-|---|---|---|
-| **mxio**    | Window manager. Rio fork with Luna titlebars, decorations, drag, z-order, minimize/maximize/close. | C / libdraw |
-| **xena-panel** | Taskbar daemon. Start button, window list, clock. | C / libdraw |
-| **launcher**| Start menu popup. Plumber-backed app launching. | C |
-| **vts**     | Terminal session server. 9P file server multiplexing VT100 sessions; replaces st+tmux+rc with one fs at `/srv/vts`. | C |
-| **vtwin**   | libdraw frontend for vts. Reads cell diffs, paints into a rio window. | C / libdraw |
-| **pi9**     | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, tree-structured sessions, skills/memory, steering, headless modes, OAuth to Anthropic Pro / GitHub Copilot / OpenAI ChatGPT. At feature parity with upstream [pi](https://pi.dev). | Go |
-| **NetSurf** | Web browser (from [netsurf-plan9](https://github.com/netsurf-plan9)). | C |
-| **python9** | CPython 3.11.14 ported to 9front (kencc/APE), validated at **100% parity** against CPython's own regression suite. Source + parity harness under `python9/`. | C |
-| **node9**   | Node.js-compatible runtime ported to 9front (kencc/APE) on **QuickJS-ng** (not V8), running the **real, unmodified npm 10**. `npm install` from registry.npmjs.org over TLS, SHA-512 SRI-verified; **30/30** popular packages download + run. Source under `node9/`. | C / JS |
-| **cc9**     | **Modern C++ for 9front** via **clang/LLVM** → native Plan 9 a.out. Full C++ — exceptions, STL, iostreams, threads, `<regex>`, wide chars, `<filesystem>`, RTTI, `thread_local`, `import std`, nlohmann/json, **Stockfish** (self-verifying) — on a **stock** kernel; **~100%** of applicable libc++ / libc++abi / libunwind conformance tests pass with **zero runtime failures**. The compiler **also runs natively on 9front**. Optional opt-in **W^X kernel patch** unlocks JIT. Source under `cc9/`. | C++ / LLVM |
-| **pac9**    | **Package manager for 9front.** One line to fetch + build + install any package: `pac9 install <name-or-git-url>`. Wraps git9 (`git/clone`) + the `mk install` convention; curated short names for the stuff in this repo (mxio, vts, netsurf, python9, node9, zig9), any git repo otherwise. Source under `pac9/`. | rc |
-| **zig9**    | **Zig for 9front** via Zig's own self-hosted x86_64 backend + Plan 9 a.out linker — **no LLVM, no C runtime**, raw syscalls. Compiles a large Zig subset (FP, structs, unions, generics, comptime, error unions, **heap, `std.mem.sort`, `AutoHashMap`, `ArrayList`, `std.fmt`**) to native Plan 9 a.out; **13/13** feature corpus + **1773 of Zig's own upstream `test/behavior` tests** pass (0 failures — every test runnable on the self-hosted backend), identically on the QEMU VM and **cirno bare metal**. Required rebuilding the compiler from patched source to fix real self-hosted-backend plan9 bugs. Pins **Zig 0.14.1** (last release with the Plan 9 backend — deleted in 0.15.1). Source under `zig9/`. | Zig |
-
-![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
-
-pi9 in vtwin. Cyan header shows the current model and vts session id;
-the dashed input box is where you type. The status line tells you to
-set an API key with `/login`.
-
-## Try it now
-
-Download `agent9-v0.5.0.qcow2` from the
-[Releases page](https://github.com/Alino/agent9/releases),
-drop it next to the runner script for your OS, run.
+**Boot the image.** Download `agent9-v0.5.0.qcow2` from the
+[Releases page](https://github.com/Alino/agent9/releases), drop it next to the
+runner script for your OS, and run it:
 
 ```
 # macOS
@@ -58,25 +35,37 @@ brew install qemu
 sudo apt install qemu-system-x86
 ./run-linux.sh
 
-# Windows
-# install QEMU, then double-click run-windows.bat
+# Windows: install QEMU, then double-click run-windows.bat
 ```
 
-At first boot you'll get two text prompts. Press Enter to both.
-After ~15 seconds you're in the desktop. See `release/RUNNING.md`
-for details.
+First boot shows two text prompts — press Enter to both. After about fifteen
+seconds you land on the desktop. `release/RUNNING.md` has the details.
 
-## Installing packages
+**Or install onto your own 9front.** If you already run 9front you don't need the
+image. Everything here installs with `pac9`, one line at a time. That's the rest
+of this section.
 
-**pac9** is the package manager. It installs any of the software above — and
-anyone else's git repo — in one line. It works on the agent9 image and on a
-**stock 9front** too; you just bootstrap it first.
+## Installing software with pac9
 
-### Bootstrap pac9 on a stock 9front
+pac9 fetches, builds, and installs a package in a single command:
 
-pac9 is a self-contained rc script. Fetch it and its registry straight from
-this repo — no image, no build (needs `webfs` running for TLS, which is the
-default):
+```rc
+pac9 install pi9
+pac9 install python9
+pac9 install https://example.com/some/repo
+```
+
+There's nothing clever under the hood, and that's the point. 9front already
+ships `git/clone` (git9) to fetch a repo and the `mk install` convention to build
+it. pac9 wires those together, adds a registry of short names for the software in
+this repo, and keeps a record of what you've installed so you can list and remove
+it later.
+
+### Put pac9 on the box
+
+pac9 is a single rc script. Fetch it and its registry with `hget` — both `hget`
+and `git9` come with stock 9front, and you only need `webfs` running for the
+https fetch, which is the default:
 
 ```rc
 hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/pac9 >/rc/bin/pac9
@@ -85,139 +74,103 @@ mkdir -p /sys/lib/pac9
 hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/registry >/sys/lib/pac9/registry
 ```
 
-Or, if you'd rather clone the repo (git9 ships with 9front):
+Prefer to clone? git9 handles that too:
 
 ```rc
 git/clone https://github.com/Alino/agent9 /tmp/agent9
 cd /tmp/agent9/pac9 && rc install.rc
 ```
 
-That's it — pac9 is now on your `$path`.
+Either way, `pac9` is now on your path.
 
-### Use it
+### Install what you want
 
-```rc
-pac9 install netsurf              # a curated short name
-pac9 install python9              # prebuilt cross-port (fetched, unpacked)
-pac9 install https://host/repo    # any git repo with an mkfile
-pac9 list
-pac9 uninstall netsurf
-```
+| Command | What you get |
+|---|---|
+| `pac9 install pi9` | the LLM coding agent (needs vts + vtwin to render) |
+| `pac9 install python9` | CPython 3.11 with the stdlib |
+| `pac9 install node9` | a Node-compatible runtime and the real npm |
+| `pac9 install zig9` | the Zig compiler |
+| `pac9 install netsurf` | the NetSurf web browser |
+| `pac9 install mxio` | the window manager |
+| `pac9 install vts` / `vtwin` | the terminal server and its window |
+| `pac9 install xena-panel` / `launcher` | the taskbar and Start menu |
 
-It leans on what 9front already provides — `git/clone` (git9) to fetch and
-`mk install` to build — so any repo following the standard `mkfile` convention
-just works. The curated registry gives short names to everything in this repo.
-See [`pac9/README.md`](pac9/README.md) to add your own entries.
+Anything that isn't a known name is treated as a git URL: pac9 clones it and runs
+`mk install`, so any repo that follows the standard `mkfile` layout installs the
+same way. `pac9 list` shows what's installed; `pac9 uninstall <name>` removes it.
+
+The large cross-ports — python9, node9, zig9, pi9 — install as prebuilt tarballs
+rather than building on the box, since their sources are too big to compile on the
+VM in any reasonable time. To add your own packages or change how one builds, see
+[`pac9/README.md`](pac9/README.md).
+
+## What's in the box
+
+| Component | What it is | Lang |
+|---|---|---|
+| **mxio** | Window manager. A rio fork with Luna titlebars, decorations, drag, z-order, and minimize/maximize/close. | C / libdraw |
+| **xena-panel** | Taskbar daemon: Start button, window list, clock. | C / libdraw |
+| **launcher** | The Start menu popup, launching apps through the plumber. | C |
+| **vts** | Terminal session server. A 9P file server that multiplexes VT100 sessions into one filesystem at `/srv/vts`. | C |
+| **vtwin** | The libdraw front end for vts. Reads cell diffs and paints them into a rio window. | C / libdraw |
+| **pi9** | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, session trees, skills and memory, headless modes, OAuth to Anthropic, GitHub Copilot, and OpenAI. At feature parity with upstream [pi](https://pi.dev). | Go |
+| **python9** | CPython 3.11.14 ported to 9front, at 100% parity against CPython's own regression suite. | C |
+| **node9** | A Node-compatible runtime on QuickJS-ng (not V8) running unmodified npm 10 over real TLS. 30 of 30 popular packages install and run. | C / JS |
+| **cc9** | Modern C++ on 9front via a clang/LLVM cross-toolchain that emits native a.out — exceptions, the STL, threads, `<regex>`, `<filesystem>`, RTTI, and Stockfish 11. clang and lld also run on the box. | C++ / LLVM |
+| **zig9** | The Zig compiler for 9front through Zig's own self-hosted backend, no LLVM. Passes all 1773 of Zig's upstream `test/behavior` tests on 9front. Pins Zig 0.14.1, the last release with a Plan 9 backend. | Zig |
+| **NetSurf** | A web browser, from [netsurf-plan9](https://github.com/netsurf-plan9). | C |
+
+Each component has its own README with the real detail — the parity contracts,
+the build recipes, and the kencc/APE bug classes that had to be worked around.
+Start with [`python9/README.md`](python9/README.md),
+[`node9/DOCUMENTATION.md`](node9/DOCUMENTATION.md), [`cc9/README.md`](cc9/README.md),
+and [`zig9/`](zig9/).
+
+![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
+
+pi9 in vtwin. The cyan header shows the current model and vts session id; the
+dashed box is where you type. The status line is telling you to set an API key
+with `/login`.
 
 ## Status
 
-This is **v0.5.0**. New since v0.4.0: **cc9 matured**. Its C++ runtime now passes
-the full upstream conformance triad — **libc++, libc++abi, and libunwind** — at
-~100% of applicable tests with **zero runtime failures**; a reduced **clang + lld
-now run natively on 9front** (compile C++ on the box, not just from the host); and
-the image ships a **Stockfish 11** demo whose `bench` self-verifies to the exact
-reference node count. v0.4.0 introduced **cc9** itself — modern C++ on 9front via a
-clang/LLVM cross-toolchain (exceptions, STL, iostreams, threads, regex, wide chars,
-filesystem, RTTI, nlohmann/json on a stock kernel) and the opt-in **W^X kernel
-patch**. v0.3.0 added **node9** —
-a Node.js-compatible runtime running the real npm (`node` / `npm` on
-PATH; `npm install` works from the registry). v0.2.0 added the **python9**
-CPython 3.11 port (`python` / `python3` on PATH) and brought **pi9** to
-feature parity with upstream pi (tree-structured sessions with `/fork`
-`/clone` `/tree`, steering/follow-up, `@file` + autocomplete, headless
-`-p` / `--mode json`, Codex tool calls, and the
-AGENTS.md/skills/prompt-template/compaction surface). The basics work
-and are dogfooded daily. Known rough edges:
+This is **v0.5.0**. The newest work is cc9 growing up: its C++ runtime now passes
+the full upstream conformance triad (libc++, libc++abi, libunwind) with zero
+runtime failures, a reduced clang and lld run natively on 9front, and the image
+ships a Stockfish 11 demo whose `bench` self-verifies to the exact reference node
+count. Earlier releases added node9 (v0.3.0) and the python9 port plus pi9's climb
+to pi parity (v0.2.0).
 
-- Pi9's TUI header occasionally scrolls off-screen after a clear
-  (Phase 12 target).
-- Mouse-wheel scrolling in pi9 is implemented but not yet tested with
-  real input devices (QMP can't simulate it cleanly).
-- The launcher app list is hardcoded C. Adding entries requires a
-  recompile. A config-file rewrite is planned.
-- File manager (`xfiles`) is a stub. Use acme or rc for now.
-- The xfiles entry in the Start menu doesn't do anything yet.
+The basics work and get used daily. The rough edges I know about:
 
-The **python9** CPython 3.11.14 port is **included in the image** —
-`python` and `python3` are on PATH, with the stdlib at
-`/sys/lib/python/lib/python3.11`. It's a hand-authored kencc/APE build that
-scores 100.00% (6120/6120, 0 regressions) on the core regression batch against
-the host 3.11.14 reference. The source lives under `python9/` (a patch + APE
-shims + build scripts + parity harness; the pristine CPython tree is fetched,
-not vendored). It's a prerequisite for richer Plan 9 tooling, not a finished
-app — porting it does **not** by itself run hermes-agent, whose Rust-backed deps
-can't build on Plan 9. See [`python9/README.md`](python9/README.md) for the
-parity contract and [`python9/port/plan9/README.md`](python9/port/plan9/README.md)
-for the build + bug-class archaeology.
-
-**node9** is a **Node.js-compatible runtime + the real npm, running on 9front** — a
-platform Node has never supported. It's built on **QuickJS-ng** (a small ES2023
-bytecode interpreter) rather than V8, which can't build for or run on Plan 9. On top
-of the engine sits a Node-compatible standard library (`node9/lib/boot.js`, ~2,375
-lines, 46 builtin modules) plus a native layer over Plan 9 `libsec` (crypto/TLS) and
-`libz` (gzip), with networking over `/net`. The headline result: the **actual,
-unmodified npm 10.9.8** runs on it — `npm install <pkg>` fetches from
-registry.npmjs.org over real TLS, **SHA-512 SRI-verifies** the tarball (a corrupted
-one is rejected), gunzips + tar-extracts to `node_modules`, and writes the lockfile;
-dependency graphs resolve via arborist. **30/30** popular packages (lodash-class
-utilities, chalk, uuid, semver, commander, …; 24 CommonJS + 6 ESM) download **and**
-run. It also runs Node.js's own `test/parallel` unit tests as a compatibility +
-bug-finding harness. Limitations: no native addons (`.node`), no HTTP/2, no PKIX
-cert-chain validation (SRI gates package integrity instead), interpreter-speed. See
-[`node9/DOCUMENTATION.md`](node9/DOCUMENTATION.md) for the full fidelity/limitations
-write-up and [`node9/port/plan9/NOTES.md`](node9/port/plan9/NOTES.md) for the
-kencc/APE port (incl. the floating-point codegen bugs found and fixed).
-
-**cc9** is **modern C++ on 9front**, the platform's longstanding wall: kencc is
-C-only, APE has no C++ runtime, and the only native C++ is 1980s cfront. Rather than
-port a compiler *to* Plan 9, cc9 **cross-compiles** — host **clang/LLVM** targets
-x86_64, a from-source **libc++/libc++abi** + a small runtime bridge supply the
-standard library over Plan 9 syscalls, and an **ELF→a.out converter** repackages the
-output to run on a **stock, unmodified** 9front kernel. The headline: **full modern
-C++ runs on 9front** — C++ exceptions (DWARF unwind), the STL, iostreams, threads
-(over `rfork`), `<regex>`, wide characters, `<filesystem>`, RTTI, `thread_local`, and
-real third-party software (nlohmann/json, and **Stockfish 11** — whose `bench`
-self-verifies to the exact reference node count) — validated against the upstream
-conformance suites of **libc++, libc++abi, and libunwind at ~100% of applicable
-tests with zero runtime failures** (nothing that compiles and links has ever
-miscompiled or faulted on 9front). Cross-compilation is the primary path
-(`cc9 build foo.cpp`), and a reduced **clang + lld now also run natively on
-9front**, so you can compile C++ on the box. cc9 also ships an **optional, opt-in
-kernel patch** (`wxallow`
-+ a per-segment `SG_EXEC` flag) that unlocks **W^X / JIT** — secure by default (off ⇒
-identical to stock), which makes V8-class JIT *reachable* on a patched kernel while
-leaving stock binaries untouched. See [`cc9/README.md`](cc9/README.md) for the
-architecture, runtime bridge, parity harness, and limitations, and
-[`cc9/kernel/README.md`](cc9/kernel/README.md) for the JIT patch.
-
-To install any of these on a box, use pac9 (see [Installing packages](#installing-packages)
-above) — `pac9 install python9`, `pac9 install pi9`, and so on. The per-component
-build internals (flag sets, patches, kencc/APE bug classes) live in each
-component's own README: [`python9/port/plan9/README.md`](python9/port/plan9/README.md),
-[`node9/`](node9/), [`cc9/README.md`](cc9/README.md), [`zig9/`](zig9/).
+- pi9's TUI header occasionally scrolls off-screen after a clear.
+- Mouse-wheel scrolling in pi9 is written but not yet tested with real input
+  devices — QMP can't simulate it cleanly.
+- The launcher's app list is hardcoded C, so adding an entry means a recompile. A
+  config-file rewrite is planned.
+- The file manager (`xfiles`) is a stub, and its Start-menu entry does nothing
+  yet. Use acme or rc for now.
 
 ## Why
 
 Two reasons.
 
-**One:** I wanted a modern coding agent on Plan 9, the way pi.dev runs
-on Mac/Linux. Pi is TypeScript-on-Node and Node won't run on Plan 9,
-so I rewrote the shape of it in Go using Bubble Tea, mirroring pi's
-OAuth flows, slash commands, model picker, session tree, and skills
-system. Then I added Plan 9-native tools that exploit primitives Linux
-agents can't access — `plumb`, `walk`, `ns`, `bind`, `mount` — so the
-agent can compose namespace sandboxes in single tool calls and read
-its own runtime environment as files.
+I wanted a modern coding agent on Plan 9, the way pi.dev runs on Mac and Linux. Pi
+is TypeScript on Node, and Node doesn't run on Plan 9, so I rebuilt its shape in Go
+with Bubble Tea — the same OAuth flows, slash commands, model picker, session tree,
+and skills system. Then I added tools that only make sense here: `plumb`, `walk`,
+`ns`, `bind`, `mount`. The agent can compose a namespace sandbox in a single tool
+call and read its own runtime as files, which a Linux agent simply can't do.
 
-**Two:** Plan 9 ships with `rio`, which works great for Plan 9 people
-and is alien for everyone else. I wanted to find out what 9front looks
-like wearing a familiar window manager. Turns out, perfectly fine.
-mxio inherits rio's tiling sweep behavior but adds chrome that people
-recognize: titlebars, minimize/maximize/close, taskbar, a Start
-button. The Luna palette is hardcoded, not themed. v0.1 isn't trying
-to be configurable; it's trying to be a comfortable place to land.
+And Plan 9 ships with `rio`, which Plan 9 people love and everyone else finds
+alien. I wanted to see what 9front feels like wearing a window manager you already
+recognize. It feels fine, as it turns out. mxio keeps rio's tiling sweep but adds
+the chrome people expect: titlebars, minimize/maximize/close, a taskbar, a Start
+button. The Luna palette is hardcoded rather than themed. v0.1 isn't built to be
+configurable — it's built to be a comfortable place to land.
 
-## Architecture
+## How it fits together
 
 ```
   ┌─────────────────────────────────────────────────────────┐
@@ -239,73 +192,64 @@ to be configurable; it's trying to be a comfortable place to land.
 
 ### vts and vtwin: a VT100 terminal, the Plan 9 way
 
-Plan 9's built-in terminal (`rio`'s window) is **not** a VT100/ANSI
-terminal. It's a Plan 9 "cooked" text window with no concept of color
-codes, cursor addressing, or an alternate screen. So modern terminal
-UIs — anything that draws with ANSI escape sequences, like pi9's Bubble
-Tea interface, or vim/htop-style full-screen apps — render as garbage
-in a plain rio window. (That's exactly why running `pi9` directly in a
-terminal fails: it emits escapes nothing there understands.) On Unix
-you'd reach for `st` + `tmux` + a libvterm; Plan 9 ships none of that.
+Plan 9's built-in terminal — a rio window — is not a VT100/ANSI terminal. It's a
+cooked text window with no notion of color codes, cursor addressing, or an
+alternate screen. So a modern terminal UI, anything that draws with ANSI escapes
+like pi9's Bubble Tea interface or a full-screen app like vim or htop, comes out as
+garbage in a plain rio window. That's why running `pi9` straight in a terminal
+fails: it emits escapes nothing there understands. On Unix you'd reach for `st` +
+`tmux` + a libvterm; Plan 9 ships none of that.
 
-**vts** ("VT session server") supplies the missing terminal logic, as a
-9P file server rather than a library. It starts an `rc` shell in each
-session, reads that shell's output through a full VT100/ANSI parser, and
-maintains the resulting screen as a grid of character **cells**. Each
-session is just a directory it serves under `/srv/vts` (mounted at
-`/n/vts/<session>/`), with a handful of files — the terminal *is* a
-filesystem:
+**vts**, the VT session server, supplies the missing terminal logic as a 9P file
+server rather than a library. It starts an `rc` shell in each session, reads that
+shell's output through a full VT100/ANSI parser, and keeps the screen as a grid of
+character cells. Each session is a directory under `/srv/vts` (mounted at
+`/n/vts/<session>/`) — the terminal is a filesystem:
 
-- `cons`  — read program output / **write keystrokes** (what you type)
-- `cells` — the rendered character grid, as a binary **diff stream**
-- `ctl`   — create/kill/redraw sessions (`echo new <name> > /n/vts/ctl`)
-- `scroll`— scrollback
+- `cons` — read program output, write keystrokes (what you type)
+- `cells` — the rendered grid, as a binary diff stream
+- `ctl` — create, kill, redraw sessions (`echo new <name> > /n/vts/ctl`)
+- `scroll` — scrollback
 
-**vtwin** ("VT window") is the graphical half: a small libdraw program
-that opens a window in mxio/rio, **reads** a session's `cells` file and
-paints the grid to the screen, and **writes** your keyboard and mouse
-input back to `cons`. It's a dumb renderer — all the terminal smarts
-live in vts.
+**vtwin**, the VT window, is the graphical half: a small libdraw program that opens
+a window in mxio/rio, reads a session's `cells` and paints the grid, and writes
+your keyboard and mouse input back to `cons`. It's a dumb renderer; all the
+terminal smarts live in vts.
 
-Splitting "terminal logic" (vts) from "the window" (vtwin) is the payoff:
-the session and the program inside it are independent of any window. Close
-the vtwin and the rc/pi9 inside keeps running; point a fresh vtwin at the
-same session to reattach — `tmux` detach/attach, but as files. It also
-means anything can drive a session: `new-pi9`, for instance, just does
-`echo new ... > /n/vts/ctl`, writes `pi9` into the session's `cons`, and
-launches a vtwin on it (and that same `cons` write is how a key can be
-typed in programmatically).
+Splitting the terminal logic (vts) from the window (vtwin) is the whole payoff. The
+session and the program inside it outlive any window — close the vtwin and the
+rc or pi9 inside keeps running, then point a fresh vtwin at the same session to
+reattach. It's tmux detach and attach, done as files. It also means anything can
+drive a session: `new-pi9` just writes `echo new ... > /n/vts/ctl`, drops `pi9`
+into the session's `cons`, and launches a vtwin on it.
 
-Source for each component lives in `src/<name>/` with its own
-`mkfile`. Build inside the VM:
+## Hacking on it
+
+The image keeps the source under
+`/sys/src/cmd/{mxio,vts,vtwin,xena-panel,launcher}/`, ready to `mk`. Edit on the
+host and shuttle changes into the VM with the listen1 + http pattern in `tools/`,
+or just ssh in (`ssh -p 2222 glenda@localhost`, no password) and edit with acme.
+
+There's no cross-build from macOS — Plan 9 has no hosted toolchain, so C builds
+happen in the VM:
 
 ```
 cd /sys/src/cmd/mxio && mk install
 ```
 
-There's no cross-build from macOS — Plan 9 has no hosted toolchain.
-
-For pi9 specifically, Go cross-compiles from any host:
+pi9 is the exception, since Go cross-compiles from any host:
 
 ```
 cd src/pi9 && GOOS=plan9 GOARCH=amd64 go build .
 ```
 
-## Hacking on it
-
-The QEMU image has the source under `/sys/src/cmd/{mxio,vts,vtwin,xena-panel,launcher}/`
-ready to `mk` (Plan 9 build tool). Edit on the host, rsync into the VM
-via the included listen1 + http shuttle pattern in `tools/`, or just
-ssh in (`ssh -p 2222 glenda@localhost`, no password) and edit with
-acme.
-
-For day-to-day workflow patterns, see `docs/development.md`.
+Day-to-day workflow patterns are in `docs/development.md`.
 
 ## Credits
 
 - [Plan 9 from Bell Labs](https://9p.io/plan9/) / [9front](http://9front.org) — the OS this all runs on.
 - [pi.dev](https://pi.dev) — the agent shape pi9 mirrors. Source at <https://github.com/earendil-works/pi>.
-- [charm.sh](https://charm.sh) — Bubble Tea / Lipgloss / Bubbles, the TUI stack pi9 builds on.
+- [charm.sh](https://charm.sh) — Bubble Tea, Lipgloss, and Bubbles, the TUI stack pi9 builds on.
 - [netsurf-plan9](https://github.com/netsurf-plan9) — the NetSurf port.
 
 ## License
