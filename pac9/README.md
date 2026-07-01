@@ -86,6 +86,23 @@ python9` removes exactly those files (the tarball installs `python`, not
 `python9`, so a name-based `rm` wouldn't find it). Empty package directories are
 cleaned up; shared dirs like `/amd64/bin` are left alone.
 
+## gl9 (OpenGL)
+
+`pac9 install gl9` gives you OpenGL 3.3 (Mesa softpipe) on 9front. It's split in
+two: **`gl9win`** — the native libdraw window server — is an ordinary *source*
+package (cloned + `mk install`, builds on-box); **`gl9`** is a *tarball* of the
+cross-compiled GL demos (`gl9-cube`, `gl9-egl`) plus the `gl9` launcher, and it
+depends on `gl9win` (pulled in automatically). Then, from a rio window:
+
+```
+gl9 cube      # a spinning lit 3D cube
+gl9 egl       # a triangle through the EGL API
+```
+
+Your own GL apps are cross-compiled on a host with cc9 (static build — there's no
+shared libGL on 9front) and run with `gl9 run <app>`. Build the tarball with
+`gl9/release/make-tarball.sh` and publish it as the `gl9` GitHub release.
+
 ## Verify
 
 `rc test.rc` appends throwaway packages to the registry and checks install,

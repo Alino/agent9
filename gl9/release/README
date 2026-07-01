@@ -1,0 +1,22 @@
+gl9 — OpenGL (Mesa 24.0.9 softpipe) for 9front.
+
+Installed by:  pac9 install gl9
+
+Contents (this tarball, unpacked at /):
+  /amd64/bin/gl9-cube   spinning lit 3D cube demo (perspective, depth, Phong)
+  /amd64/bin/gl9-egl    a triangle rendered through the EGL API
+  /rc/bin/gl9           launcher
+
+Depends on the `gl9win` package (the native libdraw window server), pulled in
+automatically. Run from a rio window:
+
+  gl9 cube      # the 3D cube
+  gl9 egl       # EGL demo
+  gl9 run <yourglapp>   # pipe your own gl9 GL app to the window
+
+Your own GL programs are cross-compiled on a host with cc9 (gl9 is a static
+build — there is no shared libGL on 9front); they write framed RGBA to stdout,
+which gl9win blits. See the gl9/ dir in github.com/Alino/agent9.
+
+Note: all GL runs need GALLIUM_NOSSE=1 (the `gl9` launcher sets it) — Mesa's
+translate_sse JITs x86 for vertex fetch and stock 9front NX-faults it.

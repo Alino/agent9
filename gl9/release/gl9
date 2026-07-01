@@ -1,0 +1,20 @@
+#!/bin/rc
+# gl9 — run OpenGL (Mesa softpipe) on 9front, presenting to a window via gl9win.
+#   gl9 cube            spinning lit 3D cube (the showcase)
+#   gl9 egl             a triangle through the EGL API
+#   gl9 run cmd [args]  pipe your own gl9 GL app to gl9win
+# GALLIUM_NOSSE=1 forces softpipe's C vertex-fetch path (its x86 JIT NX-faults on
+# 9front). Run from a rio window so gl9win has a window to draw into.
+GALLIUM_NOSSE=1
+switch($1){
+case cube
+	gl9-cube | gl9win
+case egl
+	gl9-egl | gl9win
+case run
+	shift
+	$* | gl9win
+case *
+	echo 'usage: gl9 cube | gl9 egl | gl9 run <glapp> [args...]' >[1=2]
+	exit usage
+}

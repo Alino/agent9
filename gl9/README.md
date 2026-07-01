@@ -33,6 +33,19 @@ Build a demo with `python3 host/build-gl9.py link test/corpus/<name>.c` (EGL add
 `port/plan9/egl/gl9egl.c`), deliver to the VM, then run the pipeline with
 `GALLIUM_NOSSE=1`. `gl9win` is built on the VM (`mk` in `port/plan9/win/`).
 
+## Install on 9front (pac9)
+
+```
+pac9 install gl9      # pulls in gl9win (the libdraw window server) too
+gl9 cube              # a spinning lit 3D cube, from a rio window
+gl9 egl               # a triangle via the EGL API
+gl9 run <yourglapp>   # pipe your own gl9 GL app to the window
+```
+
+`gl9win` is a source package (builds on-box); `gl9` is a prebuilt tarball of the
+cross-compiled demos + launcher. Rebuild the tarball with `release/make-tarball.sh`
+and publish it as the `gl9` GitHub release.
+
 ## How it builds
 
 Mesa uses meson and generates a lot of C at configure time. gl9 lets meson do

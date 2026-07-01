@@ -11,3 +11,6 @@ _out/
 *.aout
 # Delivered goldens are committed; scratch captures are not.
 test/_captures/
+# Release staging + built tarball (the tarball is a GitHub Release asset).
+release/stage/
+release/*.tar.gz
