@@ -66,13 +66,19 @@ failure doesn't sink the batch. For each:
   repo's own `src/*` components via a `subdir` field (`src/mxio`, `src/vts`, …).
 - **Prebuilt** (`url` is `-`, recipe `tarball <url>`) — no repo; pac9 fetches the
   tarball, records every path it contains under `/sys/lib/pac9/files/<name>`, and
-  unpacks it at `/`. This is how **python9 / node9 / zig9 / cc9 / pi9** install:
-  their vendored upstream (or cross-compiled Go, for pi9; a clang cross-toolchain,
-  for cc9) isn't cloneable-and-buildable on the box, so they ship as built
-  artifacts. The recorded file list is what lets uninstall remove them exactly —
-  the tarball installs `python`, not `python9`, so a name-based `rm` would miss
-  it. Uninstall deletes the recorded files and rmdirs any now-empty package dirs,
-  leaving shared dirs like `/amd64/bin` alone.
+  unpacks it at `/`. This is how **python9 / node9 / pi9** install: their vendored
+  upstream (or cross-compiled Go, for pi9) isn't cloneable-and-buildable on the
+  box, so they ship as built artifacts (released on GitHub, verified end-to-end on
+  cirno). The recorded file list is what lets uninstall remove them exactly — the
+  tarball installs `python`, not `python9`, so a name-based `rm` would miss it.
+  Uninstall deletes the recorded files and removes now-empty package dirs
+  (deepest-first, since Plan 9 has no rmdir), leaving shared dirs like
+  `/amd64/bin` alone.
+
+**cc9 and zig9 are deliberately not pac9 packages.** They're host cross-toolchains
+(compile C++ / Zig into plan9 a.out from a Mac/Linux box); the compilers don't run
+on 9front. cc9 has an experimental on-box clang (`cc9/native`) but it's staged, not
+packaged. pac9 only lists software that installs and runs on the box.
 
 ## Registry format
 

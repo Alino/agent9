@@ -13,12 +13,9 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 # pac9 to fetch a release tarball (paths inside are amd64/bin/... and
 # sys/lib/...), record its file list, and unpack it at /. These build from
 # vendored upstream that isn't cloneable, so we ship built artifacts.
-# ponytail: tarball URLs are placeholders — point them at the GitHub Release
-# assets once published.
+# (cc9/zig9 are host cross-toolchains, not on-9front software — not listed here.)
 python9	-	.	tarball https://github.com/Alino/agent9/releases/download/py/python9-amd64.tar.gz
 node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node/node9-amd64.tar.gz
-zig9	-	.	tarball https://github.com/Alino/agent9/releases/download/zig/zig9-amd64.tar.gz
-cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9/cc9-amd64.tar.gz
 # pi9: prebuilt tarball has amd64/bin/pi9, rc/bin/new-pi9, sys/lib/tls/ca.pem.
 # It renders through a vts session, so it depends on vts + vtwin (5th column,
 # pulled in automatically).
