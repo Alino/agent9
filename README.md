@@ -91,6 +91,7 @@ Either way, `pac9` is now on your path.
 | `pac9 install python9` | CPython 3.11 with the stdlib |
 | `pac9 install node9` | a Node-compatible runtime and the real npm |
 | `pac9 install cc9` | modern C++ on the box — `cc foo.cpp` (clang + lld + libc++) |
+| `pac9 install gl9` | OpenGL 3.3 (Mesa softpipe) — `gl9 cube` / `gl9 egl` (pulls in gl9win) |
 | `pac9 install netsurf` | the NetSurf web browser |
 | `pac9 install mxio` | the window manager |
 | `pac9 install vts vtwin` | the terminal server and its window |
@@ -138,6 +139,8 @@ Mac/Linux box to build plan9 binaries; the compiler doesn't run on 9front). See
 | **node9** | A Node-compatible runtime on QuickJS-ng (not V8) running unmodified npm 10 over real TLS. 30 of 30 popular packages install and run. | C / JS |
 | **cc9** | Modern C++ on 9front via a clang/LLVM cross-toolchain that emits native a.out — exceptions, the STL, threads, `<regex>`, `<filesystem>`, RTTI, and Stockfish 11. clang and lld also run on the box. | C++ / LLVM |
 | **zig9** | The Zig compiler for 9front through Zig's own self-hosted backend, no LLVM. Passes all 1773 of Zig's upstream `test/behavior` tests on 9front. Pins Zig 0.14.1, the last release with a Plan 9 backend. | Zig |
+| **rust9** | Rust on 9front: a custom `x86_64-unknown-plan9` target + a `std` port (`std::sys::pal::plan9`) over the cc9 runtime. `core`, `alloc`, and `std` (`println!`/`File`/`read_dir`/`env`/`args`/threads/time) run on stock 9front; the `rgrep` flagship greps with the real crates.io `regex` crate. Reuses the cc9 LLVM→a.out pipeline; nightly `-Zbuild-std`. | Rust / LLVM |
+| **gl9** | OpenGL 3.3 on 9front via Mesa's softpipe (software rasteriser), cross-compiled with cc9. Presents to a libdraw window through **gl9win**; `gl9 cube` draws a spinning lit 3D cube, `gl9 egl` a triangle through the EGL API. | C / Mesa |
 | **NetSurf** | A web browser, from [netsurf-plan9](https://github.com/netsurf-plan9). | C |
 
 Each component has its own README with the real detail — the parity contracts,
