@@ -68,9 +68,35 @@ for details.
 
 ## Installing packages
 
-Once you're on a 9front box, **pac9** installs software in one line:
+**pac9** is the package manager. It installs any of the software above — and
+anyone else's git repo — in one line. It works on the agent9 image and on a
+**stock 9front** too; you just bootstrap it first.
 
+### Bootstrap pac9 on a stock 9front
+
+pac9 is a self-contained rc script. Fetch it and its registry straight from
+this repo — no image, no build (needs `webfs` running for TLS, which is the
+default):
+
+```rc
+hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/pac9 >/rc/bin/pac9
+chmod +x /rc/bin/pac9
+mkdir -p /sys/lib/pac9
+hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/registry >/sys/lib/pac9/registry
 ```
+
+Or, if you'd rather clone the repo (git9 ships with 9front):
+
+```rc
+git/clone https://github.com/Alino/agent9 /tmp/agent9
+cd /tmp/agent9/pac9 && rc install.rc
+```
+
+That's it — pac9 is now on your `$path`.
+
+### Use it
+
+```rc
 pac9 install netsurf              # a curated short name
 pac9 install python9              # prebuilt cross-port (fetched, unpacked)
 pac9 install https://host/repo    # any git repo with an mkfile
@@ -81,7 +107,7 @@ pac9 uninstall netsurf
 It leans on what 9front already provides — `git/clone` (git9) to fetch and
 `mk install` to build — so any repo following the standard `mkfile` convention
 just works. The curated registry gives short names to everything in this repo.
-See `pac9/README.md` to install pac9 itself and to add your own entries.
+See [`pac9/README.md`](pac9/README.md) to add your own entries.
 
 ## Status
 

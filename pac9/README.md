@@ -30,9 +30,19 @@ of what's installed.
 
 ## Install pac9 itself
 
-From this directory, on the 9front box:
+On a **stock 9front** (no image, no clone) — fetch the script + registry
+directly (needs `webfs` for TLS, the default):
 
+```rc
+hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/pac9 >/rc/bin/pac9
+chmod +x /rc/bin/pac9
+mkdir -p /sys/lib/pac9
+hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/registry >/sys/lib/pac9/registry
 ```
+
+Or, if you already have this directory (cloned the repo):
+
+```rc
 rc install.rc      # cp pac9 -> /rc/bin, cp registry -> /sys/lib/pac9
 ```
 
