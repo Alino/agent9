@@ -32,6 +32,22 @@ pac9 uninstall pac9dep
 if(grep -s '^pac9test ' $man) fail 'pac9test still in manifest after uninstall'
 if(grep -s '^pac9dep ' $man) fail 'pac9dep still in manifest after uninstall'
 
+# file-manifest uninstall (the path a `tarball` package takes): seed a fake
+# installed tree + recorded file list, then check uninstall deletes exactly it.
+rm -rf /tmp/pac9tf
+mkdir -p /tmp/pac9tf
+touch /tmp/pac9tf/a /tmp/pac9tf/b
+mkdir -p /sys/lib/pac9/files
+echo 'tmp/pac9tf/a
+tmp/pac9tf/b
+tmp/pac9tf/' >/sys/lib/pac9/files/pac9tb
+echo 'pac9tb - -' >>$man
+pac9 uninstall pac9tb
+if(test -f /tmp/pac9tf/a) fail 'file-manifest uninstall left a file behind'
+if(test -d /tmp/pac9tf) fail 'file-manifest uninstall left the empty dir'
+if(test -f /sys/lib/pac9/files/pac9tb) fail 'file list not removed'
+if(grep -s '^pac9tb ' $man) fail 'pac9tb still in manifest'
+
 mv $reg.bak $reg
 rm -f $tout $dout
 echo PASS

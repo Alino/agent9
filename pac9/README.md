@@ -68,20 +68,23 @@ unknown names fall through to being treated as a git URL.
 ### Two kinds of package
 
 - **Source** (`url` is a git URL) — cloned and built. This is most things.
-- **Prebuilt** (`url` is `-`) — no repo; the recipe fetches a tarball and
-  unpacks it. Used for the big cross-ports whose source isn't self-contained.
+- **Prebuilt** (`url` is `-`) — no repo. Recipe `tarball <url>` makes pac9 fetch
+  a release tarball, record every path it contains (in `/sys/lib/pac9/files/`),
+  and unpack it at `/`. Used for the big cross-ports whose source isn't
+  self-contained. The recorded file list is what makes them cleanly removable.
 
 ## python9 / node9 / zig9
 
-These are large cross-ports (CPython, QuickJS+npm, Zig). Their vendored upstream
-source is **not** in the repo and building it on a TCG VM takes 20–60 min, so
-they ship as **prebuilt tarball packages**: `pac9 install python9` fetches the
-built binary + libdir and unpacks it at `/` — the same `hget | gunzip | tar x`
-flow used to place them on the image today. Point the placeholder tarball URLs
-in `registry` at the real GitHub Release assets once published.
+These are large cross-ports (CPython, QuickJS+npm, Zig, clang/LLVM). Their
+vendored upstream source is **not** in the repo and building it on a TCG VM takes
+20–60 min, so they ship as **prebuilt tarball packages**: `pac9 install python9`
+fetches the built binary + libdir and unpacks it at `/`. Point the placeholder
+tarball URLs in `registry` at the real GitHub Release assets once published.
 
-Uninstall for these is best-effort (removes the `/$objtype/bin` binary but not
-the `/sys/lib` tree — those ports have no file manifest).
+Because a `tarball` install records the file list it unpacked, `pac9 uninstall
+python9` removes exactly those files (the tarball installs `python`, not
+`python9`, so a name-based `rm` wouldn't find it). Empty package directories are
+cleaned up; shared dirs like `/amd64/bin` are left alone.
 
 ## Verify
 

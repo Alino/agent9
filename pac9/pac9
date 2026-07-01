@@ -14,9 +14,15 @@
 # well-formed package a `mk install` target. pac9 is the thin wrapper:
 # a name->url registry, build-step detection, and an install manifest.
 #
+# A prebuilt package's recipe can be `tarball <url>`: pac9 fetches the
+# tarball, records every path it contains, and unpacks it at /. The record
+# lets uninstall delete exactly those files (a plain `rm bin/<name>` can't,
+# since e.g. python9's tarball installs `python`, not `python9`).
+#
 # Runtime state:
 #   /sys/lib/pac9/registry   curated  name<tab>url<tab>subdir<tab>recipe<tab>deps
 #   /sys/lib/pac9/installed  manifest  name url srcdir  (one line per pkg)
+#   /sys/lib/pac9/files/<name>  file list unpacked by a tarball package
 #   $home/src/pac9/<name>/   cached clone (reused on re-install)
 
 reg=/sys/lib/pac9/registry
@@ -68,6 +74,21 @@ fn installed_p {
 	test -f $manifest && grep -s '^'$1' ' $manifest
 }
 
+# install_tarball <url> <name> -> fetch a .tar.gz, record its file list, unpack at /
+fn install_tarball {
+	turl=$1
+	pkg=$2
+	tmp=/tmp/pac9-$pkg.tar
+	echo 'pac9: fetching '$turl
+	hget $turl >$tmp.gz
+	gunzip <$tmp.gz >$tmp
+	# record what's in the archive so uninstall can remove exactly these
+	mkdir -p /sys/lib/pac9/files
+	tar tf $tmp >/sys/lib/pac9/files/$pkg
+	@{ cd / && tar xf $tmp }
+	rm -f $tmp.gz $tmp
+}
+
 # build in the current directory, per the detection order in the plan.
 fn build {
 	d=$1
@@ -109,13 +130,19 @@ fn install_one {
 	if(~ $url -){
 		# recipe-only package (no repo): a prebuilt tarball or any
 		# self-contained command. Used for the big cross-ports
-		# (python9/node9/zig9) whose vendored source isn't cloneable.
+		# (python9/node9/zig9/cc9) whose vendored source isn't cloneable.
 		if(~ $recipe -){
 			echo 'pac9: '$name' has no url and no recipe' >[1=2]
 			exit badpkg
 		}
-		echo 'pac9: recipe: '$recipe
-		eval $recipe
+		words=`{echo $recipe}
+		if(~ $words(1) tarball){
+			install_tarball $words(2) $name
+		}
+		if not {
+			echo 'pac9: recipe: '$recipe
+			eval $recipe
+		}
 		dir=-
 	}
 	if not {
@@ -176,17 +203,27 @@ fn cmd_uninstall {
 		exit notinstalled
 	}
 
-	# best-effort removal: `mk uninstall` if the mkfile offers it,
-	# else rm the conventional /$objtype/bin/<name>.
-	# ponytail: mkone has no standard uninstall target, so this is a
-	# best-effort rm. Upgrade path: parse the mkfile's TARG/BIN.
-	if(! ~ $dir - && test -f $dir/mkfile && grep -s 'uninstall:' $dir/mkfile){
+	# removal, most precise first:
+	#  1. a recorded file list (tarball packages) -> delete exactly those
+	#  2. `mk uninstall` if the source mkfile offers it
+	#  3. fall back to rm /$objtype/bin/<name>
+	flist=/sys/lib/pac9/files/$name
+	if(test -f $flist){
+		echo 'pac9: removing files recorded for '$name
+		for(f in `{grep -v '/$' $flist})
+			rm -f /$f
+		# drop package dirs that are now empty (rmdir skips non-empty ones
+		# like /amd64/bin); deepest-first so nested empties clear too
+		for(d in `{grep '/$' $flist | sort -r})
+			rmdir /$d >[2]/dev/null
+		rm -f $flist
+	}
+	if not if(! ~ $dir - && test -f $dir/mkfile && grep -s 'uninstall:' $dir/mkfile){
 		@{ cd $dir && mk uninstall }
 	}
 	if not {
-		# ponytail: recipe-only packages (python9/node9/zig9) drop
-		# files in /sys/lib too; we only rm the bin here. Full removal
-		# would need a manifest of extracted files — add if asked.
+		# ponytail: last resort for a package with no file list and no
+		# uninstall target — assumes the binary matches the package name.
 		rm -f /$objtype/bin/$name
 	}
 
