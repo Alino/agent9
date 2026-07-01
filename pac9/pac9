@@ -1,0 +1,180 @@
+#!/bin/rc
+# pac9 — a package manager for 9front.
+#
+#   pac9 install <name|git-url>   clone -> build -> install a package
+#   pac9 list                     show what's installed
+#   pac9 uninstall <name>         remove a package (best-effort)
+#
+# The heavy lifting is already done by 9front: git9 (git/clone) fetches
+# any repo, and the mkfile + </sys/src/cmd/mkone convention gives every
+# well-formed package a `mk install` target. pac9 is the thin wrapper:
+# a name->url registry, build-step detection, and an install manifest.
+#
+# Runtime state:
+#   /sys/lib/pac9/registry   curated  name<tab>url<tab>subdir<tab>recipe
+#   /sys/lib/pac9/installed  manifest  name url srcdir  (one line per pkg)
+#   $home/src/pac9/<name>/   cached clone (reused on re-install)
+
+reg=/sys/lib/pac9/registry
+manifest=/sys/lib/pac9/installed
+srcbase=$home/src/pac9
+
+# newline, for splitting awk output into a list without eating spaces
+nl='
+'
+
+fn usage {
+	echo 'usage: pac9 install <name|git-url>' >[1=2]
+	echo '       pac9 list' >[1=2]
+	echo '       pac9 uninstall <name>' >[1=2]
+	exit usage
+}
+
+# resolve <arg> -> sets $name $url $subdir $recipe
+# registry hit wins; otherwise <arg> is a git URL and we default the rest.
+fn resolve {
+	arg=$1
+	entry=()
+	if(test -f $reg){
+		oif=$ifs
+		ifs=$nl
+		entry=`{awk 'BEGIN{FS="\t"} $1==a{print $2; print $3; print $4; exit}' a=$arg $reg}
+		ifs=$oif
+	}
+	if(~ $#entry 3){
+		name=$arg
+		url=$entry(1)
+		subdir=$entry(2)
+		recipe=$entry(3)
+	}
+	if not {
+		url=$arg
+		name=`{basename $url .git}
+		subdir=.
+		recipe=-
+	}
+}
+
+# build in the current directory, per the detection order in the plan.
+fn build {
+	d=$1
+	if(! ~ $recipe -){
+		echo 'pac9: recipe: '$recipe
+		eval $recipe
+	}
+	if not if(test -f mkfile && grep -s 'install:' mkfile){
+		mk install
+	}
+	if not if(test -f mkfile){
+		mk
+		echo 'pac9: mkfile has no install target; binary left in '$d >[1=2]
+	}
+	if not if(test -f build.rc){
+		rc build.rc
+	}
+	if not {
+		echo 'pac9: no mkfile/build.rc in '$d'; build it manually' >[1=2]
+		exit nobuild
+	}
+}
+
+fn cmd_install {
+	if(~ $#* 0) usage
+	resolve $1
+
+	if(~ $url -){
+		# recipe-only package (no repo): a prebuilt tarball or any
+		# self-contained command. Used for the big cross-ports
+		# (python9/node9/zig9) whose vendored source isn't cloneable.
+		if(~ $recipe -){
+			echo 'pac9: '$name' has no url and no recipe' >[1=2]
+			exit badpkg
+		}
+		echo 'pac9: recipe: '$recipe
+		eval $recipe
+		dir=-
+	}
+	if not {
+		# fetch (or update) the source, then build it
+		dir=$srcbase/$name
+		if(test -d $dir/.git){
+			echo 'pac9: updating '$name
+			@{ cd $dir && git/pull }
+		}
+		if not {
+			echo 'pac9: cloning '$url
+			mkdir -p $srcbase
+			git/clone $url $dir
+		}
+		if(! test -d $dir){
+			echo 'pac9: fetch failed for '$name >[1=2]
+			exit fetch
+		}
+		@{ cd $dir/$subdir && build $dir/$subdir }
+	}
+
+	# record it (drop any prior line for this name first)
+	mkdir -p /sys/lib/pac9
+	if(test -f $manifest){
+		awk '$1!=n' n=$name $manifest >$manifest.tmp
+		mv $manifest.tmp $manifest
+	}
+	echo $name $url $dir >>$manifest
+	echo 'pac9: installed '$name
+}
+
+fn cmd_list {
+	if(! test -f $manifest){
+		echo 'pac9: nothing installed'
+		exit
+	}
+	awk '{print $1"\t"$2}' $manifest
+}
+
+fn cmd_uninstall {
+	if(~ $#* 0) usage
+	name=$1
+	if(! test -f $manifest){
+		echo 'pac9: nothing installed' >[1=2]
+		exit
+	}
+	dir=`{awk '$1==n{print $3; exit}' n=$name $manifest}
+	if(~ $#dir 0){
+		echo 'pac9: '$name' is not installed' >[1=2]
+		exit notinstalled
+	}
+
+	# best-effort removal: `mk uninstall` if the mkfile offers it,
+	# else rm the conventional /$objtype/bin/<name>.
+	# ponytail: mkone has no standard uninstall target, so this is a
+	# best-effort rm. Upgrade path: parse the mkfile's TARG/BIN.
+	if(! ~ $dir - && test -f $dir/mkfile && grep -s 'uninstall:' $dir/mkfile){
+		@{ cd $dir && mk uninstall }
+	}
+	if not {
+		# ponytail: recipe-only packages (python9/node9/zig9) drop
+		# files in /sys/lib too; we only rm the bin here. Full removal
+		# would need a manifest of extracted files — add if asked.
+		rm -f /$objtype/bin/$name
+	}
+
+	if(! ~ $dir -)
+		rm -rf $dir
+	awk '$1!=n' n=$name $manifest >$manifest.tmp
+	mv $manifest.tmp $manifest
+	echo 'pac9: removed '$name
+}
+
+if(~ $#* 0) usage
+sub=$1
+shift
+switch($sub){
+case install
+	cmd_install $*
+case list
+	cmd_list $*
+case uninstall remove
+	cmd_uninstall $*
+case *
+	usage
+}

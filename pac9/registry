@@ -1,0 +1,23 @@
+# pac9 curated package registry.
+# Columns are TAB-separated:  name<TAB>url<TAB>subdir<TAB>recipe
+#   subdir  '.' = repo root
+#   recipe  '-' = default detection (mk install if the mkfile has that target)
+# Unknown names fall through to being treated as a git URL, so this file
+# only needs entries for packages that want a short name or a custom build.
+#
+netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk install
+
+# Prebuilt cross-ports.  url '-' = no repo to clone; the recipe fetches a
+# release tarball and unpacks it at / (paths inside are amd64/bin/... and
+# sys/lib/...).  These build from vendored upstream that isn't cloneable, so
+# we ship built artifacts (as node9/python9 already do via hget|gunzip|tar).
+# ponytail: tarball URLs are placeholders — point them at the GitHub Release
+# assets once published.
+python9	-	.	cd /; hget https://github.com/Alino/agent9/releases/download/py/python9-amd64.tar.gz | gunzip | tar x
+node9	-	.	cd /; hget https://github.com/Alino/agent9/releases/download/node/node9-amd64.tar.gz | gunzip | tar x
+zig9	-	.	cd /; hget https://github.com/Alino/agent9/releases/download/zig/zig9-amd64.tar.gz | gunzip | tar x
+mxio	https://github.com/Alino/agent9	src/mxio	-
+vts	https://github.com/Alino/agent9	src/vts	-
+vtwin	https://github.com/Alino/agent9	src/vtwin	-
+xena-panel	https://github.com/Alino/agent9	src/xena-panel	-
+launcher	https://github.com/Alino/agent9	src/launcher	-

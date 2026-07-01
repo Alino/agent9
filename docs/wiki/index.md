@@ -1,7 +1,7 @@
 # Wiki Index
 
 > plan9-winxp knowledge base. Every wiki page listed with one-line summary.
-> Last updated: 2026-06-18 | Total pages: 40
+> Last updated: 2026-07-01 | Total pages: 41
 
 ## Concepts
 - [[draw-api]] — Plan 9 /dev/draw interface: how programs get a canvas
@@ -18,6 +18,7 @@
 - [[9front-release-status]] — Current 9front release **GEFS SP1 (2026-01-24, ID 11554)**: timeline, what changed, what's relevant for plan9-winxp (namespace perf fixes, libdraw cleanup, shell-as-#!), VM image source
 - [[gefs]] — Good Enough File System: 9front's new default since 2025-01. B-tree CoW, crash-safe-without-fsck, timed snapshots, no separate venti. Comparison to cwfs64x/fossil+venti
 - [[myrddin-language]] — Ori Bernstein's small typed systems language with Plan 9 amd64 target. ADTs + pattern matching + generics + no GC. Maintenance mode since 2022. When to reach for it (almost never) and why it's interesting (only modern typed lang on Plan 9)
+- [[pac9]] — Package manager for 9front: `pac9 install <name-or-git-url>`. Thin rc wrapper over git9 + `mk install`; curated registry with short names, source and prebuilt-tarball package kinds (python9/node9/zig9 install prebuilt)
 - [[git9]] — Plan 9 native git that ships in 9front. 9P file server at `$repo/.git/fs`, no index/staging, three states only. Daily-driver flow, install path, "state-as-9P-fs" design reference for [[xena-panel-design]] and pi9 tools
 - [[oridb-ecosystem]] — Ori Bernstein's GitHub: which repos matter (git9, mc, plan9port fork), which don't (Myrddin libs, personal forks). Tier table by relevance to plan9-winxp. Complement to [[9fans-ecosystem]]
 - [[vt-architecture]] — vt console daemon: collapses st+tmux+zsh into one Plan 9 9P service

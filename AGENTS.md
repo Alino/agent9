@@ -17,6 +17,7 @@ Components:
 - `src/vtwin/`      — libdraw frontend for vts
 - `src/pi9/`        — LLM coding agent (Go + Bubble Tea)
 - `src/xfiles/`     — file manager (TODO)
+- `pac9/`           — package manager (rc): `pac9 install <name-or-git-url>`
 
 ## Wiki — read before doing anything
 

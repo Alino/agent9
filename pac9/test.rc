@@ -1,0 +1,31 @@
+#!/bin/rc
+# test.rc — self-check for pac9.  Run on the 9front box after install.rc.
+# No git or network: it appends a throwaway recipe-only package to the
+# registry, installs it, and checks the recipe ran + the manifest updated,
+# then uninstalls and restores the registry.
+reg=/sys/lib/pac9/registry
+man=/sys/lib/pac9/installed
+tab='	'
+out=/tmp/pac9test.out
+
+fn fail { echo 'FAIL:' $* >[1=2]; exit fail }
+
+if(! test -x /rc/bin/pac9) fail 'pac9 not installed (run install.rc first)'
+mkdir -p /sys/lib/pac9
+rm -f $out
+
+# snapshot the registry, then append a recipe-only package that just
+# writes a marker file when its recipe runs.
+cp $reg $reg.bak
+echo 'pac9test'^$tab^'-'^$tab^'.'^$tab^'echo built >'^$out >>$reg
+
+pac9 install pac9test
+if(! test -f $out) fail 'recipe did not run'
+if(! grep -s '^pac9test ' $man) fail 'manifest missing pac9test after install'
+
+pac9 uninstall pac9test
+if(grep -s '^pac9test ' $man) fail 'manifest still has pac9test after uninstall'
+
+mv $reg.bak $reg
+rm -f $out
+echo PASS

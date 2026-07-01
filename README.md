@@ -34,6 +34,7 @@ up front than leave it to the log.
 | **python9** | CPython 3.11.14 ported to 9front (kencc/APE), validated at **100% parity** against CPython's own regression suite. Source + parity harness under `python9/`. | C |
 | **node9**   | Node.js-compatible runtime ported to 9front (kencc/APE) on **QuickJS-ng** (not V8), running the **real, unmodified npm 10**. `npm install` from registry.npmjs.org over TLS, SHA-512 SRI-verified; **30/30** popular packages download + run. Source under `node9/`. | C / JS |
 | **cc9**     | **Modern C++ for 9front** via **clang/LLVM** → native Plan 9 a.out. Full C++ — exceptions, STL, iostreams, threads, `<regex>`, wide chars, `<filesystem>`, RTTI, `thread_local`, `import std`, nlohmann/json, **Stockfish** (self-verifying) — on a **stock** kernel; **~100%** of applicable libc++ / libc++abi / libunwind conformance tests pass with **zero runtime failures**. The compiler **also runs natively on 9front**. Optional opt-in **W^X kernel patch** unlocks JIT. Source under `cc9/`. | C++ / LLVM |
+| **pac9**    | **Package manager for 9front.** One line to fetch + build + install any package: `pac9 install <name-or-git-url>`. Wraps git9 (`git/clone`) + the `mk install` convention; curated short names for the stuff in this repo (mxio, vts, netsurf, python9, node9, zig9), any git repo otherwise. Source under `pac9/`. | rc |
 | **zig9**    | **Zig for 9front** via Zig's own self-hosted x86_64 backend + Plan 9 a.out linker — **no LLVM, no C runtime**, raw syscalls. Compiles a large Zig subset (FP, structs, unions, generics, comptime, error unions, **heap, `std.mem.sort`, `AutoHashMap`, `ArrayList`, `std.fmt`**) to native Plan 9 a.out; **13/13** feature corpus + **1773 of Zig's own upstream `test/behavior` tests** pass (0 failures — every test runnable on the self-hosted backend), identically on the QEMU VM and **cirno bare metal**. Required rebuilding the compiler from patched source to fix real self-hosted-backend plan9 bugs. Pins **Zig 0.14.1** (last release with the Plan 9 backend — deleted in 0.15.1). Source under `zig9/`. | Zig |
 
 ![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
@@ -64,6 +65,23 @@ sudo apt install qemu-system-x86
 At first boot you'll get two text prompts. Press Enter to both.
 After ~15 seconds you're in the desktop. See `release/RUNNING.md`
 for details.
+
+## Installing packages
+
+Once you're on a 9front box, **pac9** installs software in one line:
+
+```
+pac9 install netsurf              # a curated short name
+pac9 install python9              # prebuilt cross-port (fetched, unpacked)
+pac9 install https://host/repo    # any git repo with an mkfile
+pac9 list
+pac9 uninstall netsurf
+```
+
+It leans on what 9front already provides — `git/clone` (git9) to fetch and
+`mk install` to build — so any repo following the standard `mkfile` convention
+just works. The curated registry gives short names to everything in this repo.
+See `pac9/README.md` to install pac9 itself and to add your own entries.
 
 ## Status
 
