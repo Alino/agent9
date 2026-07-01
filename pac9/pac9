@@ -216,8 +216,9 @@ fn cmd_uninstall {
 		}
 		# drop package dirs that are now empty. Plan 9 has no rmdir; `rm`
 		# on a dir removes it only if empty (errors, harmlessly, on shared
-		# dirs like /amd64/bin). Strip the trailing slash; deepest-first.
-		for(d in `{grep '/$' $flist | sed 's,/$,,' | sort -r}){
+		# dirs like /amd64/bin). Deepest-first — sort by path length
+		# descending so every child clears before its parent, in one pass.
+		for(d in `{grep '/$' $flist | sed 's,/$,,' | awk '{print length($0), $0}' | sort -rn | sed 's/^[0-9]* //'}){
 			rm /$d >[2]/dev/null
 		}
 		rm -f $flist
