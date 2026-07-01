@@ -90,6 +90,7 @@ Either way, `pac9` is now on your path.
 | `pac9 install pi9` | the LLM coding agent (pulls in vts and vtwin automatically) |
 | `pac9 install python9` | CPython 3.11 with the stdlib |
 | `pac9 install node9` | a Node-compatible runtime and the real npm |
+| `pac9 install cc9` | modern C++ on the box — `cc foo.cpp` (clang + lld + libc++) |
 | `pac9 install netsurf` | the NetSurf web browser |
 | `pac9 install mxio` | the window manager |
 | `pac9 install vts vtwin` | the terminal server and its window |
@@ -103,15 +104,15 @@ Anything that isn't a known name is treated as a git URL: pac9 clones it and run
 `mk install`, so any repo that follows the standard `mkfile` layout installs the
 same way. `pac9 list` shows what's installed; `pac9 uninstall <name>` removes it.
 
-The large ports — python9, node9, pi9 — install as prebuilt tarballs rather than
-building on the box, since their sources are too big to compile on the VM in any
-reasonable time. To add your own packages or change how one builds, see
-[`pac9/README.md`](pac9/README.md).
+The large ports — python9, node9, cc9, pi9 — install as prebuilt tarballs rather
+than building on the box, since their sources are too big to compile on the VM in
+any reasonable time. `pac9 install cc9` gives you the on-box C++ toolchain
+(`cc foo.cpp -o foo` runs clang → ld.lld → elf2aout, all on 9front). To add your
+own packages or change how one builds, see [`pac9/README.md`](pac9/README.md).
 
-**cc9 and zig9 are not pac9 packages.** They're host cross-toolchains: you run
-them on your Mac or Linux box to compile C++ / Zig into plan9 binaries — the
-compilers themselves don't run on 9front (cc9 has an experimental on-box clang,
-but it isn't packaged yet). See [`cc9/`](cc9/) and [`zig9/`](zig9/).
+**zig9 is not a pac9 package** — it's a host cross-compiler (you run it on your
+Mac/Linux box to build plan9 binaries; the compiler doesn't run on 9front). See
+[`zig9/`](zig9/).
 
 ## What's in the box
 
