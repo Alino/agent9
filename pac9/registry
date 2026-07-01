@@ -16,6 +16,9 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 python9	-	.	cd /; hget https://github.com/Alino/agent9/releases/download/py/python9-amd64.tar.gz | gunzip | tar x
 node9	-	.	cd /; hget https://github.com/Alino/agent9/releases/download/node/node9-amd64.tar.gz | gunzip | tar x
 zig9	-	.	cd /; hget https://github.com/Alino/agent9/releases/download/zig/zig9-amd64.tar.gz | gunzip | tar x
+# pi9: prebuilt tarball has amd64/bin/pi9, rc/bin/new-pi9, sys/lib/tls/ca.pem.
+# It renders through a vts session, so also: pac9 install vts vtwin.
+pi9	-	.	cd /; hget https://github.com/Alino/agent9/releases/download/pi9/pi9-amd64.tar.gz | gunzip | tar x
 mxio	https://github.com/Alino/agent9	src/mxio	-
 vts	https://github.com/Alino/agent9	src/vts	-
 vtwin	https://github.com/Alino/agent9	src/vtwin	-

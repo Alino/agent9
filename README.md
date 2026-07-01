@@ -190,103 +190,11 @@ leaving stock binaries untouched. See [`cc9/README.md`](cc9/README.md) for the
 architecture, runtime bridge, parity harness, and limitations, and
 [`cc9/kernel/README.md`](cc9/kernel/README.md) for the JIT patch.
 
-### Installing python9 on a stock 9front (without the agent9 image)
-
-If you run your own 9front and just want the interpreter, build it from the
-port in this repo. You need **APE** installed (the `pcc` C driver). The build
-runs *in the VM* (no hosted Plan 9 toolchain); it's slow under TCG.
-
-```sh
-# On any host, fetch the exact source + apply the Plan 9 patches:
-python9/parity/fetch_cpython.sh                 # -> python9/cpython/src (3.11.14)
-python9/port/plan9/patches/apply.sh             # applies plan9-cpython.patch
-
-# Copy the port files into the source tree, then push the tree into your 9front
-# box (hget / 9P / git9):
-#   - python9/port/plan9/pyconfig.h        -> <src>/pyconfig.h
-#   - python9/port/plan9/ape-shim/         -> on the include path (-I)
-#   - python9/port/plan9/config.c, faulthandler_stub.c  -> built in
-```
-
-Then, in 9front, compile + link with `pcc` using the settled flag set
-(`pybuild.rc` compiles one file; `pylink.rc` compiles all sources and links a
-`python`):
-
-```
-pcc -c -D_POSIX_SOURCE -D_BSD_EXTENSION '-Dclockid_t=int' -DPy_BUILD_CORE \
-    -I<ape-shim> -I<src> -I<src>/Include -I<src>/Include/internal <src>/<file>.c -o <file>.o
-# ... link all objects -> python
-```
-
-Finally install:
-
-```
-# stdlib (from the CPython source Lib/) and the linked binary:
-dircp <src>/Lib /sys/lib/python/lib/python3.11
-cp python /$cputype/bin/python
-{ echo '#!/bin/rc'; echo 'exec /'^$cputype^'/bin/python $*'; } > /$cputype/bin/python3
-chmod +x /$cputype/bin/python3
-python --version            # -> Python 3.11.14
-```
-
-The PREFIX (`/sys/lib/python`) is compiled into the binary, so it self-locates
-the stdlib. Full build narrative, flag rationale, and the kencc/APE bug classes
-are in [`python9/port/plan9/README.md`](python9/port/plan9/README.md).
-
-### Installing pi9 on a stock 9front (without the agent9 image)
-
-pi9 needs three pieces: the **pi9** agent itself (Go, cross-compiled on the host
-— Plan 9 has no Go toolchain), plus **vts** and **vtwin** (C, built *in* 9front
-with `mk`). pi9 renders a Bubble Tea TUI through VT100 escapes, so it must run
-inside a vts session painted by vtwin — **not** a bare rio window (running `pi9`
-directly there just garbles).
-
-This works on real hardware too (tested on a bare-metal Shuttle DS57U). The
-transfer below uses a throwaway HTTP server on the host; substitute your host's
-LAN IP for `HOST` (e.g. `192.168.1.10`). 9P or git9 work equally well.
-
-```sh
-# On the host: cross-compile pi9 and serve the bits 9front needs to fetch.
-cd src/pi9 && GOOS=plan9 GOARCH=amd64 go build -o pi9.plan9.amd64 .
-mkdir -p ship/pi9 ship/launcher ship/vts ship/vtwin
-cp pi9.plan9.amd64 cacert.pem ship/pi9/
-cp ../launcher/new-pi9 ship/launcher/
-cp ../vts/*.[ch] ../vts/mkfile ship/vts/
-cp ../vtwin/*.c ../vtwin/mkfile ship/vtwin/
-cd ship && python3 -m http.server 8799        # leave running
-```
-
-```
-# In 9front: build vts + vtwin from source (kencc + mk), install to /$cputype/bin.
-for(d in vts vtwin){
-	mkdir -p /tmp/$d && cd /tmp/$d
-	for(f in `{hget http://HOST:8799/$d/ | sed 's/.*"([^"]+)".*/\1/'}) hget http://HOST:8799/$d/$f > $f
-	mk install
-}
-
-# Install the pi9 binary, the new-pi9 launcher, and the TLS CA bundle.
-# (Go's plan9 TLS stack reads /sys/lib/tls/ca.pem; without it all HTTPS fails.)
-hget http://HOST:8799/pi9/pi9.plan9.amd64 > /$cputype/bin/pi9 && chmod +x /$cputype/bin/pi9
-hget http://HOST:8799/launcher/new-pi9 > /rc/bin/new-pi9 && chmod +x /rc/bin/new-pi9
-mkdir -p /sys/lib/tls && hget http://HOST:8799/pi9/cacert.pem > /sys/lib/tls/ca.pem
-```
-
-vts is a long-running 9P server (`/srv/vts`); start it once per session, and add
-it to `$home/lib/profile` (the `terminal` case, before `rio`) to survive reboots:
-
-```
-vts </dev/null >/dev/null >[2]/dev/null &     # add this line to profile too
-```
-
-Finally, set your OpenRouter key and launch. First `pi9` run writes a config
-template to `$home/lib/pi9/config`; set `api_key=sk-or-v1-...` there (or `/login`
-inside pi9). Then start it from a rio terminal — `new-pi9` spawns a vts session,
-runs pi9 in it, and opens the vtwin window:
-
-```
-pi9                         # once, to write the config template, then edit it
-new-pi9                     # opens pi9 in a vtwin window (or wire into the Start menu)
-```
+To install any of these on a box, use pac9 (see [Installing packages](#installing-packages)
+above) — `pac9 install python9`, `pac9 install pi9`, and so on. The per-component
+build internals (flag sets, patches, kencc/APE bug classes) live in each
+component's own README: [`python9/port/plan9/README.md`](python9/port/plan9/README.md),
+[`node9/`](node9/), [`cc9/README.md`](cc9/README.md), [`zig9/`](zig9/).
 
 ## Why
 
