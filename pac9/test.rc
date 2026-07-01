@@ -1,31 +1,37 @@
 #!/bin/rc
-# test.rc — self-check for pac9.  Run on the 9front box after install.rc.
-# No git or network: it appends a throwaway recipe-only package to the
-# registry, installs it, and checks the recipe ran + the manifest updated,
-# then uninstalls and restores the registry.
+# test.rc — self-check for pac9. Run on the 9front box after install.rc.
+# No git or network: appends throwaway recipe-only packages to the registry
+# and checks install, dependency resolution, the manifest, and uninstall.
+# Restores the registry afterward.
 reg=/sys/lib/pac9/registry
 man=/sys/lib/pac9/installed
 tab='	'
-out=/tmp/pac9test.out
+tout=/tmp/pac9test.out
+dout=/tmp/pac9dep.out
 
 fn fail { echo 'FAIL:' $* >[1=2]; exit fail }
 
 if(! test -x /rc/bin/pac9) fail 'pac9 not installed (run install.rc first)'
 mkdir -p /sys/lib/pac9
-rm -f $out
+rm -f $tout $dout
 
-# snapshot the registry, then append a recipe-only package that just
-# writes a marker file when its recipe runs.
+# snapshot the registry, then append a dependency and a package that
+# declares it (5th column). Each recipe just drops a marker file.
 cp $reg $reg.bak
-echo 'pac9test'^$tab^'-'^$tab^'.'^$tab^'echo built >'^$out >>$reg
+echo 'pac9dep'^$tab^'-'^$tab^'.'^$tab^'echo dep >'^$dout >>$reg
+echo 'pac9test'^$tab^'-'^$tab^'.'^$tab^'echo built >'^$tout^$tab^'pac9dep' >>$reg
 
 pac9 install pac9test
-if(! test -f $out) fail 'recipe did not run'
+if(! test -f $tout) fail 'recipe did not run'
+if(! test -f $dout) fail 'dependency was not installed'
 if(! grep -s '^pac9test ' $man) fail 'manifest missing pac9test after install'
+if(! grep -s '^pac9dep ' $man) fail 'manifest missing the dependency'
 
 pac9 uninstall pac9test
-if(grep -s '^pac9test ' $man) fail 'manifest still has pac9test after uninstall'
+pac9 uninstall pac9dep
+if(grep -s '^pac9test ' $man) fail 'pac9test still in manifest after uninstall'
+if(grep -s '^pac9dep ' $man) fail 'pac9dep still in manifest after uninstall'
 
 mv $reg.bak $reg
-rm -f $out
+rm -f $tout $dout
 echo PASS

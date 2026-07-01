@@ -44,13 +44,21 @@ $home/src/pac9/<name>/       cached clone, reused on re-install
 
 ## install flow
 
-1. **Resolve** — registry hit gives url/subdir/recipe; otherwise the arg is a
-   git URL (`name` = basename minus `.git`).
-2. **Fetch** — `git/clone` (or `git/pull`) into `$home/src/pac9/<name>`. https
+`install` takes any number of packages, each handled in its own subshell so one
+failure doesn't sink the batch. For each:
+
+1. **Resolve** — registry hit gives url/subdir/recipe/deps; otherwise the arg is
+   a git URL (`name` = basename minus `.git`).
+2. **Dependencies** — install any names in the registry entry's `deps` column
+   (5th, space-separated) that aren't already in the manifest. Each dep recurses
+   through `install` in a subshell, which also keeps the recursion from
+   clobbering the parent's resolve() globals. So `pac9 install pi9` pulls in
+   vts + vtwin.
+3. **Fetch** — `git/clone` (or `git/pull`) into `$home/src/pac9/<name>`. https
    needs `webfs` running (it is, on the image — see [[build-toolchain]]).
-3. **Build** — custom recipe if given, else `mk install`, else `mk`, else
+4. **Build** — custom recipe if given, else `mk install`, else `mk`, else
    `build.rc`, else stop and print the source path.
-4. **Record** — append `name url srcdir` to the manifest (dedup by name).
+5. **Record** — append `name url srcdir` to the manifest (dedup by name).
 
 ## Two package kinds
 

@@ -87,14 +87,18 @@ Either way, `pac9` is now on your path.
 
 | Command | What you get |
 |---|---|
-| `pac9 install pi9` | the LLM coding agent (needs vts + vtwin to render) |
+| `pac9 install pi9` | the LLM coding agent (pulls in vts and vtwin automatically) |
 | `pac9 install python9` | CPython 3.11 with the stdlib |
 | `pac9 install node9` | a Node-compatible runtime and the real npm |
 | `pac9 install zig9` | the Zig compiler |
 | `pac9 install netsurf` | the NetSurf web browser |
 | `pac9 install mxio` | the window manager |
-| `pac9 install vts` / `vtwin` | the terminal server and its window |
-| `pac9 install xena-panel` / `launcher` | the taskbar and Start menu |
+| `pac9 install vts vtwin` | the terminal server and its window |
+| `pac9 install xena-panel launcher` | the taskbar and Start menu |
+
+Pass as many packages as you like in one command, as the last two rows show. If a
+package declares dependencies, pac9 installs the missing ones first — `pac9
+install pi9` brings vts and vtwin along without you asking.
 
 Anything that isn't a known name is treated as a git URL: pac9 clones it and runs
 `mk install`, so any repo that follows the standard `mkfile` layout installs the

@@ -1,9 +1,13 @@
 #!/bin/rc
 # pac9 — a package manager for 9front.
 #
-#   pac9 install <name|git-url>   clone -> build -> install a package
-#   pac9 list                     show what's installed
-#   pac9 uninstall <name>         remove a package (best-effort)
+#   pac9 install <name|git-url>...  clone -> build -> install package(s)
+#   pac9 list                       show what's installed
+#   pac9 uninstall <name>           remove a package (best-effort)
+#
+# install takes any number of packages. A registry entry may name
+# dependencies (5th column); those are installed first if not already
+# present, so `pac9 install pi9` pulls in vts + vtwin automatically.
 #
 # The heavy lifting is already done by 9front: git9 (git/clone) fetches
 # any repo, and the mkfile + </sys/src/cmd/mkone convention gives every
@@ -11,7 +15,7 @@
 # a name->url registry, build-step detection, and an install manifest.
 #
 # Runtime state:
-#   /sys/lib/pac9/registry   curated  name<tab>url<tab>subdir<tab>recipe
+#   /sys/lib/pac9/registry   curated  name<tab>url<tab>subdir<tab>recipe<tab>deps
 #   /sys/lib/pac9/installed  manifest  name url srcdir  (one line per pkg)
 #   $home/src/pac9/<name>/   cached clone (reused on re-install)
 
@@ -24,28 +28,32 @@ nl='
 '
 
 fn usage {
-	echo 'usage: pac9 install <name|git-url>' >[1=2]
+	echo 'usage: pac9 install <name|git-url>...' >[1=2]
 	echo '       pac9 list' >[1=2]
 	echo '       pac9 uninstall <name>' >[1=2]
 	exit usage
 }
 
-# resolve <arg> -> sets $name $url $subdir $recipe
+# resolve <arg> -> sets $name $url $subdir $recipe $deps
 # registry hit wins; otherwise <arg> is a git URL and we default the rest.
 fn resolve {
 	arg=$1
 	entry=()
+	deps=()
 	if(test -f $reg){
 		oif=$ifs
 		ifs=$nl
-		entry=`{awk 'BEGIN{FS="\t"} $1==a{print $2; print $3; print $4; exit}' a=$arg $reg}
+		entry=`{awk 'BEGIN{FS="\t"} $1==a{print $2; print $3; print $4; print $5; exit}' a=$arg $reg}
 		ifs=$oif
 	}
-	if(~ $#entry 3){
+	if(~ $#entry 3 || ~ $#entry 4){
 		name=$arg
 		url=$entry(1)
 		subdir=$entry(2)
 		recipe=$entry(3)
+		# 5th column is a space-separated dep list; re-split it into words
+		if(~ $#entry 4 && ! ~ $entry(4) -)
+			deps=`{echo $entry(4)}
 	}
 	if not {
 		url=$arg
@@ -53,6 +61,11 @@ fn resolve {
 		subdir=.
 		recipe=-
 	}
+}
+
+# installed_p <name> -> true (exit 0) if the package is in the manifest
+fn installed_p {
+	test -f $manifest && grep -s '^'$1' ' $manifest
 }
 
 # build in the current directory, per the detection order in the plan.
@@ -78,9 +91,20 @@ fn build {
 	}
 }
 
-fn cmd_install {
-	if(~ $#* 0) usage
+fn install_one {
 	resolve $1
+
+	# install missing dependencies first. Each runs in its own subshell
+	# so the recursion doesn't clobber this frame's resolve() globals.
+	for(d in $deps){
+		if(installed_p $d){
+			echo 'pac9: dependency '$d' already installed'
+		}
+		if not {
+			echo 'pac9: installing dependency '$d
+			@{ install_one $d }
+		}
+	}
 
 	if(~ $url -){
 		# recipe-only package (no repo): a prebuilt tarball or any
@@ -121,6 +145,14 @@ fn cmd_install {
 	}
 	echo $name $url $dir >>$manifest
 	echo 'pac9: installed '$name
+}
+
+fn cmd_install {
+	if(~ $#* 0) usage
+	# each package in its own subshell: one failure (a bad recipe, a
+	# missing mkfile) aborts that package, not the whole batch.
+	for(p in $*)
+		@{ install_one $p }
 }
 
 fn cmd_list {

@@ -4,6 +4,8 @@ One line to install software on a running 9front box:
 
 ```
 pac9 install netsurf              # curated short name
+pac9 install vts vtwin            # several at once
+pac9 install pi9                  # pulls in its deps (vts, vtwin) too
 pac9 install https://host/repo    # any git repo
 pac9 list
 pac9 uninstall netsurf
@@ -17,16 +19,19 @@ a `mk install` target that drops its binary in `/$objtype/bin`. pac9 is the
 thin wrapper on top — a name→url registry, build-step detection, and a manifest
 of what's installed.
 
-`pac9 install <arg>`:
+`install` takes any number of packages; each is handled independently, so one
+bad build doesn't sink the rest of the batch. For each one:
 
-1. **Resolve** — if `<arg>` is a name in `/sys/lib/pac9/registry`, use its
-   url/subdir/recipe; otherwise treat `<arg>` as a git URL.
-2. **Fetch** — `git/clone` into `$home/src/pac9/<name>` (or `git/pull` if
+1. **Resolve** — if the arg is a name in `/sys/lib/pac9/registry`, use its
+   url/subdir/recipe/deps; otherwise treat it as a git URL.
+2. **Dependencies** — install any packages named in the registry entry's `deps`
+   column that aren't already in the manifest, then continue.
+3. **Fetch** — `git/clone` into `$home/src/pac9/<name>` (or `git/pull` if
    already there). https URLs need `webfs` running (it is, on the agent9 image).
-3. **Build** — a custom recipe if given, else `mk install` (when the mkfile has
+4. **Build** — a custom recipe if given, else `mk install` (when the mkfile has
    that target), else `mk`, else `build.rc`, else it stops and tells you where
    the source is.
-4. **Record** — appends `name url srcdir` to `/sys/lib/pac9/installed`.
+5. **Record** — appends `name url srcdir` to `/sys/lib/pac9/installed`.
 
 ## Install pac9 itself
 
@@ -48,11 +53,14 @@ rc install.rc      # cp pac9 -> /rc/bin, cp registry -> /sys/lib/pac9
 
 ## Registry
 
-`/sys/lib/pac9/registry`, tab-separated: `name<TAB>url<TAB>subdir<TAB>recipe`.
+`/sys/lib/pac9/registry`, tab-separated:
+`name<TAB>url<TAB>subdir<TAB>recipe<TAB>deps`.
 
 - `subdir` `.` = repo root (use e.g. `src/vts` for a package inside a monorepo).
 - `recipe` `-` = default detection; otherwise an rc command run in the package
   dir (e.g. netsurf's `fetch clone http; mk; mk install`).
+- `deps` optional 5th column: space-separated package names installed first if
+  not already present. Omit it or use `-` for none.
 
 You only need an entry for packages that want a short name or a custom build —
 unknown names fall through to being treated as a git URL.
@@ -77,5 +85,6 @@ the `/sys/lib` tree — those ports have no file manifest).
 
 ## Verify
 
-`rc test.rc` builds a throwaway package end-to-end (clone → `mk install` →
-manifest) and asserts the binary appears. Run it on the 9front box.
+`rc test.rc` appends throwaway packages to the registry and checks install,
+dependency resolution, the manifest, and uninstall — no git or network needed.
+Run it on the 9front box; it prints `PASS` or `FAIL: <reason>`.
