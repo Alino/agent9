@@ -112,8 +112,23 @@ fn build {
 	if not if(test -f build.rc){
 		rc build.rc
 	}
+	if not if(test -f configure || test -f Makefile || test -f makefile){
+		# POSIX / autotools build under APE (9front ships ape/sh + ape/make).
+		# For a non-default prefix or configure flags, use a registry recipe.
+		# External cmds exit '' on success, so accept 0 and '' below.
+		echo 'pac9: building with APE (configure/make)'
+		if(test -f configure){
+			ape/sh configure
+			if(! ~ $status 0 ''){ echo 'pac9: ./configure failed' >[1=2]; exit configure }
+		}
+		ape/make
+		if(! ~ $status 0 ''){ echo 'pac9: make failed' >[1=2]; exit make }
+		ape/make install
+		if(! ~ $status 0 ''){ echo 'pac9: make install failed (built in '$d')' >[1=2]; exit makeinst }
+		echo 'pac9: APE build ok'   # trailing success — the block must not end on a guard `if`
+	}
 	if not {
-		echo 'pac9: no mkfile/build.rc in '$d'; build it manually' >[1=2]
+		echo 'pac9: no mkfile/build.rc/Makefile in '$d'; build it manually' >[1=2]
 		exit nobuild
 	}
 }
