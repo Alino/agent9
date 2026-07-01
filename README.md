@@ -91,6 +91,7 @@ Either way, `pac9` is now on your path.
 | `pac9 install python9` | CPython 3.11 with the stdlib |
 | `pac9 install node9` | a Node-compatible runtime and the real npm |
 | `pac9 install zig9` | the Zig compiler |
+| `pac9 install cc9` | modern C++ on the box — clang, lld, and libc++ |
 | `pac9 install netsurf` | the NetSurf web browser |
 | `pac9 install mxio` | the window manager |
 | `pac9 install vts vtwin` | the terminal server and its window |

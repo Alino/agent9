@@ -65,8 +65,9 @@ failure doesn't sink the batch. For each:
 - **Source** (`url` is a git URL) — cloned and built. Most things, including the
   repo's own `src/*` components via a `subdir` field (`src/mxio`, `src/vts`, …).
 - **Prebuilt** (`url` is `-`) — no repo; the recipe fetches a tarball and
-  unpacks it. This is how **python9 / node9 / zig9 / pi9** install: their
-  vendored upstream (or cross-compiled Go, for pi9) isn't cloneable-and-buildable
+  unpacks it. This is how **python9 / node9 / zig9 / cc9 / pi9** install: their
+  vendored upstream (or cross-compiled Go, for pi9; a clang cross-toolchain, for
+  cc9) isn't cloneable-and-buildable
   on the box, so they ship as built artifacts unpacked at `/` (the same
   `hget | gunzip | tar x` flow already used to place them on the image).
   Uninstall for these is best-effort (removes the `/$objtype/bin` binary, not
