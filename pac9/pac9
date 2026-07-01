@@ -49,7 +49,7 @@ fn resolve {
 	if(test -f $reg){
 		oif=$ifs
 		ifs=$nl
-		entry=`{awk 'BEGIN{FS="\t"} $1==a{print $2; print $3; print $4; print $5; exit}' a=$arg $reg}
+		entry=`{awk 'BEGIN{FS="\t"} $1==a{print $2; print $3; print $4; print $5; exit}' 'a='^$arg $reg}
 		ifs=$oif
 	}
 	if(~ $#entry 3 || ~ $#entry 4){
@@ -167,7 +167,7 @@ fn install_one {
 	# record it (drop any prior line for this name first)
 	mkdir -p /sys/lib/pac9
 	if(test -f $manifest){
-		awk '$1!=n' n=$name $manifest >$manifest.tmp
+		awk '$1!=n' 'n='^$name $manifest >$manifest.tmp
 		mv $manifest.tmp $manifest
 	}
 	echo $name $url $dir >>$manifest
@@ -178,8 +178,9 @@ fn cmd_install {
 	if(~ $#* 0) usage
 	# each package in its own subshell: one failure (a bad recipe, a
 	# missing mkfile) aborts that package, not the whole batch.
-	for(p in $*)
+	for(p in $*){
 		@{ install_one $p }
+	}
 }
 
 fn cmd_list {
@@ -197,7 +198,7 @@ fn cmd_uninstall {
 		echo 'pac9: nothing installed' >[1=2]
 		exit
 	}
-	dir=`{awk '$1==n{print $3; exit}' n=$name $manifest}
+	dir=`{awk '$1==n{print $3; exit}' 'n='^$name $manifest}
 	if(~ $#dir 0){
 		echo 'pac9: '$name' is not installed' >[1=2]
 		exit notinstalled
@@ -210,12 +211,15 @@ fn cmd_uninstall {
 	flist=/sys/lib/pac9/files/$name
 	if(test -f $flist){
 		echo 'pac9: removing files recorded for '$name
-		for(f in `{grep -v '/$' $flist})
+		for(f in `{grep -v '/$' $flist}){
 			rm -f /$f
-		# drop package dirs that are now empty (rmdir skips non-empty ones
-		# like /amd64/bin); deepest-first so nested empties clear too
-		for(d in `{grep '/$' $flist | sort -r})
-			rmdir /$d >[2]/dev/null
+		}
+		# drop package dirs that are now empty. Plan 9 has no rmdir; `rm`
+		# on a dir removes it only if empty (errors, harmlessly, on shared
+		# dirs like /amd64/bin). Strip the trailing slash; deepest-first.
+		for(d in `{grep '/$' $flist | sed 's,/$,,' | sort -r}){
+			rm /$d >[2]/dev/null
+		}
 		rm -f $flist
 	}
 	if not if(! ~ $dir - && test -f $dir/mkfile && grep -s 'uninstall:' $dir/mkfile){
@@ -229,7 +233,7 @@ fn cmd_uninstall {
 
 	if(! ~ $dir -)
 		rm -rf $dir
-	awk '$1!=n' n=$name $manifest >$manifest.tmp
+	awk '$1!=n' 'n='^$name $manifest >$manifest.tmp
 	mv $manifest.tmp $manifest
 	echo 'pac9: removed '$name
 }
