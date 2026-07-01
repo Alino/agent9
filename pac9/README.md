@@ -29,9 +29,15 @@ bad build doesn't sink the rest of the batch. For each one:
 3. **Fetch** — `git/clone` into `$home/src/pac9/<name>` (or `git/pull` if
    already there). https URLs need `webfs` running (it is, on the agent9 image).
 4. **Build** — a custom recipe if given, else `mk install` (when the mkfile has
-   that target), else `mk`, else `build.rc`, else it stops and tells you where
-   the source is.
+   that target), else `mk`, else `build.rc`, else a POSIX build under APE
+   (`ape/sh configure` if present, then `ape/make` + `ape/make install`), else it
+   stops and tells you where the source is. A failed build is *not* recorded as
+   installed.
 5. **Record** — appends `name url srcdir` to `/sys/lib/pac9/installed`.
+
+For an autotools/POSIX port with a non-default prefix or configure flags, put the
+full command in a registry `recipe` (e.g. `ape/sh configure --prefix=/usr/local;
+ape/make; ape/make install`) rather than relying on the default detection.
 
 ## Install pac9 itself
 

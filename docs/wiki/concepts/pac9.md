@@ -56,8 +56,13 @@ failure doesn't sink the batch. For each:
    vts + vtwin.
 3. **Fetch** — `git/clone` (or `git/pull`) into `$home/src/pac9/<name>`. https
    needs `webfs` running (it is, on the image — see [[build-toolchain]]).
-4. **Build** — custom recipe if given, else `mk install`, else `mk`, else
-   `build.rc`, else stop and print the source path.
+4. **Build** — custom recipe if given, else `mk install` (detected via an
+   `install:` target *or* a `</sys/src/cmd/mk{one,many,lib}` include), else `mk`,
+   else `build.rc`, else a POSIX build under APE (`ape/sh configure` if present →
+   `ape/make` → `ape/make install`), else stop and print the source path. A build
+   that fails or doesn't run is *not* recorded as installed (the check accepts
+   `$status` of `0` or `''`, since external cmds like `mk`/`make` exit nil on
+   success).
 5. **Record** — append `name url srcdir` to the manifest (dedup by name).
 
 ## Two package kinds
