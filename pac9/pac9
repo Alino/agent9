@@ -80,7 +80,11 @@ fn install_tarball {
 	pkg=$2
 	tmp=/tmp/pac9-$pkg.tar
 	echo 'pac9: fetching '$turl
-	hget $turl >$tmp.gz
+	if(! hget $turl >$tmp.gz){
+		echo 'pac9: fetch failed: '$turl >[1=2]
+		rm -f $tmp.gz
+		exit fetch
+	}
 	gunzip <$tmp.gz >$tmp
 	# record what's in the archive so uninstall can remove exactly these
 	mkdir -p /sys/lib/pac9/files
@@ -96,7 +100,9 @@ fn build {
 		echo 'pac9: recipe: '$recipe
 		eval $recipe
 	}
-	if not if(test -f mkfile && grep -s 'install:' mkfile){
+	# an explicit install: target, OR a </sys/src/cmd/mk{one,many,lib} include
+	# (which provides one) — the standard Plan 9 convention every mkone package uses.
+	if not if(test -f mkfile && grep -s 'install:|/mkone|/mkmany|/mklib' mkfile){
 		mk install
 	}
 	if not if(test -f mkfile){
@@ -162,6 +168,12 @@ fn install_one {
 			exit fetch
 		}
 		@{ cd $dir/$subdir && build $dir/$subdir }
+		# build runs in a subshell, so its exit can't abort us — check
+		# the status and bail before recording a failed build as installed.
+		if(! ~ $status 0){
+			echo 'pac9: build failed for '$name'; not installed (source cached in '$dir')' >[1=2]
+			exit build
+		}
 	}
 
 	# record it (drop any prior line for this name first)
