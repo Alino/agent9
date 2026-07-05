@@ -4,6 +4,7 @@
 #   pac9 install <name|git-url>...  clone -> build -> install package(s)
 #   pac9 list                       show what's installed
 #   pac9 uninstall <name>           remove a package (best-effort)
+#   pac9 update                     refresh the registry (and pac9 itself)
 #
 # install takes any number of packages. A registry entry may name
 # dependencies (5th column); those are installed first if not already
@@ -37,6 +38,7 @@ fn usage {
 	echo 'usage: pac9 install <name|git-url>...' >[1=2]
 	echo '       pac9 list' >[1=2]
 	echo '       pac9 uninstall <name>' >[1=2]
+	echo '       pac9 update' >[1=2]
 	exit usage
 }
 
@@ -268,6 +270,34 @@ fn cmd_uninstall {
 	echo 'pac9: removed '$name
 }
 
+# refresh the registry, then pac9 itself, from the repo's main branch.
+# A new package in the registry is unusable until the box refreshes its
+# local copy — this is that refresh. Self-replacing a running rc script
+# is safe here: the fn body is fully parsed before it runs, and exit
+# ensures rc never reads the (rewritten) script file again.
+fn cmd_update {
+	rawbase=https://raw.githubusercontent.com/Alino/agent9/main/pac9
+	mkdir -p /sys/lib/pac9
+	if(! hget $rawbase/registry >/tmp/pac9.reg || ! grep -s tarball /tmp/pac9.reg){
+		echo 'pac9: registry fetch failed' >[1=2]
+		rm -f /tmp/pac9.reg
+		exit fetch
+	}
+	cp /tmp/pac9.reg $reg
+	rm -f /tmp/pac9.reg
+	echo 'pac9: registry updated'
+	hget $rawbase/pac9 >/tmp/pac9.new
+	if(~ $status 0 '' && grep -s 'package manager for 9front' /tmp/pac9.new){
+		cp /tmp/pac9.new /rc/bin/pac9
+		chmod +x /rc/bin/pac9
+		echo 'pac9: pac9 updated'
+	}
+	if not
+		echo 'pac9: self-update skipped (fetch failed)' >[1=2]
+	rm -f /tmp/pac9.new
+	exit ''
+}
+
 if(~ $#* 0) usage
 sub=$1
 shift
@@ -278,6 +308,8 @@ case list
 	cmd_list $*
 case uninstall remove
 	cmd_uninstall $*
+case update
+	cmd_update $*
 case *
 	usage
 }

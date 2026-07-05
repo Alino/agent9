@@ -9,7 +9,12 @@ pac9 install pi9                  # pulls in its deps (vts, vtwin) too
 pac9 install https://host/repo    # any git repo
 pac9 list
 pac9 uninstall netsurf
+pac9 update                       # refresh the registry (and pac9 itself)
 ```
+
+The registry is a local file, so a box only sees packages published before it
+installed pac9 — run `pac9 update` when a name gives "bad uri" or you know a
+new package shipped.
 
 ## How it works
 
