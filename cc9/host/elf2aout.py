@@ -74,13 +74,52 @@ def main():
             sys.exit(f"{nm} segment 0x{val:x} >= 4 GB: does not fit the 32-bit "
                      f"a.out size field (would truncate)")
 
-    hdr  = struct.pack('>8I', S_MAGIC, len(text), len(data), bss, 0,
+    # --- Plan 9 amd64 symbol table (so acid can name frames) ---
+    # Parse the ELF .symtab/.strtab and emit Plan 9 syms: 8-byte big-endian value,
+    # one type byte (0x80|ascii), NUL-terminated name. Text funcs -> 'T', data/bss
+    # objects -> 'D'/'B'. Enough for acid backtraces.
+    syms = build_symtab(elf, TEXTVA + len(text))
+
+    hdr  = struct.pack('>8I', S_MAGIC, len(text), len(data), bss, len(syms),
                        e_entry & 0xffffffff, 0, 0)
     hdr += struct.pack('>Q', e_entry)
-    out = hdr + text + data
+    out = hdr + text + data + syms
     open(sys.argv[2], 'wb').write(out)
     print(f"{sys.argv[2]}: {len(out)} bytes  text={len(text)} data={len(data)} "
-          f"bss={bss} entry=0x{e_entry:x}")
+          f"bss={bss} syms={len(syms)} entry=0x{e_entry:x}")
+
+def build_symtab(elf, data_end_va):
+    e_shoff = u64(elf, 0x28)
+    e_shentsize = u16(elf, 0x3a)
+    e_shnum = u16(elf, 0x3c)
+    symtab = strtab = None
+    for i in range(e_shnum):
+        o = e_shoff + i*e_shentsize
+        if u32(elf, o+4) == 2:            # SHT_SYMTAB
+            symtab = (u64(elf, o+24), u64(elf, o+32), u32(elf, o+40))  # off,size,link
+    if not symtab:
+        return b''
+    so, ssz, link = symtab
+    lo = e_shoff + link*e_shentsize
+    stro, strsz = u64(elf, lo+24), u64(elf, lo+32)
+    out = bytearray()
+    n = ssz // 24
+    for i in range(n):
+        e = so + i*24
+        st_name = u32(elf, e+0)
+        st_info = elf[e+4]
+        st_shndx = u16(elf, e+6)
+        st_value = u64(elf, e+8)
+        typ = st_info & 0xf               # 1=OBJECT 2=FUNC
+        if typ not in (1, 2) or st_shndx == 0 or st_value == 0:
+            continue
+        end = elf.index(b'\x00', stro+st_name)
+        name = elf[stro+st_name:end]
+        if not name:
+            continue
+        ch = 'T' if typ == 2 else ('B' if st_value >= data_end_va else 'D')
+        out += struct.pack('>Q', st_value) + bytes([0x80 | ord(ch)]) + name + b'\x00'
+    return bytes(out)
 
 if __name__ == '__main__':
     main()

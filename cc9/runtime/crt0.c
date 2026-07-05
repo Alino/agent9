@@ -56,8 +56,37 @@ extern void cc9_notetramp(void);
  * reentry guard means a bad read can't loop. (A stack-overflow fault can't be
  * reported — the kernel can't build the note frame on a blown stack.) */
 static volatile int cc9_in_note;
+/* Reserved stack the note trampoline switches to (see cc9_notetramp in
+ * n9syscall.s) so the handler runs even when the interrupted main stack is deep,
+ * letting a runaway-recursion note actually be sampled. */
+char cc9_note_stack[1u<<20];
+void *cc9_note_sp = cc9_note_stack + (1u<<20) - 256;
 int cc9_note_handler(unsigned long framesp)
 {
+#ifdef CC9_FAULT_FILE
+	/* Dump the raw note frame (contains the Ureg incl. PC) to a FILE FIRST, before
+	 * touching `msg` — the note-string offset varies by fault type and dereferencing
+	 * a bad one double-faults the handler before it can report. Raw f[i] reads stay
+	 * inside the kernel-built note frame, so they can't fault. */
+	if (!cc9_in_note) {
+		extern long n9_create(const char *, int, int);
+		int ffd = n9_create("/tmp/cc9fault", 1 /*OWRITE*/, 0666);
+		if (ffd >= 0) {
+			unsigned long *f = (unsigned long *)framesp;
+			n9_pwrite(ffd, "frame:\n", 7, -1);
+			for (int i = 0; i < 46; i++) {
+				unsigned long v = f[i];
+				char b[36]; int k=0;
+				b[k++]='['; if(i>=10)b[k++]='0'+i/10; b[k++]='0'+i%10; b[k++]=']'; b[k++]=' ';
+				b[k++]='0'; b[k++]='x';
+				for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
+				b[k++]=' ';
+				for (int j=0;j<8;j++){ char c=(char)(v>>(j*8)); b[k++]=(c>=32&&c<127)?c:'.'; }
+				b[k++]='\n'; n9_pwrite(ffd, b, k, -1);
+			}
+		}
+	}
+#endif
 	const char *msg = (const char *)(framesp + 24);
 #ifndef CC9_RECURSE_PROBE
 	/* "alarm" note (Plan 9 alarm(2)/setitimer): the SIGALRM analogue. Run the
@@ -114,7 +143,36 @@ int cc9_note_handler(unsigned long framesp)
 			for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
 			b[k++]='\n'; n9_pwrite(2, b, k, -1);
 		}
-		n9_exits("cc9-alarm");
+		n9_pwrite(2, "---\n", 4, -1);
+		/* Walk the INTERRUPTED stack upward from Ureg.sp (slot 41, empirical) for
+		 * the return-address chain — a tight recursion shows one text addr repeated.
+		 * We run on the reserved handler stack, so this survives a deep main stack.
+		 * Overwrite /tmp/cc9stack each fire → the last (deepest) sample wins. */
+		{
+			extern long n9_create(const char *, int, int);
+			extern char __cc9_main_stack[];
+			unsigned long base = (unsigned long)__cc9_main_stack;
+			unsigned long top  = base + (unsigned long)CC9_STACK_BYTES;
+			unsigned long sp = f[41];
+			if (sp >= base && sp < top) {
+				int ffd = n9_create("/tmp/cc9stack", 1, 0666);
+				if (ffd >= 0) {
+					unsigned long *s = (unsigned long *)sp;
+					unsigned long nn = (top - sp) / 8; if (nn > 6000) nn = 6000;
+					int dumped = 0;
+					for (unsigned long i = 0; i < nn && dumped < 240; i++) {
+						unsigned long v = s[i];
+						if (v >= 0x200028UL && v < 0x5000000UL) {  /* text range */
+							char b[20]; int k=0; b[k++]='0'; b[k++]='x';
+							for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
+							b[k++]='\n'; n9_pwrite(ffd, b, k, -1); dumped++;
+						}
+					}
+				}
+			}
+		}
+		{ extern long n9_alarm(unsigned long); n9_alarm(1); }  /* re-arm: fast periodic sampling */
+		return 0;   /* NCONT: keep running, sample again */
 	}
 #endif
 	if (n > 4) { n9_pwrite(2, "cc9 fault: ", 11, -1); n9_pwrite(2, msg, n, -1); n9_pwrite(2, "\n", 1, -1); }
@@ -158,7 +216,7 @@ void __cc9_run(void)
 #endif
 	STAGE('c');
 #ifdef CC9_RECURSE_PROBE
-	{ extern long n9_alarm(unsigned long); n9_alarm(1500); }  /* timer to sample a runaway recursion */
+	{ extern long n9_alarm(unsigned long); n9_alarm(1); }  /* periodic sampler for a runaway recursion */
 #endif
 	/* Real argc/argv from the kernel entry stack: at SP sits argc, then the
 	 * NULL-terminated argv pointer array (Plan 9 amd64 entry ABI). */
@@ -196,6 +254,11 @@ void __cc9_run(void)
 	}
 	for (cc9_fn *p = __fini_array_end; p > __fini_array_start; )
 		(*--p)();
+	/* Kill any surviving rfork(RFMEM) worker threads before exiting. Plan 9 does
+	 * not reparent orphans, so a thread that outlives main (or is mid-teardown)
+	 * would leak as a stuck proc and can post a note that kills the parent shell.
+	 * Weak: a thread-free program links a no-op. */
+	{ extern void cc9_kill_threads(void) __attribute__((weak)); if (cc9_kill_threads) cc9_kill_threads(); }
 	n9_exits(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");
 }
 
@@ -213,9 +276,20 @@ void __cc9_run(void)
 #ifndef CC9_STACK_BYTES
 #define CC9_STACK_BYTES 268435456
 #endif
-__attribute__((section(".cc9stack"), aligned(16), used)) char __cc9_main_stack[CC9_STACK_BYTES];
 #define CC9_STR2(x) #x
 #define CC9_STR(x) CC9_STR2(x)
+/* NOBITS .cc9stack so crt0.o carries NO file bytes for the (up to 1 GB) stack —
+ * a C `char[N]` in a named section is emitted PROGBITS (N zero bytes on disk),
+ * ballooning the object + the archive. Declare it as an @nobits section with
+ * `.zero` (reserves space, emits nothing). */
+__asm__(".section .cc9stack,\"aw\",@nobits\n"
+        ".globl __cc9_main_stack\n"
+        ".p2align 4\n"
+        "__cc9_main_stack:\n"
+        ".zero " CC9_STR(CC9_STACK_BYTES) "\n"
+        ".size __cc9_main_stack, " CC9_STR(CC9_STACK_BYTES) "\n"
+        ".text\n");
+extern char __cc9_main_stack[];
 
 /* The kernel-provided entry stack (argc + the NULL-terminated argv pointer array
  * live here). _start saves SP before switching to __cc9_main_stack; __cc9_run

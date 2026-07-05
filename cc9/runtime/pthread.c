@@ -20,7 +20,14 @@ extern void n9_exits(const char *);
 
 #define STACKSIZE (256*1024)
 
-typedef struct { void *(*start)(void *); void *arg; void *ret; int joinsem; int done; int detached; void *stack; unsigned long pid; } n9_thread;
+/* Per-create stack size override. Callers that need a bigger stack than the
+ * 256K default (e.g. rustc's deeply-recursive compile thread wants 8M) set this
+ * right before pthread_create; 0 means "use STACKSIZE". Left sticky — threads in
+ * such programs are few and want uniform large stacks. */
+static long cc9_thread_stack = 0;
+void cc9_set_thread_stack(long n){ cc9_thread_stack = n; }
+
+typedef struct { void *(*start)(void *); void *arg; void *ret; int joinsem; int done; int detached; void *stack; unsigned long stksize; unsigned long pid; } n9_thread;
 
 /* Identify the current thread WITHOUT a real getpid (/dev/pid isn't in the
  * listener namespace, and main's BSS stack has no kernel TOS). Each thread has a
@@ -34,8 +41,25 @@ static int handoff_sem = 0;       /* child signals it has consumed the handoff *
  * never dereferences t — t/stack may be freed by a concurrent join. On amd64
  * (TSO) the lock-free scan is safe: the writer sets stklo/stkhi/pid BEFORE used,
  * and a cleared slot (used=0) is skipped, so no stale match and no use-after-free. */
-static struct { int used; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; } th_tab[MAXTH];
+static struct { int used; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; int errno_v; } th_tab[MAXTH];
 static int th_lock = 1;
+
+/* Per-thread errno slot, resolved by %rsp stack-range like cur_pid (lock-free,
+ * same TSO discipline). Weak-referenced from n9libc's __n9_errno so thread-free
+ * links never pull pthread.o. Main thread (or a reaped slot) -> 0 = use the
+ * global. A slot reused after join could absorb a stale write through a saved
+ * errno pointer — errno is written-then-read immediately, so harmless. */
+int *cc9_thread_errno_slot(void){
+	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
+	for(int i=0;i<MAXTH;i++){
+		if(!th_tab[i].used) continue;
+		__asm__ volatile("":::"memory");
+		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return &th_tab[i].errno_v;
+	}
+	return 0;
+}
+
+static unsigned long cur_pid(void);   /* defined below; used by cc9_kill_threads */
 
 static n9_thread *find_thread(unsigned long pid){
 	n9_thread *t=0;
@@ -43,6 +67,30 @@ static n9_thread *find_thread(unsigned long pid){
 	for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==pid){ t=th_tab[i].t; break; }
 	n9_semrelease(&th_lock,1);
 	return t;
+}
+
+/* Kill every live worker thread at process exit. cc9 threads are rfork(RFPROC)
+ * siblings; when main exits they'd otherwise be ORPHANED (Plan 9 doesn't reparent),
+ * left blocked in Semacqui forever — leaking procs and, because they hold shared
+ * resources, wedging the parent shell. Called from crt0 just before n9_exits: post
+ * a "kill" note to each thread's /proc/PID/note. Lock-free scan (same TSO-safe
+ * discipline as cur_pid) so a thread that died holding th_lock can't deadlock exit. */
+extern long n9_pwrite(int, const void *, long, long long);
+void cc9_kill_threads(void){
+	unsigned long self = cur_pid();
+	for(int i=0;i<MAXTH;i++){
+		unsigned long pid = th_tab[i].pid;
+		if(!th_tab[i].used || pid==0 || pid==self) continue;
+		char path[40]; int k=0;
+		for(const char *p="/proc/"; *p; p++) path[k++]=*p;
+		char num[20]; int n=0; unsigned long v=pid;
+		do { num[n++]='0'+(v%10); v/=10; } while(v);
+		while(n>0) path[k++]=num[--n];
+		for(const char *p="/note"; *p; p++) path[k++]=*p;
+		path[k]=0;
+		long fd = n9_open(path, 1 /*OWRITE*/);
+		if(fd>=0){ n9_pwrite((int)fd,"kill",4,-1); n9_close((int)fd); }
+	}
 }
 
 /* Claim a thread's table slot exactly once (returns 1 to the single caller that
@@ -123,10 +171,10 @@ static void trampoline(void *p){
 	 * waits on, so by the time pthread_create returns the thread is findable AND
 	 * cur_pid() resolves this thread — both before start() runs. The scalar range
 	 * + used-set-last ordering is what makes the lock-free cur_pid scan safe. */
-	unsigned long lo = (unsigned long)t->stack, hi = lo + STACKSIZE;
+	unsigned long lo = (unsigned long)t->stack, hi = lo + t->stksize;
 	n9_semacquire(&th_lock,1);
 	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){
-		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi;
+		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi; th_tab[i].errno_v=0;
 		__asm__ volatile("":::"memory");   /* release: publish range before used (pairs w/ cur_pid) */
 		th_tab[i].used=1; break;
 	}
@@ -174,9 +222,10 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	static int tid_lock = 1;
 	n9_semacquire(&tid_lock,1); unsigned long tid = ++tid_ctr; n9_semrelease(&tid_lock,1);
 	t->start=start; t->arg=arg; t->ret=0; t->joinsem=0; t->done=0; t->detached=0; t->pid=tid;
-	char *stk = malloc(STACKSIZE); if(!stk){ free(t); return 11; }
-	t->stack=stk;
-	void *top = (void *)(((unsigned long)(stk+STACKSIZE)) & ~15UL);
+	size_t ss = cc9_thread_stack > STACKSIZE ? (size_t)cc9_thread_stack : STACKSIZE;
+	char *stk = malloc(ss); if(!stk){ free(t); return 11; }
+	t->stack=stk; t->stksize=ss;
+	void *top = (void *)(((unsigned long)(stk+ss)) & ~15UL);
 	n9_semacquire(&create_lock, 1);
 	long pid = n9_rfork_thread(top, trampoline, t);
 	if(pid < 0){   /* rfork failed: no child will ever release handoff_sem */
@@ -211,18 +260,23 @@ int pthread_equal(pthread_t a, pthread_t b){ return a==b; }
 void pthread_exit(void *ret){ unsigned long pid=cur_pid(); n9_thread *t=find_thread(pid); if(t){ t->ret=ret; t->done=1; n9_semrelease(&t->joinsem,1);} for(;;) n9_sleep(1000); }
 
 /* ---- mutex (binary semaphore + optional recursion) ---- */
-static void mtx_ensure(pthread_mutex_t *m){ if(m->sem==0 && m->owner==0 && m->count==0 && m->kind==0) m->sem=1; }
+/* NOTE: there is deliberately NO lazy "ensure sem!=0" init here. A prior version
+ * resurrected sem=1 whenever it saw {sem,owner,count,kind} all-zero — but that state
+ * also occurs TRANSIENTLY during a normal lock, in the window between n9_semacquire
+ * (sem 1->0) and the m->owner=self store below. A second thread hitting that window
+ * would re-set sem=1 and its own semacquire would succeed too, admitting two holders
+ * -> lost updates under contention. Rust and cc9's PTHREAD_MUTEX_INITIALIZER/
+ * pthread_mutex_init both set sem=1, so a valid unlocked mutex is never all-zero.
+ * Raw zero-initialized (non-POSIX) mutexes are unsupported and will deadlock. */
 int pthread_mutex_init(pthread_mutex_t *m, const pthread_mutexattr_t *a){ m->sem=1; m->owner=0; m->count=0; m->kind=a?a->kind:0; return 0; }
 int pthread_mutex_destroy(pthread_mutex_t *m){ (void)m; return 0; }
 int pthread_mutex_lock(pthread_mutex_t *m){
-	mtx_ensure(m);
 	unsigned long self=cur_pid();
 	if(m->kind==PTHREAD_MUTEX_RECURSIVE && m->owner==self){ m->count++; return 0; }
 	n9_semacquire(&m->sem, 1);
 	m->owner=self; m->count=1; return 0;
 }
 int pthread_mutex_trylock(pthread_mutex_t *m){
-	mtx_ensure(m);
 	unsigned long self=cur_pid();
 	if(m->kind==PTHREAD_MUTEX_RECURSIVE && m->owner==self){ m->count++; return 0; }
 	if(n9_semacquire(&m->sem, 0) < 0) return 16 /*EBUSY*/;

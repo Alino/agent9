@@ -104,20 +104,30 @@ static int cc9_contains(const char *h, const char *n){
  * mapping can only ever be best-effort. Upgrade path is to add cases as new
  * kernel strings surface (not to restructure); the raw errstr is the source of
  * truth and could instead be threaded into std::system_error::what() verbatim. */
+/* Last kernel errstr + the errno it mapped to, for io::Error message fidelity
+ * (Rust's error_string shows the real Plan 9 string instead of "os error N").
+ * Process-global like errno itself; a caller compares the stashed errno to the
+ * one it holds so a stale string from another failure path can't mislabel. */
+static char cc9_last_errstr[160];
+static int cc9_last_errstr_errno = 0;
+const char *__n9_errstr_last(int *eno){ if(eno) *eno = cc9_last_errstr_errno; return cc9_last_errstr; }
 int cc9_errno_from_errstr(void){
 	/* errstr fills the buffer (kernel NUL-terminates) but its return value is not
 	 * the length — read the buffer directly. */
 	char e[160]; e[0]=0; e[sizeof e-1]=0;
 	n9_errstr(e, sizeof e - 1);
-	if(e[0] == 0) return ENOENT;
-	if(cc9_contains(e, "permission")) return EACCES;
-	if(cc9_contains(e, "exists"))     return EEXIST;
-	if(cc9_contains(e, "not empty"))  return ENOTEMPTY;
-	if(cc9_contains(e, "not a directory") || cc9_contains(e, "not a dir")) return ENOTDIR;
-	if(cc9_contains(e, "is a directory")) return EISDIR;
-	if(cc9_contains(e, "i/o error"))  return EIO;
-	if(cc9_contains(e, "does not exist") || cc9_contains(e, "not found") || cc9_contains(e, "no such")) return ENOENT;
-	return ENOENT;
+	for(int i=0;i<(int)sizeof cc9_last_errstr;i++){ cc9_last_errstr[i]=e[i]; if(!e[i]) break; }
+	cc9_last_errstr[sizeof cc9_last_errstr - 1]=0;
+	int r = ENOENT;
+	if(e[0] == 0) ;
+	else if(cc9_contains(e, "permission")) r = EACCES;
+	else if(cc9_contains(e, "exists"))     r = EEXIST;
+	else if(cc9_contains(e, "not empty"))  r = ENOTEMPTY;
+	else if(cc9_contains(e, "not a directory") || cc9_contains(e, "not a dir")) r = ENOTDIR;
+	else if(cc9_contains(e, "is a directory")) r = EISDIR;
+	else if(cc9_contains(e, "i/o error"))  r = EIO;
+	cc9_last_errstr_errno = r;
+	return r;
 }
 int stat(const char *path, struct stat *st){
 	unsigned char b[512]; long n=n9_stat(path,b,sizeof b);
@@ -137,8 +147,8 @@ extern long n9_wstat(const char *, unsigned char *, int);
 extern long n9_fwstat(int, unsigned char *, int);
 static void putle(unsigned char *p, unsigned long long v, int n){ for(int i=0;i<n;i++) p[i]=(unsigned char)(v>>(8*i)); }
 /* Build a wstat Dir with all fields "don't change" (~0 / empty) except those
- * given: name (rename), mode (chmod), length (truncate). 0xFFFF.. = leave. */
-static int build_wstat(unsigned char *buf, const char *name, unsigned long mode, unsigned long long length){
+ * given: name (rename), mode (chmod), length (truncate), mtime. 0xFFFF.. = leave. */
+static int build_wstat(unsigned char *buf, const char *name, unsigned long mode, unsigned long long length, unsigned long mtime){
 	unsigned char *p = buf + 2;                 /* size filled last */
 	putle(p,0xFFFF,2); p+=2;                     /* type */
 	putle(p,0xFFFFFFFF,4); p+=4;                 /* dev */
@@ -146,8 +156,8 @@ static int build_wstat(unsigned char *buf, const char *name, unsigned long mode,
 	putle(p,0xFFFFFFFF,4); p+=4;                 /* qid.vers */
 	putle(p,~0ULL,8); p+=8;                      /* qid.path */
 	putle(p,mode,4); p+=4;                       /* mode */
-	putle(p,0xFFFFFFFF,4); p+=4;                 /* atime */
-	putle(p,0xFFFFFFFF,4); p+=4;                 /* mtime */
+	putle(p,0xFFFFFFFF,4); p+=4;                 /* atime (not settable via wstat) */
+	putle(p,mtime,4); p+=4;                      /* mtime */
 	putle(p,length,8); p+=8;                     /* length */
 	int nl = name ? (int)strlen(name) : 0;
 	putle(p,nl,2); p+=2; for(int i=0;i<nl;i++) *p++=(unsigned char)name[i];   /* name */
@@ -158,10 +168,19 @@ static int build_wstat(unsigned char *buf, const char *name, unsigned long mode,
 }
 int chmod(const char *path, mode_t m){
 	struct stat st; unsigned long keep=0; if(stat(path,&st)==0) keep = (st.st_mode&S_IFDIR)?DMDIR:0;
-	unsigned char b[128]; int n=build_wstat(b,0,keep|(m&0777),~0ULL);
+	unsigned char b[128]; int n=build_wstat(b,0,keep|(m&0777),~0ULL,0xFFFFFFFF);
 	return n9_wstat(path,b,n)<0?(errno=EACCES,-1):0;
 }
-int fchmod(int fd, mode_t m){ unsigned char b[128]; int n=build_wstat(b,0,m&0777,~0ULL); return n9_fwstat(fd,b,n)<0?-1:0; }
+int fchmod(int fd, mode_t m){ unsigned char b[128]; int n=build_wstat(b,0,m&0777,~0ULL,0xFFFFFFFF); return n9_fwstat(fd,b,n)<0?-1:0; }
+/* Set mtime via wstat (atime is not settable on Plan 9 — callers ignore it). */
+int cc9_set_mtime(const char *path, unsigned long secs){
+	unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,~0ULL,secs);
+	return n9_wstat(path,b,n)<0?(errno=cc9_errno_from_errstr(),-1):0;
+}
+int cc9_fset_mtime(int fd, unsigned long secs){
+	unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,~0ULL,secs);
+	return n9_fwstat(fd,b,n)<0?(errno=cc9_errno_from_errstr(),-1):0;
+}
 int fchmodat(int d, const char *p, mode_t m, int f){ (void)f; char b[1024]; return chmod(at_path(d,p,b,sizeof b),m); }
 long pathconf(const char *p, int name){ (void)p; return name==4 ? 4096 : 255; }
 long fpathconf(int fd, int name){ (void)fd; return name==4 ? 4096 : 255; }
@@ -173,8 +192,8 @@ int chdir(const char *path){ return n9_chdir(path)<0 ? -1 : 0; }
 int access(const char *path, int mode){ (void)mode; struct stat st; return stat(path,&st)==0?0:-1; }
 int isatty(int fd){ (void)fd; return 0; }
 int fsync(int fd){ (void)fd; return 0; }
-int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len); return n9_fwstat(fd,b,n)<0?-1:0; }
-int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len); return n9_wstat(p,b,n)<0?-1:0; }
+int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_fwstat(fd,b,n)<0?-1:0; }
+int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_wstat(p,b,n)<0?-1:0; }
 extern long n9_dup(int, int);
 int dup(int fd){ int r=(int)n9_dup(fd,-1); if(r<0) errno=EBADF; return r; }
 
@@ -190,7 +209,7 @@ static int same_dir(const char *a, const char *b){
 int rename(const char *old, const char *neu){
 	if(!same_dir(old,neu)){ errno=EXDEV; return -1; }
 	const char *nb=neu; for(const char *p=neu;*p;p++) if(*p=='/') nb=p+1;
-	unsigned char b[256]; int n=build_wstat(b,nb,0xFFFFFFFF,~0ULL);
+	unsigned char b[256]; int n=build_wstat(b,nb,0xFFFFFFFF,~0ULL,0xFFFFFFFF);
 	if(n9_wstat(old,b,n)>=0) return 0;
 	/* POSIX rename replaces an existing target; Plan 9 wstat-rename refuses if it
 	 * exists, so remove it and retry (not atomic, but matches POSIX visibility). */
@@ -254,11 +273,26 @@ int closedir(DIR *d){ int fd=d->fd; free(d); return n9_close(fd)<0?-1:0; }
 int dirfd(DIR *d){ return d->fd; }
 void rewinddir(DIR *d){ long long r; n9_seek(&r,d->fd,0,0); d->len=0; d->pos=0; }
 
-/* file-time setting goes through wstat (not wired yet); accept silently. */
-struct timespec; struct timeval; struct statvfs;
-int utimes(const char *p, const struct timeval *t){ (void)p;(void)t; return 0; }
-int utimensat(int d, const char *p, const struct timespec *t, int f){ (void)d;(void)p;(void)t;(void)f; return 0; }
-int futimens(int fd, const struct timespec *t){ (void)fd;(void)t; return 0; }
+/* file-time setting via wstat. Plan 9 can only set mtime (atime is kernel-owned),
+ * so t[0] (atime) is accepted and ignored; t==0 (POSIX "set to now") is a no-op —
+ * every real caller passes explicit times. */
+#include <time.h>
+#include <sys/time.h>
+struct statvfs;
+#define CC9_UTIME_OMIT ((long)((1L<<30)-2))   /* glibc UTIME_OMIT */
+int utimes(const char *p, const struct timeval *t){
+	if(!t) return 0;
+	return cc9_set_mtime(p, (unsigned long)t[1].tv_sec);
+}
+int utimensat(int d, const char *p, const struct timespec *t, int f){
+	(void)f; char b[1024];
+	if(!t || t[1].tv_nsec == CC9_UTIME_OMIT) return 0;
+	return cc9_set_mtime(at_path(d,p,b,sizeof b), (unsigned long)t[1].tv_sec);
+}
+int futimens(int fd, const struct timespec *t){
+	if(!t || t[1].tv_nsec == CC9_UTIME_OMIT) return 0;
+	return cc9_fset_mtime(fd, (unsigned long)t[1].tv_sec);
+}
 /* statvfs: report a generic large filesystem (the values most code only sanity-checks). */
 struct __cc9_statvfs { unsigned long f_bsize,f_frsize,f_blocks,f_bfree,f_bavail,f_files,f_ffree,f_favail,f_fsid,f_flag,f_namemax; };
 int statvfs(const char *p, void *vp){ (void)p; struct __cc9_statvfs *s=vp; memset(s,0,sizeof *s); s->f_bsize=8192; s->f_frsize=8192; s->f_blocks=1<<20; s->f_bfree=1<<19; s->f_bavail=1<<19; s->f_namemax=255; return 0; }

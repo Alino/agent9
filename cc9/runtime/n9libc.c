@@ -104,10 +104,14 @@ static void cc9_dump_chain_malloc(void){
 #endif
 void *malloc(size_t n){
 #ifdef CC9_RECURSE_PROBE
-	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + 232UL*1024*1024) cc9_dump_chain_malloc(); }
+	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
 	n9_semacquire(&malloc_lock,1); void *r=malloc_u(n); n9_semrelease(&malloc_lock,1); return r; }
-void free(void *p){ if(!p) return; n9_semacquire(&malloc_lock,1); free_u(p); n9_semrelease(&malloc_lock,1); }
+void free(void *p){
+#ifdef CC9_RECURSE_PROBE
+	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
+#endif
+	if(!p) return; n9_semacquire(&malloc_lock,1); free_u(p); n9_semrelease(&malloc_lock,1); }
 /* aligned_alloc(alignment, size) (C11). malloc is 16-byte aligned, so small
  * alignments are free; larger ones over-allocate and align, recording the base
  * + sentinel so plain free() reclaims it (see free above). */
@@ -273,7 +277,7 @@ int cc9_atomic_is_lock_free(size_t n, const volatile void *p) __asm__("__atomic_
 int cc9_atomic_is_lock_free(size_t n, const volatile void *p){ (void)p; return n<=16; }
 void *memcpy(void*d,const void*s,size_t n){
 #ifdef CC9_RECURSE_PROBE
-	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + 232UL*1024*1024) cc9_dump_chain_malloc(); }
+	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
 	char*a=d; const char*b=s; for(size_t i=0;i<n;i++)a[i]=b[i]; return d; }
 void *memmove(void*d,const void*s,size_t n){ char*a=d; const char*b=s; if(a<b)for(size_t i=0;i<n;i++)a[i]=b[i]; else for(size_t i=n;i>0;i--)a[i-1]=b[i-1]; return d; }
@@ -321,9 +325,20 @@ char *strerror(int e){
 /* POSIX/XSI strerror_r (threads-on system_error uses the reentrant form). */
 int strerror_r(int e, char *buf, size_t n){ char *m=strerror(e); size_t i; for(i=0;i+1<n && m[i]; i++) buf[i]=m[i]; if(n) buf[i]=0; return 0; }
 
-/* errno + a C locale (always "C": '.' decimal point) for libc++/json */
+/* errno + a C locale (always "C": '.' decimal point) for libc++/json.
+ * errno is PER-THREAD when the thread runtime is linked, global otherwise.
+ * `__thread` was tried and reverted: -femulated-tls turns each access into
+ * __emutls_get_address(), dragging pthread.o into EVERY link (n9link chokes).
+ * Instead pthread.c provides a WEAK-referenced cc9_thread_errno_slot() that
+ * resolves the calling thread's slot by %rsp stack-range (same trick as
+ * cur_pid) — thread-free programs leave the symbol unsatisfied (0) and use
+ * the global; threaded programs get real per-thread errno with no emutls. */
+extern int *cc9_thread_errno_slot(void) __attribute__((weak));
 static int n9_errno_v = 0;
-int *__n9_errno(void){ return &n9_errno_v; }
+int *__n9_errno(void){
+	if(cc9_thread_errno_slot){ int *p = cc9_thread_errno_slot(); if(p) return p; }
+	return &n9_errno_v;
+}
 struct lconv { char *decimal_point, *thousands_sep, *grouping, *p[7]; char c[24]; };
 static char dot[] = ".";
 static char empty[] = "";
