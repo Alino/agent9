@@ -32,6 +32,9 @@ fi
 # Hostfwd ports:
 #   2222 ssh   (glenda has no password by default; nothing listens)
 #   1717 listen1 (rc shell, dev convenience)
+#  17019 rcpu + 1567 auth (drawterm:
+#        drawterm -h 'tcp!127.0.0.1!17019' -a 'tcp!127.0.0.1!1567' -u glenda
+#        password agent9agent9 — see RUNNING.md)
 #   1564 9P    (mount this VM's namespace from another host)
 #  53692 OAuth callback (pi9 /login: Anthropic / GitHub Copilot)
 #   1455 OAuth callback (pi9 /login: OpenAI ChatGPT/Codex)
@@ -42,7 +45,7 @@ exec qemu-system-x86_64 \
   -smp 2 \
   -cpu max \
   -drive file=agent9-v0.5.0.qcow2,if=virtio,format=qcow2 \
-  -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::1717-:17010,hostfwd=tcp::1564-:564,hostfwd=tcp::53692-:53692,hostfwd=tcp::1455-:1455 \
+  -netdev user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::1717-:17010,hostfwd=tcp::17019-:17019,hostfwd=tcp::1567-:567,hostfwd=tcp::1564-:564,hostfwd=tcp::53692-:53692,hostfwd=tcp::1455-:1455 \
   -device virtio-net-pci,netdev=net0 \
   -device virtio-rng-pci \
   -usb \

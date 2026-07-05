@@ -10,7 +10,9 @@ You need two things:
    raytracer, nlohmann/json, STL, exceptions, threads, and a brainfuck JIT.
    The C++ runtime is validated against the upstream libc++ / libc++abi /
    libunwind conformance suites. The image also carries the opt-in **W^X
-   kernel patch** (off by default). v0.4.0 introduced cc9 (clang/LLVM
+   kernel patch** (off by default), boots unattended, accepts **drawterm**
+   connections out of the box (see below), and fixes mxio painting
+   titlebars over graphical clients like acme. v0.4.0 introduced cc9 (clang/LLVM
    cross-toolchain). v0.3.0 added **node9** — a Node.js-compatible runtime
    running the real npm (`node` / `npm` on PATH). v0.2.0 added the python9
    CPython 3.11 port (`python` on PATH) and pi9 at feature parity with
@@ -48,18 +50,38 @@ Install QEMU from https://www.qemu.org/download/#windows, add to PATH,
 then double-click `run-windows.bat`. WHPX acceleration kicks in
 automatically on Windows 10+.
 
-## First-boot prompts
+## First boot
 
-You'll see two text prompts before the desktop comes up:
+The image boots unattended (`nobootprompt` and `user=glenda` are baked
+into plan9.ini) — no keypresses needed. Init runs, mxio paints the
+desktop, xena-panel paints the taskbar, and a vtwin terminal pops up.
+About 15 seconds end-to-end on KVM, 30-45 on Apple Silicon TCG.
 
-1. `bootargs is (tcp, tls, il, local!device)[local!/dev/sdF0/fs -m 296]`
-   → press **Enter**
-2. `user[glenda]:`
-   → press **Enter**
+## Connecting with drawterm
 
-Then init runs, mxio paints the desktop, xena-panel paints the
-taskbar, and a vtwin terminal pops up. About 15 seconds end-to-end on
-KVM, 30-45 on Apple Silicon TCG.
+The image runs a Plan 9 auth server + rcpu listener, so you can attach
+real desktops from your host with [drawterm](https://drawterm.9front.org)
+instead of (or alongside) the QEMU console:
+
+```
+drawterm -h tcp!127.0.0.1!17019 -a tcp!127.0.0.1!1567 -u glenda
+```
+
+Password: `agent9agent9` (authdom `agent9`). On Windows use
+`drawterm-amd64.exe` with the same arguments.
+
+Why bother: drawterm windows resize dynamically, you get your host
+filesystem inside the VM at `/mnt/term`, and each connection is an
+independent desktop — run as many as you like. The dial strings carry
+non-standard ports because the run scripts forward host 17019 → guest
+17019 (rcpu) and host 1567 → guest 567 (auth; 567 is privileged on the
+host side).
+
+The credentials are public, like everything else in this dev image —
+don't expose the forwarded ports beyond localhost. To change them:
+`auth/wrkey` (nvram) + `auth/changeuser glenda` (/adm/keys) inside the
+VM, then update the factotum key line in
+`/usr/glenda/bin/rc/riostart`.
 
 ## Using Pi9
 
@@ -93,8 +115,9 @@ Or click the **Start** menu and pick **Pi9**.
 Out of the box you get NAT through QEMU's user-mode networking.
 Outbound HTTP/HTTPS works (pi9 hits Anthropic / OpenRouter, mothra
 loads pages). Inbound: ports 22 (ssh), 17010 (listen1 dev shell),
-564 (9P export), 53692 + 1455 (OAuth callbacks) are forwarded from
-host ports 2222 / 1717 / 1564 / 53692 / 1455.
+17019 (rcpu, for drawterm), 567 (auth server, for drawterm), 564
+(9P export), 53692 + 1455 (OAuth callbacks) are forwarded from host
+ports 2222 / 1717 / 17019 / 1567 / 1564 / 53692 / 1455.
 
 To SSH in: `ssh -p 2222 glenda@localhost` (no password — for dev
 convenience, this image is not hardened).

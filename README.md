@@ -38,8 +38,10 @@ sudo apt install qemu-system-x86
 # Windows: install QEMU, then double-click run-windows.bat
 ```
 
-First boot shows two text prompts — press Enter to both. After about fifteen
-seconds you land on the desktop. `release/RUNNING.md` has the details.
+The image boots unattended — after about fifteen seconds you land on the
+desktop. You can also attach resizable desktops from your host with drawterm
+(`drawterm -h tcp!127.0.0.1!17019 -a tcp!127.0.0.1!1567 -u glenda`, password
+`agent9agent9`). `release/RUNNING.md` has the details.
 
 **Or install onto your own 9front.** If you already run 9front you don't need the
 image. Everything here installs with `pac9`, one line at a time. That's the rest

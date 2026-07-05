@@ -22,6 +22,12 @@
  * as content? Two signals:
  *   1. Window is too short to fit a titlebar + content (panel @ 30px).
  *   2. Window's label is one of the known chrome programs.
+ *   3. A graphical client (acme, netsurf, gl9win, ...) has taken over
+ *      the window image: it read /dev/winname and holds /dev/mouse, so
+ *      it draws the whole rect itself — painting a titlebar over it (or
+ *      stealing its top-strip clicks) corrupts the client's UI. vtwin
+ *      is the exception: it detects mxio and insets its terminal below
+ *      the titlebar on purpose, so it keeps its chrome.
  */
 static int
 wischrome(Window *w)
@@ -29,6 +35,9 @@ wischrome(Window *w)
 	if(w == nil || w->i == nil)
 		return 0;
 	if(Dy(w->i->r) <= Titlebar + 20)
+		return 1;
+	if(w->mouseopen && w->winnameread
+	&& (w->label == nil || strstr(w->label, "vtwin") == nil))
 		return 1;
 	if(w->label != nil){
 		if(strcmp(w->label, "xena-panel") == 0) return 1;
