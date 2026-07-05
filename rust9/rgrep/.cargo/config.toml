@@ -1,0 +1,6 @@
+[build]
+target = "/Users/claw/Projects/agent9/rust9/targets/x86_64-unknown-plan9.json"
+
+[unstable]
+build-std = ["std", "panic_abort"]
+json-target-spec = true

@@ -1,0 +1,46 @@
+#!/bin/bash
+# rust9-ld — rustc's linker for the x86_64-unknown-plan9 target.
+# rustc invokes us with gnu-ld-style args (object files, -o OUT, flags). We link
+# with brew ld.lld against the cc9 substrate (plan9.ld + libcc9cxx.a + libcc9m.a),
+# then run elf2aout so the final -o artifact is a real Plan 9 a.out.
+#
+# Config (env): CC9 (cc9 tree), CC9_LLD (real ld.lld), RUST9_LDLOG (debug log path).
+set -euo pipefail
+CC9="${CC9:-/Users/claw/Projects/agent9/cc9}"
+LLD="${CC9_LLD:-/opt/homebrew/opt/lld/bin/ld.lld}"
+LDS="$CC9/test/plan9.ld"
+LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"
+ELF2AOUT="$CC9/host/elf2aout.py"
+
+# Shim the 3 libunwind entry points cc9 didn't export (needed by panic=unwind).
+CLANG="${CC9_CLANG:-/opt/homebrew/opt/llvm/bin/clang}"
+SHIM_C="$(cd "$(dirname "$0")" && pwd)/n9unwind.c"; SHIM_O="/tmp/rust9-n9unwind.o"
+if [ -f "$SHIM_C" ] && { [ ! -f "$SHIM_O" ] || [ "$SHIM_C" -nt "$SHIM_O" ]; }; then
+  "$CLANG" --target=x86_64-unknown-none -ffreestanding -nostdlib -fno-pic -O2 -c "$SHIM_C" -o "$SHIM_O"
+fi
+
+[ -z "${RUST9_LDLOG:-}" ] || printf '%s\0' "$@" >"$RUST9_LDLOG"
+
+# Extract -o OUT; forward everything else to ld.lld. Drop driver-style flags that
+# a raw ld.lld rejects (rustc mostly emits ld-clean args under linker-flavor "ld",
+# but filter the known driver-isms defensively).
+out=""; args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -o*) out="${1#-o}"; shift ;;
+    -flavor) shift 2 ;;                 # lld universal-driver directive; ld.lld IS gnu-flavor
+    -pie|-no-pie|-nopie) shift ;;
+    -rpath) shift 2 ;;                  # RPATH <dir>: a static Plan 9 a.out needs none
+    *rpath*) shift ;;                   # -rpath=/-rpath,/-Wl,-rpath,$ORIGIN,...: drop any form
+    -z) shift 2 ;;                      # -z <keyword> (e.g. ,origin from rpath): irrelevant, static+plan9.ld
+    -Wl,*) args+=("${1#-Wl,}"); shift ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+[ -n "$out" ] || { echo "rust9-ld: no -o output in args" >&2; exit 2; }
+
+elf="$out.elf"
+"$LLD" -o "$elf" "${args[@]}" -T "$LDS" -static -nostdlib \
+  --start-group "$SHIM_O" "$LIB" "$LIBM" --end-group
+python3 "$ELF2AOUT" "$elf" "$out" >&2

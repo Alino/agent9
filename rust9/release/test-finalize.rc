@@ -1,0 +1,10 @@
+#!/bin/rc
+# point the box registry at the canonical GitHub release URL + drop the stashed
+# manual deploy (superseded by the pac9-managed install)
+grep -v '^rust9' /sys/lib/pac9/registry > /tmp/reg.new
+echo 'rust9	-	.	tarball https://github.com/Alino/agent9/releases/download/rust9/rust9-amd64.tar.gz' >> /tmp/reg.new
+cp /tmp/reg.new /sys/lib/pac9/registry
+grep rust9 /sys/lib/pac9/registry
+rm -r /usr/glenda/rust.premanaged >[2=1]
+ls /usr/glenda | grep rust
+echo DONE-FINALIZE

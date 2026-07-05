@@ -1,0 +1,12 @@
+[package]
+name = "stdhello"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "stdhello"
+path = "src/main.rs"
+
+[profile.dev]
+
+[profile.release]
