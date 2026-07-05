@@ -22,6 +22,11 @@ cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9/cc9-amd64.
 # It renders through a vts session, so it depends on vts + vtwin (5th column,
 # pulled in automatically).
 pi9	-	.	tarball https://github.com/Alino/agent9/releases/download/pi9/pi9-amd64.tar.gz	vts vtwin
+# rust9 — the real rustc (1.98-dev, cranelift backend) self-hosted on 9front:
+# compiler + std sysroot + n9link linker + cargo9, all in one tarball (~80 MB
+# download, ~210 MB installed under /usr/glenda/rust + /rc/bin wrappers).
+# Self-contained: bundles its cc9 runtime substrate, no other package needed.
+rust9	-	.	tarball https://github.com/Alino/agent9/releases/download/rust9/rust9-amd64.tar.gz
 # gl9 — OpenGL (Mesa softpipe) for 9front. gl9win is the native libdraw window
 # server (builds on-box); gl9 is the prebuilt tarball of cross-compiled GL demos
 # + the `gl9` launcher, depending on gl9win. `pac9 install gl9` then `gl9 cube`.

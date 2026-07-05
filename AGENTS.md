@@ -58,7 +58,10 @@ evaporating.
 
 ## What NOT to do
 
-- Don't propose Rust ports. No Plan 9 target for rustc.
+- Rust now runs on 9front: `rust9/` has `x86_64-unknown-plan9` as a built-in rustc
+  target + a `std` port over the cc9 runtime — threads/sync, panic=unwind, fs,
+  process, TCP+UDP all real; ~2309 upstream coretests pass. The real rustc
+  (cranelift) self-hosts on the box: `pac9 install rust9`. See `rust9/README.md`.
 - Don't propose Python anywhere in the runtime. Python 3 isn't runtime-ready
   (a CPython 3.11 port is in progress under `python9/` — see
   `docs/wiki/concepts/python3-on-plan9.md` — but it doesn't run yet).

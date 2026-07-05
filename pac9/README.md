@@ -92,6 +92,16 @@ python9` removes exactly those files (the tarball installs `python`, not
 `python9`, so a name-based `rm` wouldn't find it). Empty package directories are
 cleaned up; shared dirs like `/amd64/bin` are left alone.
 
+## rust9 (the Rust toolchain)
+
+`pac9 install rust9` (~80 MB) installs the real `rustc` (1.98-dev, cranelift
+backend) **running on 9front**: compiler + plan9 std sysroot + the `n9link`
+ELF→a.out linker + `cargo9`, laid out under `/usr/glenda/rust` with `rustc` /
+`cargo9` wrappers in `/rc/bin`. Self-contained — it bundles its cc9 runtime
+substrate, so it needs no other package (not even `cc9`). `rustc hi.rs -o hi`
+then `./hi`, entirely on the box. Build the tarball with
+`rust9/release/make-tarball.sh`; publish it as the `rust9` GitHub release.
+
 ## gl9 (OpenGL)
 
 `pac9 install gl9` gives you OpenGL 3.3 (Mesa softpipe) on 9front. It's split in

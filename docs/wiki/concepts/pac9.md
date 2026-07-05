@@ -74,7 +74,10 @@ failure doesn't sink the batch. For each:
   unpacks it at `/`. This is how **python9 / node9 / cc9 / pi9** install: their
   vendored upstream (or cross-compiled Go, for pi9; a cross-built LLVM, for cc9)
   isn't cloneable-and-buildable on the box, so they ship as built artifacts
-  (released on GitHub, verified end-to-end on cirno). The recorded file list is
+  (released on GitHub, verified end-to-end on cirno). **rust9** ships the same
+  way (~80 MB): the real on-box `rustc` + std sysroot + `n9link` + `cargo9`,
+  self-contained under `/usr/glenda/rust` (bundles its cc9 substrate — no dep
+  on the `cc9` package). The recorded file list is
   what lets uninstall remove them exactly — the tarball installs `python`, not
   `python9`, so a name-based `rm` would miss it. Uninstall deletes the recorded
   files and removes now-empty package dirs (deepest-first, since Plan 9 has no
