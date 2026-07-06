@@ -21,8 +21,17 @@ then, from a rio window:
 Everything works the way you'd hope: 24-bit color, 256-color, text attributes,
 selection → /dev/snarf, ctrl+shift+v paste, live window resize with reflow,
 ^C interrupts (as a Plan 9 note to the shell's note group), `alacritty -e cmd`,
-`$home/lib/alacritty/alacritty.toml` config. Full-window render+swap is ~13 ms
-on a small fanless box (softpipe, no GPU) — snappier than it has any right to be.
+`$home/lib/alacritty/alacritty.toml` config. Full-screen TUIs work too — pi9
+runs inside it (raw mode keys off the alt-screen toggle, terminal size travels
+over the shared /env group).
+
+On a small fanless box (softpipe, no GPU): a keystroke costs ~16 ms of render
+plus a single-digit-ms blit, and paced scrolling moves as pixel shifts at
+~20-40 ms/line — because presentation is damage-shaped end to end (per-rect
+scissored renders, GL9D sub-rect blits, GL9S scroll records). The full story,
+with the measurements, is in [PORT-NOTES.md](PORT-NOTES.md).
+
+![Alacritty on bare-metal 9front](screenshots/cirno-baremetal-demo.png)
 
 ## Architecture
 

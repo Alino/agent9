@@ -124,6 +124,24 @@ Your own GL apps are cross-compiled on a host with cc9 (static build — there's
 shared libGL on 9front) and run with `gl9 run <app>`. Build the tarball with
 `gl9/release/make-tarball.sh` and publish it as the `gl9` GitHub release.
 
+## alacritty9 (the Alacritty terminal)
+
+`pac9 install alacritty9` (~5 MB) installs real upstream Alacritty 0.17.0: the
+cross-compiled binary (Mesa softpipe + OSMesa EGL + bundled Go Mono fonts all
+statically linked, ~19 MB installed) under `/usr/glenda/alacritty9/`, the
+`gl9win2` interactive window host in `/amd64/bin`, and the `alacritty9` launcher
+in `/rc/bin`. Self-contained — no other package needed. From a rio window:
+
+```
+alacritty9              # rc in a real GPU-terminal, colors and all
+alacritty9 -e pi9       # straight into pi9 (full-screen TUIs work)
+```
+
+Config lives at `$home/lib/alacritty/alacritty.toml`. Build the tarball with
+`alacritty9/release/make-tarball.sh`; docs in `alacritty9/README.md`,
+`PORT-NOTES.md` (patches, perf, limits) and `PROTOCOL.md` (the gl9win2 wire
+format).
+
 ## Verify
 
 `rc test.rc` appends throwaway packages to the registry and checks install,

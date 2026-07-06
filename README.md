@@ -96,6 +96,7 @@ Either way, `pac9` is now on your path.
 | `pac9 install rust9` | the real `rustc` running on 9front — `rustc hello.rs` compiles, links, and runs natively |
 | `pac9 install go` | the real Go toolchain (upstream go1.26.0) — `go build` runs natively |
 | `pac9 install gl9` | OpenGL 3.3 (Mesa softpipe) — `gl9 cube` / `gl9 egl` (pulls in gl9win) |
+| `pac9 install alacritty9` | real Alacritty 0.17.0, the GPU terminal, in a rio window — run `alacritty9` |
 | `pac9 install netsurf` | the NetSurf web browser |
 | `pac9 install mxio` | the window manager |
 | `pac9 install vts vtwin` | the terminal server and its window |
@@ -146,13 +147,15 @@ Mac/Linux box to build plan9 binaries; the compiler doesn't run on 9front). See
 | **rust9** | Rust on 9front: `x86_64-unknown-plan9` as a built-in rustc target + a `std` port (`std::sys::pal::plan9`) over the cc9 runtime. **The real `rustc` (1.98-dev, cranelift backend) runs on 9front itself** — `pac9 install rust9` gives you `rustc hello.rs` compiling, linking (via the from-scratch `n9link` ELF→a.out linker, also on-box), and running natively. std covers threads + real `Mutex`/`Condvar`, `panic=unwind`, fs (perms/mtime/canonicalize), `std::process` (spawn/pipes/`try_wait`), TCP **and UDP** over `/net`, per-thread errno, real kernel error strings. ~2309 of Rust's own `coretests` pass, 0 Rust-side failures. Flagship `rgrep` uses the real crates.io `regex`. | Rust / LLVM |
 | **gl9** | OpenGL 3.3 on 9front via Mesa's softpipe (software rasteriser), cross-compiled with cc9. Presents to a libdraw window through **gl9win**; `gl9 cube` draws a spinning lit 3D cube, `gl9 egl` a triangle through the EGL API. | C / Mesa |
 | **go** | The real Go toolchain, upstream go1.26.0 — plan9/amd64 is a supported upstream port, so this is packaging, not a port: built once with Go's own `bootstrap.bash`, installed to `/sys/lib/go`. `go build` compiles and runs natively on the box (goroutines, channels, the lot). No cgo, as upstream. | Go |
+| **alacritty9** | Real upstream Alacritty 0.17.0 — the GPU-accelerated terminal — running in a rio window on stock 9front. Built on rust9 + gl9: a new winit Plan 9 backend, an EGL-over-OSMesa context, pure-Rust font rasterization (Go Mono), rc on pipes with a 9term-style line discipline, `/dev/snarf` clipboard, and damage/scroll-blit presentation that gets keystrokes to ~25ms on a fanless box. Full-screen TUIs work — pi9 runs inside it. | Rust / C |
 | **NetSurf** | A web browser, from [netsurf-plan9](https://github.com/netsurf-plan9). | C |
 
 Each component has its own README with the real detail — the parity contracts,
 the build recipes, and the kencc/APE bug classes that had to be worked around.
 Start with [`python9/README.md`](python9/README.md),
 [`node9/DOCUMENTATION.md`](node9/DOCUMENTATION.md), [`cc9/README.md`](cc9/README.md),
-[`rust9/README.md`](rust9/README.md), and [`zig9/`](zig9/).
+[`rust9/README.md`](rust9/README.md), [`alacritty9/README.md`](alacritty9/README.md),
+and [`zig9/`](zig9/).
 
 ![pi9 LLM agent running in a vtwin window](docs/pi9-running.png)
 
