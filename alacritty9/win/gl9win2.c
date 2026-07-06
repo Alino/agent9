@@ -448,7 +448,7 @@ threadmain(int argc, char **argv)
 	Frame *f, *fnext;
 	Rectangle r;
 	int y0, y1, dy;
-	vlong lastns, blitns;
+	vlong lastns, blitns, t0, t1, t2;
 
 	if(argc >= 2 && strcmp(argv[1], "-d") == 0){
 		kbddebug = 1;
@@ -462,6 +462,11 @@ threadmain(int argc, char **argv)
 
 	if(initdraw(nil, nil, "gl9win2") < 0)
 		threadexitsall("initdraw");
+	/* NB: don't be tempted to grow display->bufsize past what initdraw
+	 * chose — the draw fd in a rio window namespace enforces its iounit
+	 * and oversized flushes fail SILENTLY (blank window, no error).
+	 * Full-frame loadimage costs ~70-135ms at 8K chunks on cirno; that's
+	 * the price, and damage/scroll records avoid full frames anyway. */
 
 	if(pipe(pev) < 0 || pipe(pfr) < 0)
 		threadexitsall("pipe");
@@ -546,10 +551,16 @@ threadmain(int argc, char **argv)
 						threadexitsall("allocimage");
 					}
 				}
+				t0 = kbddebug ? nsec() : 0;
 				loadimage(im, im->r, f->pix, n);
+				t1 = kbddebug ? nsec() : 0;
 				if((int)w < Dx(screen->r) || (int)h < Dy(screen->r))
 					draw(screen, screen->r, display->black, nil, ZP);
 				draw(screen, rectaddpt(im->r, o), im, nil, ZP);
+				t2 = kbddebug ? nsec() : 0;
+				if(kbddebug)
+					fprint(2, "gl9win2 full: load=%lldms draw=%lldms\n",
+						(t1-t0)/1000000, (t2-t1)/1000000);
 			}else if(im != nil
 			     && (int)(f->x + w) <= Dx(im->r) && (int)(f->y + h) <= Dy(im->r)){
 				/* delta against the current image; a stale rect
