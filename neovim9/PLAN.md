@@ -120,8 +120,9 @@ Bar: TUI editing + treesitter inside alacritty9 (VM + cirno). Jobs/:terminal/LSP
   neovim9-amd64.tar.gz (8.8MB: /amd64/bin/nvim + /usr/local/share/nvim/runtime
   + 7 parser markers) + registry entry. Live-verified on the VM the pac9 way:
   wiped the old install, hget + tar xf at /, then treesitter add("c")=true,
-  $VIMRUNTIME resolves, LSP gate passes. GitHub release upload pending gh auth
-  (same as rust9): `gh release create neovim9 release/neovim9-amd64.tar.gz`.
+  $VIMRUNTIME resolves, LSP gate passes. Released: real `pac9 install neovim9`
+  from https://github.com/Alino/agent9/releases/tag/neovim9 verified on
+  bare-metal cirno (fetch + install + LSP gate on the installed binary).
 
 ## Dev loop
 
