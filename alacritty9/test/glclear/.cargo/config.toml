@@ -1,0 +1,7 @@
+# Link the gl9 EGL object + Mesa softpipe (target/build-std come from
+# alacritty9/.cargo/config.toml via walk-up).
+[target.x86_64-unknown-plan9]
+rustflags = [
+    "-C", "link-arg=/Users/claw/Projects/agent9/gl9/_out/gl9egl.app.o",
+    "-C", "link-arg=/Users/claw/Projects/agent9/gl9/_out/libgl9mesa.a",
+]

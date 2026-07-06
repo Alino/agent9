@@ -1,0 +1,5 @@
+#!/bin/rc
+# alacritty9 — launch Alacritty on 9front. Run from a rio window.
+# gl9win2 owns the window; alacritty renders via Mesa softpipe (gl9).
+# GALLIUM_NOSSE is mandatory: Mesa's vertex-fetch JIT NX-faults on stock 9front.
+GALLIUM_NOSSE=1 exec gl9win2 /usr/glenda/alacritty9/alacritty $*

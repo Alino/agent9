@@ -1,0 +1,11 @@
+[package]
+name = "crossfont"
+version = "0.8.1"
+edition = "2021"
+license = "Apache-2.0"
+description = "crossfont shim for Plan 9: pure-Rust rasterizer (fontdue) with bundled Go Mono"
+
+[workspace]
+
+[dependencies]
+fontdue = "0.9"

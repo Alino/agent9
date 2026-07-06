@@ -186,6 +186,9 @@ eglQuerySurface(EGLDisplay dpy, EGLSurface surf, EGLint attr, EGLint *val)
 	return EGL_TRUE;
 }
 
+static struct gl9_ctx *cur_ctx;
+static struct gl9_surf *cur_surf;
+
 EGLBoolean
 eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)
 {
@@ -198,7 +201,34 @@ eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)
 	}
 	OSMesaPixelStore(OSMESA_Y_UP, 0);
 	glViewport(0, 0, s->w, s->h);
+	cur_ctx = c;
+	cur_surf = s;
 	return EGL_TRUE;
+}
+
+/* gl9 extension (no EGL equivalent): resize a surface in place. OSMesa renders
+ * into our client buffer, so resizing = realloc + rebind. Re-binds the current
+ * context itself so callers (the glutin shim) need no extra ceremony. */
+int
+gl9egl_surface_resize(EGLSurface surf, int w, int h)
+{
+	struct gl9_surf *s = surf;
+	unsigned char *nbuf;
+
+	if (!s || w <= 0 || h <= 0) return 0;
+	nbuf = malloc((unsigned long)w * h * 4);
+	if (!nbuf) { set_err(EGL_BAD_ALLOC); return 0; }
+	free(s->buf);
+	s->buf = nbuf;
+	s->w = w;
+	s->h = h;
+	if (cur_surf == s && cur_ctx) {
+		if (!OSMesaMakeCurrent(cur_ctx->os, s->buf, GL_UNSIGNED_BYTE, w, h))
+			return 0;
+		OSMesaPixelStore(OSMESA_Y_UP, 0);
+		glViewport(0, 0, w, h);
+	}
+	return 1;
 }
 
 static void

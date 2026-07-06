@@ -38,6 +38,11 @@ rust9	-	.	tarball https://github.com/Alino/agent9/releases/download/rust9/rust9-
 # + the `gl9` launcher, depending on gl9win. `pac9 install gl9` then `gl9 cube`.
 gl9win	https://github.com/Alino/agent9	gl9/port/plan9/win	-
 gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9/gl9-amd64.tar.gz	gl9win
+# alacritty9 — real upstream Alacritty 0.17.0 (GPU terminal) on 9front: the
+# cross-compiled binary (rust9 + Mesa softpipe + OSMesa EGL statically linked,
+# fonts bundled) + gl9win2, the interactive native window host. Self-contained
+# (~5 MB download / ~19 MB installed). Run `alacritty9` from a rio window.
+alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacritty9/alacritty9-amd64.tar.gz
 mxio	https://github.com/Alino/agent9	src/mxio	-
 vts	https://github.com/Alino/agent9	src/vts	-
 vtwin	https://github.com/Alino/agent9	src/vtwin	-

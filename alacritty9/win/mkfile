@@ -1,0 +1,8 @@
+</$objtype/mkfile
+
+TARG=gl9win2
+OFILES=gl9win2.$O
+
+BIN=/$objtype/bin
+
+</sys/src/cmd/mkone

@@ -1,0 +1,22 @@
+[package]
+name = "headless"
+version = "0.1.0"
+edition = "2021"
+description = "P1 gate: alacritty_terminal drives rc on Plan 9, headless"
+
+[workspace]
+
+[dependencies]
+alacritty_terminal = { path = "../../vendor/alacritty/alacritty_terminal" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+
+# The workspace-root [patch.crates-io] doesn't apply to standalone crates.
+[patch.crates-io]
+polling = { path = "../../shim/polling" }
+home = { path = "../../shim/home" }
