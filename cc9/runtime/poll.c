@@ -23,6 +23,7 @@
 #include <time.h>
 
 extern long n9_pread(int, void *, long, long long);
+extern long n9_pwrite(int, const void *, long, long long);
 extern long n9_pipe(int *);
 extern long n9_dup(int, int);
 extern void n9_semacquire(int *, int);
@@ -52,6 +53,43 @@ static cc9_pfd tab[PFD_MAX];
 static int tab_lock = 1;
 static int poll_sem;
 static int tab_inited;
+
+/* $CC9_POLL_TRACE=<path>.<pid> gets one line per event — ground-truth byte
+ * accounting when a stream wedges. Off (fd<0) by default. */
+extern char *getenv(const char *);
+extern long n9_open(const char *, int);
+extern long n9_create(const char *, int, unsigned int);
+extern int getpid(void);
+static int trace_fd = -2;
+void cc9_trace(const char *, int, long);
+static void trace(const char *op, int fd, long n){ cc9_trace(op, fd, n); }
+void cc9_trace(const char *op, int fd, long n){
+	if(trace_fd == -2){
+		char *pfx = getenv("CC9_POLL_TRACE");
+		if(!pfx) { trace_fd = -1; return; }
+		char path[128]; int k = 0;
+		while(pfx[k] && k < 100){ path[k] = pfx[k]; k++; }
+		path[k++] = '.';
+		int pid = getpid();
+		for(int d = 100000; d; d /= 10) path[k++] = '0' + pid / d % 10;
+		path[k] = 0;
+		trace_fd = (int)n9_create(path, 1 /*OWRITE*/, 0666);
+	}
+	if(trace_fd < 0) return;
+	char b[80]; int k = 0;
+	while(*op) b[k++] = *op++;
+	b[k++] = ' ';
+	b[k++] = 'f'; b[k++] = 'd';
+	b[k++] = '0' + (fd / 10) % 10; b[k++] = '0' + fd % 10;
+	b[k++] = ' ';
+	int neg = n < 0; unsigned long v = neg ? (unsigned long)-n : (unsigned long)n;
+	if(neg) b[k++] = '-';
+	char t[20]; int tn = 0;
+	do { t[tn++] = '0' + v % 10; v /= 10; } while(v);
+	while(tn) b[k++] = t[--tn];
+	b[k++] = '\n';
+	n9_pwrite(trace_fd, b, k, -1);
+}
 
 static void tab_init(void){
 	/* runs under tab_lock */
@@ -92,6 +130,7 @@ static void *reader_main(void *arg){
 		unsigned want = ring_space(p);
 		if(want > sizeof tmp) want = sizeof tmp;
 		long r = n9_pread(p->fd, tmp, (long)want, -1);
+		trace("rdthr", p->fd, r);
 		if(r < 0 && was_interrupted() && !p->dead)
 			continue;
 		n9_semacquire(&p->lock, 1);
@@ -164,13 +203,14 @@ long cc9_poll_read(int fd, void *buf, long n){
 			p->tail += (unsigned)take;
 			n9_semrelease(&p->lock, 1);
 			n9_semrelease(&p->space, 1);   /* wake the reader if it was full */
+			trace("read", fd, take);
 			return take;
 		}
 		int eof = p->eof, err = p->err;
 		n9_semrelease(&p->lock, 1);
-		if(eof) return 0;
-		if(err){ errno = EIO; return -1; }
-		if(p->flags & O_NONBLOCK){ errno = EAGAIN; return -1; }
+		if(eof){ trace("eof", fd, 0); return 0; }
+		if(err){ trace("err", fd, -1); errno = EIO; return -1; }
+		if(p->flags & O_NONBLOCK){ trace("again", fd, -1); errno = EAGAIN; return -1; }
 		n9_semacquire(&p->data, 1);        /* blocking: wait for the reader */
 	}
 }
@@ -260,8 +300,12 @@ int fcntl(int fd, int cmd, ...){
 		if(arg & FD_CLOEXEC) p->flags |= O_CLOEXEC; else p->flags &= ~O_CLOEXEC;
 		return 0;
 	case F_GETFL:
+		/* access mode: report O_RDWR — Plan 9 pipes are bidirectional and we
+		 * don't track open modes; claiming RDWR keeps libuv streams both
+		 * readable and writable (a genuinely read-only fd still fails at
+		 * write() time with a real error). */
 		p = lookup(fd);
-		return p ? (p->flags & O_NONBLOCK) : 0;
+		return O_RDWR | (p ? (p->flags & O_NONBLOCK) : 0);
 	case F_SETFL:
 		p = ensure(fd, 0);
 		if(!p){ errno = EMFILE; return -1; }

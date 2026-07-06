@@ -267,6 +267,9 @@ int raise(int s){ if(s<0||s>=32) return -1; n9_sigh h=n9_sigtab[s]; if(h&&h!=(n9
 /* register a handler (used by sigaction in posix_llvm.c, which can't see the
  * static table) */
 void cc9_set_sigh(int s, n9_sigh h){ if(s>=0&&s<32) n9_sigtab[s]=h; }
+/* crt0's note dispatch asks whether a signal has a real handler (SIG_IGN=1
+ * counts as handled — the note is then swallowed like an ignored signal). */
+int cc9_sig_has_handler(int s){ return s>=0 && s<32 && n9_sigtab[s] != 0; }
 /* run the SIGALRM (14) handler from the note handler when a Plan 9 "alarm" note
  * fires (setitimer/alarm). Called in note context; the conformance use is an
  * empty handler, but a real one runs here as the closest signal analogue. */

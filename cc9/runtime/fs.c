@@ -34,9 +34,17 @@ static unsigned long long le(const unsigned char *p, int n){
 static void dir_to_stat(const unsigned char *b, struct stat *st){
 	memset(st, 0, sizeof *st);
 	unsigned long mode = (unsigned long)le(b+21,4);
+	/* Dir.type (the serving device's character, wire offset 2): '|' = pipe.
+	 * Reporting pipes as S_IFIFO is load-bearing — libuv's uv_guess_handle
+	 * classifies fds by fstat, and a pipe reported as S_IFREG sends stream
+	 * users (nvim RPC channels) down the blocking-file path, which wedges. */
+	unsigned dtype = (unsigned)le(b+2,2);
 	st->st_ino  = le(b+13,8);
 	st->st_size = (long)le(b+33,8);
-	st->st_mode = ((mode & DMDIR) ? S_IFDIR : S_IFREG) | (mode & 0777);
+	if(dtype == '|')
+		st->st_mode = S_IFIFO | (mode & 0777);
+	else
+		st->st_mode = ((mode & DMDIR) ? S_IFDIR : S_IFREG) | (mode & 0777);
 	st->st_nlink = 1;
 	st->st_atim.tv_sec = (long)le(b+25,4);
 	st->st_mtim.tv_sec = (long)le(b+29,4);
@@ -93,7 +101,8 @@ int close(int fd){ cc9_poll_onclose(fd); return n9_close(fd) < 0 ? -1 : 0; }
 long read(int fd, void *buf, size_t n){
 	if(cc9_poll_owned(fd)) return cc9_poll_read(fd, buf, (long)n);
 	long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
-long write(int fd, const void *buf, size_t n){ long r=n9_pwrite(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
+extern void cc9_trace(const char *, int, long);
+long write(int fd, const void *buf, size_t n){ long r=n9_pwrite(fd,buf,(long)n,-1); cc9_trace("write", fd, r); if(r<0)errno=EIO; return r; }
 long pread(int fd, void *buf, size_t n, long off){ return n9_pread(fd,buf,(long)n,off); }
 long pwrite(int fd, const void *buf, size_t n, long off){ return n9_pwrite(fd,buf,(long)n,off); }
 long lseek(int fd, long off, int whence){ long long r=0; if(n9_seek(&r,fd,off,whence)<0){errno=EIO;return -1;} return (long)r; }
@@ -197,7 +206,47 @@ int unlinkat(int dfd, const char *path, int flag){ (void)flag; char b[1024]; ret
 int remove(const char *path){ return unlink(path); }
 int chdir(const char *path){ return n9_chdir(path)<0 ? -1 : 0; }
 int access(const char *path, int mode){ (void)mode; struct stat st; return stat(path,&st)==0?0:-1; }
-int isatty(int fd){ (void)fd; return 0; }
+/* Plan 9 has no ttys; the terminal (alacritty9/vts/9term) talks to us over
+ * pipes. Heuristic: fds 0-2 count as a tty when $TERM is set — that's exactly
+ * the environment a terminal emulator provides, and it's what lets nvim's TUI
+ * start. Redirections inside such a session still look like ttys (ceiling). */
+extern char *getenv(const char *);
+int isatty(int fd){ return fd >= 0 && fd <= 2 && getenv("TERM") != 0; }
+
+/* ioctl: the winsize pair is real (backed by the /env/LINES + /env/COLS files
+ * alacritty9 publishes and updates live); everything else is ENOTTY. */
+static int env_num(const char *name){
+	char path[64], buf[16];
+	char *d = path; const char *p = "/env/";
+	while(*p) *d++ = *p++;
+	while(*name) *d++ = *name++;
+	*d = 0;
+	long fd = n9_open(path, 0);
+	if(fd < 0) return 0;
+	long n = n9_pread((int)fd, buf, sizeof buf - 1, 0);
+	n9_close((int)fd);
+	if(n <= 0) return 0;
+	buf[n] = 0;
+	int v = 0; for(char *s = buf; *s >= '0' && *s <= '9'; s++) v = v*10 + (*s - '0');
+	return v;
+}
+int ioctl(int fd, unsigned long req, ...){
+	__builtin_va_list ap; __builtin_va_start(ap, req);
+	void *arg = __builtin_va_arg(ap, void *);
+	__builtin_va_end(ap);
+	(void)fd;
+	if(req == 0x5413 /*TIOCGWINSZ*/){
+		struct { unsigned short r, c, xp, yp; } *ws = arg;
+		int rows = env_num("LINES"), cols = env_num("COLS");
+		ws->r = rows ? (unsigned short)rows : 24;
+		ws->c = cols ? (unsigned short)cols : 80;
+		ws->xp = ws->yp = 0;
+		return 0;
+	}
+	if(req == 0x5414 /*TIOCSWINSZ*/) return 0;
+	errno = ENOTTY;
+	return -1;
+}
 int fsync(int fd){ (void)fd; return 0; }
 int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_fwstat(fd,b,n)<0?-1:0; }
 int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_wstat(p,b,n)<0?-1:0; }

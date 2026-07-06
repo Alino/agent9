@@ -446,7 +446,7 @@ int setitimer(int which, const struct itimerval *nv, struct itimerval *ov) {
 	return 0;
 }
 int    usleep(unsigned int us) { (void)us; return 0; }
-int    ioctl(int fd, unsigned long req, ...) { (void)fd; (void)req; return -1; }
+/* ioctl moved to fs.c (real TIOCGWINSZ over /env/LINES + /env/COLS) */
 /* fcntl moved to poll.c (real O_NONBLOCK/FD_CLOEXEC; locks still "succeed") */
 int    chown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
 int    fchown(int fd, unsigned u, unsigned g) { (void)fd; (void)u; (void)g; return 0; }
@@ -631,13 +631,11 @@ int getifaddrs(void **out) { if (out) *out = 0; errno = 38 /*ENOSYS*/; return -1
 void freeifaddrs(void *l) { (void)l; }
 char *ptsname(int fd) { (void)fd; return 0; }   /* no ptys on Plan 9 */
 int ttyname_r(int fd, char *buf, unsigned long n) {
-	/* the terminal is whatever fd 0/1/2 point at; name it /dev/cons */
-	const char *s = "/dev/cons"; unsigned long i = 0;
-	(void)fd;
-	if (n == 0) return 34 /*ERANGE*/;
-	while (s[i] && i < n - 1) { buf[i] = s[i]; i++; }
-	buf[i] = 0;
-	return 0;
+	/* MUST fail: the "tty" is an anonymous pipe from the terminal emulator.
+	 * A name here makes libuv's uv_tty_init reopen it (losing the pipe) —
+	 * failing sends it down the keep-the-fd blocking-writes fallback. */
+	(void)fd; (void)buf; (void)n;
+	return 38 /*ENOSYS*/;
 }
 const unsigned char in6addr_any[16];   /* matches struct in6_addr layout */
 void *getprotobyname(const char *n) { (void)n; return 0; }

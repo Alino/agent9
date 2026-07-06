@@ -100,6 +100,22 @@ int cc9_note_handler(unsigned long framesp)
 		cc9_run_sigalrm();
 		return 0;   /* NCONT */
 	}
+	/* "interrupt" (DEL key / notepg from a terminal like alacritty9) -> SIGINT;
+	 * "hangup" -> SIGHUP. If a handler is registered, run it and resume; else
+	 * NDFLT (die) — the POSIX default for both. The interrupted syscall returns
+	 * "interrupted", which read/pread retry paths (poll.c) already handle. */
+	{
+		extern int raise(int);
+		extern int cc9_sig_has_handler(int);
+		int nsig = 0;
+		if (msg[0]=='i'&&msg[1]=='n'&&msg[2]=='t'&&msg[3]=='e'&&msg[4]=='r'&&msg[5]=='r') nsig = 2;   /* SIGINT */
+		else if (msg[0]=='h'&&msg[1]=='a'&&msg[2]=='n'&&msg[3]=='g') nsig = 1;                        /* SIGHUP */
+		if (nsig) {
+			if (!cc9_sig_has_handler(nsig)) return 1;   /* NDFLT: die like POSIX default */
+			raise(nsig);
+			return 0;   /* NCONT */
+		}
+	}
 #endif
 	if (cc9_in_note) return 1;     /* reentrant fault: NDFLT (die) */
 	cc9_in_note = 1;
