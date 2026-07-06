@@ -19,6 +19,7 @@ extern long write(int, const void *, long);
 extern void *malloc(unsigned long);
 extern void free(void *);
 extern void *memcpy(void *, const void *, unsigned long);
+extern void *memmove(void *, const void *, unsigned long);
 
 /* one process-wide display, one config. */
 struct gl9_ctx  { OSMesaContext os; };
@@ -294,6 +295,32 @@ gl9egl_swap_damage(EGLSurface surf, int x, int y, int w, int h)
 	put32(s->fd, h);
 	write(s->fd, rows, (long)w * h * 4);
 	free(rows);
+	return 1;
+}
+
+/* gl9 extension: rows [y0, y1) scrolled UP by dy pixels (top-left window
+ * coordinates, matching the buffer's Y_UP=0 layout). Shifts the OSMesa
+ * buffer in place and emits "GL9S" | y0 | y1 | dy so the window host shifts
+ * its persistent image and the screen identically — a scroll then costs a
+ * blit, not a re-render + 2MB re-send. */
+int
+gl9egl_scroll(EGLSurface surf, int y0, int y1, int dy)
+{
+	struct gl9_surf *s = surf;
+	int rows;
+
+	if (!s || !s->window || dy <= 0) return 0;
+	if (y0 < 0) y0 = 0;
+	if (y1 > s->h) y1 = s->h;
+	rows = (y1 - y0) - dy;
+	if (rows <= 0) return 0;
+	memmove(s->buf + (unsigned long)y0 * s->w * 4,
+	        s->buf + (unsigned long)(y0 + dy) * s->w * 4,
+	        (unsigned long)rows * s->w * 4);
+	write(s->fd, "GL9S", 4);
+	put32(s->fd, y0);
+	put32(s->fd, y1);
+	put32(s->fd, dy);
 	return 1;
 }
 

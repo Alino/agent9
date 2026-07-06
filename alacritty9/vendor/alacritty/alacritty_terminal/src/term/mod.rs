@@ -213,6 +213,18 @@ impl Iterator for TermDamageIterator<'_> {
     }
 }
 
+/// alacritty9: a whole-frame scroll the renderer may implement by SHIFTING
+/// already-presented pixels instead of redrawing every shifted line.
+/// Viewport rows [top, bottom) moved UP by `delta` rows; the rows that
+/// entered at the bottom are damaged normally. Scroll-up only — a top-down
+/// blit is overlap-safe in that direction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermScrollHint {
+    pub top: usize,
+    pub bottom: usize,
+    pub delta: usize,
+}
+
 /// State of the terminal damage.
 struct TermDamageState {
     /// Hint whether terminal should be damaged entirely regardless of the actual damage changes.
@@ -223,6 +235,9 @@ struct TermDamageState {
 
     /// Old terminal cursor point.
     last_cursor: Point,
+
+    /// alacritty9: accumulated scroll of this frame, if representable.
+    scroll: Option<TermScrollHint>,
 }
 
 impl TermDamageState {
@@ -230,7 +245,7 @@ impl TermDamageState {
         let lines =
             (0..num_lines).map(|line| LineDamageBounds::undamaged(line, num_cols)).collect();
 
-        Self { full: true, lines, last_cursor: Default::default() }
+        Self { full: true, lines, last_cursor: Default::default(), scroll: None }
     }
 
     #[inline]
@@ -238,6 +253,7 @@ impl TermDamageState {
         // Reset point, so old cursor won't end up outside of the viewport.
         self.last_cursor = Default::default();
         self.full = true;
+        self.scroll = None;
 
         self.lines.clear();
         self.lines.reserve(num_lines);
@@ -261,6 +277,7 @@ impl TermDamageState {
     /// Reset information about terminal damage.
     fn reset(&mut self, num_cols: usize) {
         self.full = false;
+        self.scroll = None;
         self.lines.iter_mut().for_each(|line| line.reset(num_cols));
     }
 }
@@ -786,7 +803,70 @@ impl<T> Term<T> {
         if (top <= *line) && region.end > *line {
             *line = cmp::max(*line - lines, top);
         }
-        self.mark_fully_damaged();
+        self.damage_scroll_up(&region, lines);
+    }
+
+    /// alacritty9: record a scroll-up as a shift hint instead of full damage.
+    ///
+    /// Existing line damage inside the region moves with the content, the
+    /// rows entering at the bottom are damaged fully, and the last rendered
+    /// cursor position (whose stale glyph shifts with the pixels) moves too.
+    /// Anything not representable — scrolled-back viewport, a second region,
+    /// a rotation past the region height — falls back to full damage.
+    fn damage_scroll_up(&mut self, region: &Range<Line>, lines: usize) {
+        let top = region.start.0;
+        let bottom = region.end.0;
+        if self.damage.full
+            || lines == 0
+            || self.grid.display_offset() != 0
+            || top < 0
+            || bottom <= top
+        {
+            self.mark_fully_damaged();
+            return;
+        }
+        let (top, bottom) = (top as usize, bottom as usize);
+
+        match &mut self.damage.scroll {
+            None => self.damage.scroll = Some(TermScrollHint { top, bottom, delta: lines }),
+            Some(hint) if hint.top == top && hint.bottom == bottom => hint.delta += lines,
+            Some(_) => {
+                self.mark_fully_damaged();
+                return;
+            },
+        }
+        if self.damage.scroll.map_or(0, |hint| hint.delta) >= bottom - top {
+            // Everything in the region is new content; nothing to shift.
+            self.mark_fully_damaged();
+            return;
+        }
+
+        // Shift accumulated damage along with the content.
+        for line in top..bottom - lines {
+            let src = self.damage.lines[line + lines];
+            self.damage.lines[line].left = src.left;
+            self.damage.lines[line].right = src.right;
+        }
+
+        // The rows that entered the region must be redrawn.
+        let num_cols = self.columns();
+        for line in bottom - lines..bottom {
+            self.damage.lines[line].expand(0, num_cols.saturating_sub(1));
+        }
+
+        // The previously rendered cursor glyph moved with the pixels.
+        let last = &mut self.damage.last_cursor;
+        let last_line = last.line.0;
+        if last_line >= top as i32 && (last_line as usize) < bottom {
+            last.line = Line(cmp::max(last_line - lines as i32, top as i32));
+        }
+    }
+
+    /// alacritty9: take this frame's scroll hint. `None` when the frame is
+    /// fully damaged (the hint is meaningless then). Callers must consume it
+    /// before [`Self::reset_damage`].
+    pub fn take_scroll_hint(&mut self) -> Option<TermScrollHint> {
+        if self.damage.full { None } else { self.damage.scroll.take() }
     }
 
     fn deccolm(&mut self)

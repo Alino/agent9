@@ -312,6 +312,7 @@ setlabel(char *s)
 typedef struct Frame Frame;
 struct Frame {
 	int full;
+	int scroll;	/* GL9S: y=y0, h=y1, w=dy; pix=nil */
 	ulong x, y, w, h;
 	uchar *pix;
 	Frame *next;
@@ -379,6 +380,23 @@ framereader(void*)
 			continue;
 		}
 		x = y = 0;
+		if(memcmp(hdr, "GL9S", 4) == 0){
+			/* scroll: rows [y0,y1) moved up dy px; a pure blit */
+			if(readn(framefd, hdr, 12) != 12)
+				break;
+			f = malloc(sizeof *f);
+			if(f == nil)
+				threadexitsall("malloc frame hdr");
+			f->full = 0;
+			f->scroll = 1;
+			f->x = 0;
+			f->y = get32(hdr);
+			f->h = get32(hdr + 4);
+			f->w = get32(hdr + 8);
+			f->pix = nil;
+			enqueue(f);
+			continue;
+		}
 		if(memcmp(hdr, "GL9F", 4) == 0){
 			full = 1;
 			if(readn(framefd, hdr, 8) != 8)
@@ -406,6 +424,7 @@ framereader(void*)
 		if(f == nil)
 			threadexitsall("malloc frame hdr");
 		f->full = full;
+		f->scroll = 0;
 		f->x = x;
 		f->y = y;
 		f->w = w;
@@ -428,6 +447,7 @@ threadmain(int argc, char **argv)
 	Point o;
 	Frame *f, *fnext;
 	Rectangle r;
+	int y0, y1, dy;
 	vlong lastns, blitns;
 
 	if(argc >= 2 && strcmp(argv[1], "-d") == 0){
@@ -492,6 +512,26 @@ threadmain(int argc, char **argv)
 		o = screen->r.min;
 		for(; f != nil; f = fnext){
 			fnext = f->next;
+			if(f->scroll){
+				/* shift image + screen up: rows [y0,y1) by dy px.
+				 * memdraw copies top-down, so an upward move over
+				 * itself is overlap-safe. */
+				y0 = f->y;
+				y1 = f->h;
+				dy = f->w;
+				if(im != nil){
+					if(y1 > Dy(im->r))
+						y1 = Dy(im->r);
+					if(y0 >= 0 && dy > 0 && y0 + dy < y1){
+						r = Rect(0, y0, Dx(im->r), y1 - dy);
+						draw(im, r, im, nil, Pt(0, y0 + dy));
+						draw(screen, rectaddpt(r, o), screen, nil,
+							addpt(Pt(0, y0 + dy), o));
+					}
+				}
+				free(f);
+				continue;
+			}
 			w = f->w;
 			h = f->h;
 			n = (long)w * h * 4;

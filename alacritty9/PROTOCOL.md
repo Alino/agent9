@@ -56,10 +56,18 @@ Guarantees:
 Records are distinguished by 4-byte magic:
 
 - `"GL9F"` + u32be w + u32be h + w*h*4 bytes RGBA (== Plan 9 ABGR32 memory
-  order, no repack). Unchanged from gl9; emitted by gl9egl eglSwapBuffers.
+  order, no repack). Full frame; unchanged from gl9; emitted by gl9egl
+  eglSwapBuffers. Supersedes everything queued before it.
+- `"GL9D"` + u32be x + y + w + h + w*h*4 RGBA rows: damage delta — patch the
+  given rect (top-left window coords) of the persistent image. Applied in
+  arrival order; emitted by gl9egl_swap_damage (one per damage rect).
+- `"GL9S"` + u32be y0 + y1 + dy: rows [y0, y1) scrolled UP by dy pixels —
+  shift the persistent image and the screen (a top-down blit is overlap-safe
+  for upward moves). Emitted by gl9egl_scroll before the frame's GL9D rects;
+  scroll-down is never emitted (falls back to full/damage frames).
 - `"GL9T"` + u32be len + len bytes UTF-8: set window title (rio /dev/label).
-  Optional; gl9win2 must skip unknown-magic gracefully? No — unknown magic is
-  fatal (stream is framed, nothing to resync to). Only these two magics exist.
+  Unknown magic is fatal (stream is framed, nothing to resync to). Only
+  these four magics exist.
 
 Frames may be any size; gl9win2 centers smaller frames and clips larger ones
 (the app is expected to track `resize` events and re-render at window size).

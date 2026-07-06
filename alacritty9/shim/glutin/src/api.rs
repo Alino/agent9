@@ -91,6 +91,7 @@ pub mod egl {
                 w: c_int,
                 h: c_int,
             ) -> c_int;
+            pub fn gl9egl_scroll(surface: EGLSurface, y0: c_int, y1: c_int, dy: c_int) -> c_int;
         }
     }
 
@@ -250,6 +251,17 @@ pub mod egl {
                     Err(super::last_egl_error())
                 } else {
                     Ok(())
+                }
+            }
+
+            /// gl9 extension: rows [y0, y1) of the surface scrolled UP by
+            /// `dy` pixels (top-left window coordinates). Shifts the OSMesa
+            /// buffer and emits a GL9S record so the window host shifts its
+            /// image and the screen the same way — the shifted lines then
+            /// never need re-rendering.
+            pub fn gl9_scroll(&self, y0: i32, y1: i32, dy: i32) {
+                unsafe {
+                    ffi::gl9egl_scroll(self.raw as ffi::EGLSurface, y0, y1, dy);
                 }
             }
 

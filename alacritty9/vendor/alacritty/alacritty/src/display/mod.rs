@@ -813,6 +813,9 @@ impl Display {
                 }
             },
         }
+        // alacritty9: whole-region scrolls become pixel shifts (see below).
+        #[cfg(target_os = "plan9")]
+        let plan9_scroll = terminal.take_scroll_hint();
         terminal.reset_damage();
 
         // Drop terminal as early as possible to free lock.
@@ -885,6 +888,24 @@ impl Display {
             },
             None => grid_cells,
         };
+
+        // alacritty9: apply the scroll hint by SHIFTING pixels — the OSMesa
+        // buffer (memmove in gl9egl) and, via the GL9S record it emits,
+        // gl9win2's persistent image and the screen. The shifted lines then
+        // need no rendering at all; only the newly entered rows are in the
+        // damage list. Skipped whenever this frame renders fully anyway.
+        #[cfg(target_os = "plan9")]
+        if plan9_damage.is_some() {
+            if let Some(hint) = plan9_scroll {
+                let cell_height = self.size_info.cell_height() as i32;
+                let pad_y = self.size_info.padding_y() as i32;
+                self.surface.gl9_scroll(
+                    pad_y + hint.top as i32 * cell_height,
+                    pad_y + hint.bottom as i32 * cell_height,
+                    hint.delta as i32 * cell_height,
+                );
+            }
+        }
 
         #[cfg(target_os = "plan9")]
         {

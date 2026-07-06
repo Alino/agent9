@@ -97,6 +97,15 @@ pub enum Surface<T: SurfaceTypeTrait> {
     Egl(EglSurface<T>),
 }
 
+impl<T: SurfaceTypeTrait> Surface<T> {
+    /// gl9 extension (not real glutin API): scroll rows [y0, y1) up by `dy`
+    /// pixels — buffer, window image and screen shift instead of redrawing.
+    pub fn gl9_scroll(&self, y0: i32, y1: i32, dy: i32) {
+        let Self::Egl(surface) = self;
+        surface.gl9_scroll(y0, y1, dy);
+    }
+}
+
 impl<T: SurfaceTypeTrait> GlSurface<T> for Surface<T> {
     type Context = PossiblyCurrentContext;
 
