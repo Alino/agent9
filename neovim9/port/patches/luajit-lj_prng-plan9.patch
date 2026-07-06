@@ -1,0 +1,34 @@
+--- luajit-fbb36bb6bfa88716a47c58bcf9ce9f2ef752abac/src/lj_prng.c	2026-03-27 20:04:50
++++ luajit-work/src/lj_prng.c	2026-07-06 11:34:54
+@@ -106,6 +106,11 @@
+ static PRGR libfunc_rgr;
+ #endif
+ 
++#elif defined(__plan9__)
++
++#include <fcntl.h>
++#include <unistd.h>
++
+ #elif LJ_TARGET_POSIX
+ 
+ #if LJ_TARGET_LINUX
+@@ -228,6 +233,19 @@
+   */
+   {
+     int fd = open("/dev/urandom", O_RDONLY|O_CLOEXEC);
++    if (fd != -1) {
++      ssize_t n = read(fd, rs->u, sizeof(rs->u));
++      (void)close(fd);
++      if (n == (ssize_t)sizeof(rs->u))
++	goto ok;
++    }
++  }
++
++#elif defined(__plan9__)
++
++  /* Plan 9 via cc9: /dev/random (open() also aliases /dev/urandom to it). */
++  {
++    int fd = open("/dev/random", O_RDONLY);
+     if (fd != -1) {
+       ssize_t n = read(fd, rs->u, sizeof(rs->u));
+       (void)close(fd);

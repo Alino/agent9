@@ -1,0 +1,12 @@
+#!/bin/bash
+# n9cc — cc9-flavored target C compiler for neovim9 sub-builds (LuaJIT, libuv,
+# nvim TUs). Compile-only driver usable as $(CC) in makefiles; linking goes
+# through n9link. Flags mirror cc9/host/cc9 plus -mno-red-zone (nvim takes
+# async notes on the running stack; red-zone use under a note frame corrupts).
+set -euo pipefail
+AGENT9="$(cd "$(dirname "$0")/../.." && pwd)"
+LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
+INC="$AGENT9/cc9/runtime/include"
+exec "$LLVM/clang" --target=x86_64-unknown-none -nostdlib -DNDEBUG -D__plan9__ \
+  -femulated-tls -fno-pic -mno-red-zone -funwind-tables \
+  -isystem "$INC" "$@"

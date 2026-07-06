@@ -141,3 +141,56 @@ int fgetpos(FILE *f, void *pos){ long *p=pos; *p=ftell(f); return 0; }
 int fsetpos(FILE *f, const void *pos){ const long *p=pos; return fseek(f,*p,0); }
 int setvbuf(FILE *f, char *b, int m, size_t s){ (void)f;(void)b;(void)m;(void)s; return 0; }
 void setbuf(FILE *f, char *b){ (void)f;(void)b; }
+
+/* tmpnam/tmpfile — /tmp/cc9tmp.<pid>.<seq>. ponytail: tmpfile() files are not
+ * auto-removed at close (Plan 9 ORCLOSE isn't plumbed through fopen); /tmp is
+ * per-boot on 9front, so leaks are bounded. Plumb ORCLOSE if it ever matters. */
+extern int getpid(void);
+extern int snprintf(char *, size_t, const char *, ...);
+static int cc9_tmpseq;
+char *tmpnam(char *buf){
+	static char sbuf[64];
+	char *p = buf ? buf : sbuf;
+	snprintf(p, 64, "/tmp/cc9tmp.%d.%d", getpid(), ++cc9_tmpseq);
+	return p;
+}
+FILE *tmpfile(void){
+	char name[64];
+	snprintf(name, sizeof name, "/tmp/cc9tmp.%d.%d", getpid(), ++cc9_tmpseq);
+	return fopen(name, "w+");
+}
+
+/* fscanf — only "%lf", which backs LuaJIT/Lua io.read("*n"). Skips leading
+ * whitespace, gathers one number token (dec/hex float chars), pushes back the
+ * first non-member byte, strtod()s the token. Extend on contact. */
+extern double strtod(const char *, char **);
+static int cc9_numchar(int c, int i){
+	if((c>='0'&&c<='9')||(c>='a'&&c<='f')||(c>='A'&&c<='F')||c=='.'||c=='x'||c=='X') return 1;
+	if((c=='+'||c=='-') && i==0) return 1;
+	if(c=='p'||c=='P') return 1;
+	return 0;
+}
+int fscanf(FILE *f, const char *fmt, ...){
+	if(!(fmt[0]=='%'&&fmt[1]=='l'&&fmt[2]=='f'&&fmt[3]==0)) return -1;
+	int c;
+	do { c = fgetc(f); } while(c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'||c=='\v');
+	char tok[64]; int n = 0;
+	/* exponent sign: allow +/- right after e/E/p/P too */
+	while(c!=-1 && n < (int)sizeof tok - 1 &&
+	      (cc9_numchar(c, n) ||
+	       ((c=='+'||c=='-') && n>0 && (tok[n-1]=='e'||tok[n-1]=='E'||tok[n-1]=='p'||tok[n-1]=='P')))){
+		tok[n++] = (char)c;
+		c = fgetc(f);
+	}
+	if(c!=-1) ungetc(c, f);
+	tok[n] = 0;
+	if(n==0) return f->eof ? -1 : 0;
+	char *end = tok;
+	__builtin_va_list ap; __builtin_va_start(ap, fmt);
+	double *out = __builtin_va_arg(ap, double *);
+	__builtin_va_end(ap);
+	double v = strtod(tok, &end);
+	if(end == tok) return 0;
+	*out = v;
+	return 1;
+}

@@ -306,6 +306,25 @@ struct cc9_tm *localtime_r(const long *tp, struct cc9_tm *r) { return gmtime_r(t
 struct cc9_tm *gmtime(const long *tp) { static struct cc9_tm t; return gmtime_r(tp, &t); }
 struct cc9_tm *localtime(const long *tp) { return gmtime(tp); }
 
+double difftime(long t1, long t0) { return (double)(t1 - t0); }
+
+/* mktime — days-from-civil (Hinnant), the exact inverse of gmtime_r above.
+ * local == UTC on Plan 9 (no tz db), so no offset. Normalizes the fields
+ * (wday/yday, field overflow) through gmtime_r like mktime must. */
+long mktime(struct cc9_tm *tm) {
+	long y = tm->tm_year + 1900, m = tm->tm_mon + 1;
+	long d = tm->tm_mday;
+	y -= m <= 2;
+	long era = (y >= 0 ? y : y - 399) / 400;
+	unsigned yoe = (unsigned)(y - era * 400);
+	unsigned doy = (unsigned)((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1);
+	unsigned doe = yoe * 365 + yoe/4 - yoe/100 + doy;
+	long days = era * 146097 + (long)doe - 719468;
+	long t = days * 86400 + tm->tm_hour * 3600 + tm->tm_min * 60 + tm->tm_sec;
+	gmtime_r(&t, tm);
+	return t;
+}
+
 /* uname — fixed Plan 9 amd64 identity (LLVM host triple detection). */
 struct cc9_utsname { char sysname[65], nodename[65], release[65], version[65], machine[65], domainname[65]; };
 static void cc9_setstr(char *d, const char *s) { int i = 0; while (s[i] && i < 64) { d[i] = s[i]; i++; } d[i] = 0; }
