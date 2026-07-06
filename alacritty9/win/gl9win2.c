@@ -301,17 +301,134 @@ setlabel(char *s)
 	close(fd);
 }
 
+/* Handoff between the pipe reader and the blitter. The reader drains the
+ * frame pipe at full speed so the app's swap write never queues behind slow
+ * blits (queued full frames ARE input lag). Two record kinds:
+ *   GL9F full frames — a new full frame supersedes everything queued;
+ *   GL9D damage rects — deltas against the current image, applied in order
+ *   (cheap: a keystroke is a few rows, and small blits are what a real
+ *   framebuffer is fast at).
+ */
+typedef struct Frame Frame;
+struct Frame {
+	int full;
+	ulong x, y, w, h;
+	uchar *pix;
+	Frame *next;
+};
+
+static QLock framelock;
+static Frame *qhead, *qtail;	/* undrawn records, in arrival order */
+static Channel *framec;		/* capacity 1: "work is pending" */
+static int nskipped;
+
+static void
+enqueue(Frame *f)
+{
+	Frame *g, *next;
+
+	qlock(&framelock);
+	if(f->full){
+		/* a full frame supersedes everything before it */
+		for(g = qhead; g != nil; g = next){
+			next = g->next;
+			free(g->pix);
+			free(g);
+			nskipped++;
+		}
+		qhead = qtail = nil;
+	}
+	f->next = nil;
+	if(qtail == nil)
+		qhead = f;
+	else
+		qtail->next = f;
+	qtail = f;
+	qunlock(&framelock);
+	nbsendul(framec, 1);
+}
+
+static void
+framereader(void*)
+{
+	uchar hdr[16], *pix;
+	ulong w, h, x, y, len;
+	long n;
+	Frame *f;
+	int full;
+	char title[256];
+
+	for(;;){
+		if(readn(framefd, hdr, 4) != 4)
+			break;	/* EOF: app exited */
+		if(memcmp(hdr, "GL9T", 4) == 0){
+			if(readn(framefd, hdr, 4) != 4)
+				break;
+			len = get32(hdr);
+			if(len >= sizeof title){
+				pix = malloc(len);
+				if(pix == nil || readn(framefd, pix, len) != len)
+					break;
+				free(pix);
+				continue;
+			}
+			if(readn(framefd, title, len) != len)
+				break;
+			title[len] = 0;
+			setlabel(title);
+			continue;
+		}
+		x = y = 0;
+		if(memcmp(hdr, "GL9F", 4) == 0){
+			full = 1;
+			if(readn(framefd, hdr, 8) != 8)
+				break;
+			w = get32(hdr);
+			h = get32(hdr + 4);
+		}else if(memcmp(hdr, "GL9D", 4) == 0){
+			full = 0;
+			if(readn(framefd, hdr, 16) != 16)
+				break;
+			x = get32(hdr);
+			y = get32(hdr + 4);
+			w = get32(hdr + 8);
+			h = get32(hdr + 12);
+		}else
+			threadexitsall("bad frame magic");
+		n = (long)w * h * 4;
+		if((pix = malloc(n)) == nil)
+			threadexitsall("malloc frame");
+		if(readn(framefd, pix, n) != n){
+			free(pix);
+			break;
+		}
+		f = malloc(sizeof *f);
+		if(f == nil)
+			threadexitsall("malloc frame hdr");
+		f->full = full;
+		f->x = x;
+		f->y = y;
+		f->w = w;
+		f->h = h;
+		f->pix = pix;
+		enqueue(f);
+	}
+	sendul(framec, 0);	/* EOF marker */
+	threadexits(nil);
+}
+
 void
 threadmain(int argc, char **argv)
 {
 	static Execargs e;
 	int pev[2], pfr[2];
-	uchar hdr[12], *pix;
-	ulong w, h, len;
+	ulong w, h;
 	long n;
 	Image *im;
 	Point o;
-	char title[256];
+	Frame *f, *fnext;
+	Rectangle r;
+	vlong lastns, blitns;
 
 	if(argc >= 2 && strcmp(argv[1], "-d") == 0){
 		kbddebug = 1;
@@ -342,57 +459,73 @@ threadmain(int argc, char **argv)
 	emit(EVRESIZE, 0, 0, Dx(screen->r), Dy(screen->r));
 	emit(EVFOCUS, 1, 0, 0, 0);
 
+	framec = chancreate(sizeof(ulong), 1);
 	proccreate(kbdproc, nil, 32*1024);
 	proccreate(mouseproc, nil, 32*1024);
+	proccreate(framereader, nil, 32*1024);
 
+	im = nil;
+	lastns = 0;
 	for(;;){
-		if(readn(framefd, hdr, 4) != 4)
-			break;	/* EOF: app exited */
-		if(memcmp(hdr, "GL9T", 4) == 0){
-			if(readn(framefd, hdr, 4) != 4)
-				break;
-			len = get32(hdr);
-			if(len >= sizeof title){
-				/* skip oversized title */
-				pix = malloc(len);
-				if(pix == nil || readn(framefd, pix, len) != len)
-					break;
-				free(pix);
-				continue;
-			}
-			if(readn(framefd, title, len) != len)
-				break;
-			title[len] = 0;
-			setlabel(title);
+		if(recvul(framec) == 0)
+			break;	/* reader hit EOF */
+		qlock(&framelock);
+		f = qhead;
+		qhead = qtail = nil;
+		qunlock(&framelock);
+		if(f == nil)
 			continue;
+
+		blitns = 0;
+		if(kbddebug){
+			vlong now = nsec();
+			if(lastns != 0)
+				fprint(2, "gl9win2 %s: %ludx%lud dt=%lldms skipped=%d\n",
+					f->full ? "frame" : "damage",
+					f->w, f->h, (now - lastns)/1000000, nskipped);
+			lastns = now;
+			nskipped = 0;
+			blitns = now;
 		}
-		if(memcmp(hdr, "GL9F", 4) != 0)
-			threadexitsall("bad frame magic");
-		if(readn(framefd, hdr, 8) != 8)
-			break;
-		w = get32(hdr);
-		h = get32(hdr + 4);
-		n = (long)w * h * 4;
-		if((pix = malloc(n)) == nil)
-			threadexitsall("malloc frame");
-		if(readn(framefd, pix, n) != n){
-			free(pix);
-			break;
-		}
+
 		qlock(&displock);
-		if((im = allocimage(display, Rect(0, 0, w, h), ABGR32, 0, DNofill)) == nil){
-			qunlock(&displock);
-			threadexitsall("allocimage");
-		}
-		loadimage(im, im->r, pix, n);
-		if((int)w < Dx(screen->r) || (int)h < Dy(screen->r))
-			draw(screen, screen->r, display->black, nil, ZP);
 		o = screen->r.min;
-		draw(screen, rectaddpt(im->r, o), im, nil, ZP);
+		for(; f != nil; f = fnext){
+			fnext = f->next;
+			w = f->w;
+			h = f->h;
+			n = (long)w * h * 4;
+			if(f->full){
+				/* reuse the draw image across same-size frames */
+				if(im == nil || Dx(im->r) != (int)w || Dy(im->r) != (int)h){
+					if(im != nil)
+						freeimage(im);
+					im = allocimage(display, Rect(0, 0, w, h), ABGR32, 0, DNofill);
+					if(im == nil){
+						qunlock(&displock);
+						threadexitsall("allocimage");
+					}
+				}
+				loadimage(im, im->r, f->pix, n);
+				if((int)w < Dx(screen->r) || (int)h < Dy(screen->r))
+					draw(screen, screen->r, display->black, nil, ZP);
+				draw(screen, rectaddpt(im->r, o), im, nil, ZP);
+			}else if(im != nil
+			     && (int)(f->x + w) <= Dx(im->r) && (int)(f->y + h) <= Dy(im->r)){
+				/* delta against the current image; a stale rect
+				 * (pre-resize) is dropped — the app follows any
+				 * resize with a fully-damaged frame */
+				r = Rect(f->x, f->y, f->x + w, f->y + h);
+				loadimage(im, r, f->pix, n);
+				draw(screen, rectaddpt(r, o), im, nil, r.min);
+			}
+			free(f->pix);
+			free(f);
+		}
 		flushimage(display, 1);
-		freeimage(im);
 		qunlock(&displock);
-		free(pix);
+		if(kbddebug && blitns != 0)
+			fprint(2, "gl9win2 blit: %lldms\n", (nsec() - blitns)/1000000);
 	}
 	threadexitsall(nil);
 }

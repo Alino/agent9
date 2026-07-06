@@ -607,9 +607,13 @@ impl Display {
     fn swap_buffers(&self) {
         #[allow(clippy::single_match)]
         let res = match (self.surface.deref(), &self.context.deref()) {
+            // alacritty9: plan9 presents over a pipe to a real framebuffer,
+            // where a full-window blit costs ~100x a damaged sub-rect — take
+            // the damage path there too (gl9egl turns it into GL9D records).
             #[cfg(not(any(target_os = "macos", windows)))]
             (Surface::Egl(surface), PossiblyCurrentContext::Egl(context))
-                if matches!(self.raw_window_handle, RawWindowHandle::Wayland(_))
+                if (matches!(self.raw_window_handle, RawWindowHandle::Wayland(_))
+                    || cfg!(target_os = "plan9"))
                     && !self.damage_tracker.debug =>
             {
                 let damage = self.damage_tracker.shape_frame_damage(self.size_info.into());

@@ -18,6 +18,7 @@
 extern long write(int, const void *, long);
 extern void *malloc(unsigned long);
 extern void free(void *);
+extern void *memcpy(void *, const void *, unsigned long);
 
 /* one process-wide display, one config. */
 struct gl9_ctx  { OSMesaContext os; };
@@ -253,6 +254,47 @@ eglSwapBuffers(EGLDisplay dpy, EGLSurface surf)
 		write(s->fd, s->buf, (long)s->w * s->h * 4);
 	}
 	return EGL_TRUE;
+}
+
+/* gl9 extension (no dlopen'able EGL ext mechanism here): present only a
+ * damaged region. Coordinates arrive in EGL convention (origin bottom-left,
+ * KHR_swap_buffers_with_damage); we flip to the top-left rows OSMesa's
+ * Y_UP=0 buffer uses and emit "GL9D" | x | y | w | h | w*h*4 RGBA to the
+ * window host. A full-window blit to a real framebuffer costs 100x a small
+ * one, so this is the interactive-latency path (typing = a few rows). */
+int
+gl9egl_swap_damage(EGLSurface surf, int x, int y, int w, int h)
+{
+	struct gl9_surf *s = surf;
+	unsigned char *rows;
+	int i;
+
+	if (!s || !s->window) return 0;
+	glFinish();
+	/* flip to top-left origin, then clamp */
+	y = s->h - (y + h);
+	if (x < 0) { w += x; x = 0; }
+	if (y < 0) { h += y; y = 0; }
+	if (x + w > s->w) w = s->w - x;
+	if (y + h > s->h) h = s->h - y;
+	if (w <= 0 || h <= 0) return 1;      /* nothing visible changed */
+	if (w == s->w && h == s->h)          /* full frame: use the plain path */
+		return eglSwapBuffers(GL9_DISPLAY, surf);
+	rows = malloc((unsigned long)w * h * 4);
+	if (!rows)
+		return eglSwapBuffers(GL9_DISPLAY, surf);
+	for (i = 0; i < h; i++)
+		memcpy(rows + (unsigned long)i * w * 4,
+		       s->buf + ((unsigned long)(y + i) * s->w + x) * 4,
+		       (unsigned long)w * 4);
+	write(s->fd, "GL9D", 4);
+	put32(s->fd, x);
+	put32(s->fd, y);
+	put32(s->fd, w);
+	put32(s->fd, h);
+	write(s->fd, rows, (long)w * h * 4);
+	free(rows);
+	return 1;
 }
 
 __eglMustCastToProperFunctionPointerType
