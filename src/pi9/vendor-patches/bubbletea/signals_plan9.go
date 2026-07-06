@@ -4,6 +4,9 @@
 package tea
 
 import (
+	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,6 +29,30 @@ func (p *Program) listenForResize(done chan struct{}) {
 	// Always do one check at startup so the program knows its
 	// dimensions before the first render.
 	if vtsSessionName() == "" {
+		// Not under vts. A terminal hosting us on pipes (alacritty9)
+		// maintains LINES/COLS as live files in the shared /env group
+		// (no RFENVG at spawn) — poll them like the vts size file.
+		// os.Getenv won't do: Go snapshots the environment at startup.
+		if r, c, ok := readEnvSize(); ok {
+			p.Send(WindowSizeMsg{Width: c, Height: r})
+			lastR, lastC := r, c
+			t := time.NewTicker(500 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-p.ctx.Done():
+					return
+				case <-t.C:
+					r, c, ok := readEnvSize()
+					if ok && (r != lastR || c != lastC) {
+						lastR, lastC = r, c
+						p.Send(WindowSizeMsg{Width: c, Height: r})
+					}
+				}
+			}
+		}
+		// No size source at all: classic default beats rendering nothing.
+		p.Send(WindowSizeMsg{Width: 80, Height: 24})
 		p.checkResize()
 		<-p.ctx.Done()
 		return
@@ -62,14 +89,31 @@ func (p *Program) listenForResize(done chan struct{}) {
 	}
 }
 
-// vtsListenForResize is the plan9 hook called from handleResize when
-// p.ttyOutput is nil. Inside a vts session we still want resize
-// updates — they come from polling /n/vts/<s>/ctl, not from SIGWINCH.
-// Returns true if we started the watcher; false otherwise.
-func vtsListenForResize(p *Program, done chan struct{}) bool {
-	if vtsSessionName() == "" {
-		return false
+// readEnvSize reads the live /env/LINES and /env/COLS files (Plan 9 env
+// vars are files; re-reading sees updates from the hosting terminal).
+func readEnvSize() (rows, cols int, ok bool) {
+	parse := func(name string) (int, bool) {
+		b, err := os.ReadFile("/env/" + name)
+		if err != nil {
+			return 0, false
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(strings.TrimRight(string(b), "\x00")))
+		if err != nil || n <= 0 {
+			return 0, false
+		}
+		return n, true
 	}
+	r, okr := parse("LINES")
+	c, okc := parse("COLS")
+	return r, c, okr && okc
+}
+
+// vtsListenForResize is the plan9 hook called from handleResize when
+// p.ttyOutput is nil. Always starts the plan9 watcher: listenForResize
+// itself picks the size source — vts ctl polling inside a vts session,
+// /env/LINES+COLS polling under a pipe-hosting terminal (alacritty9),
+// or a one-shot 80x24 default so the UI renders at all.
+func vtsListenForResize(p *Program, done chan struct{}) bool {
 	go p.listenForResize(done)
 	return true
 }

@@ -67,10 +67,23 @@ specials ≥0xF000 and 0x80) from 'c' as down+up pairs. Mouse: /dev/mouse 'm'
 lines (buttons 1/2/4, scroll 8/16 on transition), 'r' = resize → getwindow
 under a qlock shared with the frame blitter.
 
+## Raw mode + TUIs (pi9 works)
+A piped child can't request /dev/consctl rawon, so raw mode is keyed on the
+alt-screen toggle instead: when the child's output contains ESC[?1049h (or
+?47h) the line discipline gets out of the way entirely — no echo, no line
+buffer, no ICRNL/ONLCR, escape sequences / mouse reports / ^C pass through
+verbatim — and ESC[?1049l restores canonical mode. Terminal SIZE for piped
+TUIs travels over the shared /env group (no RFENVG at spawn): tty/plan9.rs
+maintains /env/LINES + /env/COLS (initial + every resize); pi9's vendored
+bubbletea polls those files (signals_plan9.go) the way it polls the vts size
+file. Both sides fixed 2026-07-06 — before that pi9 hung at "pi9 starting..."
+(no WindowSizeMsg ever arrived) and mouse clicks typed SGR garbage like
+`[<0;56;9M` (reports mangled by the cooked discipline).
+
 ## Honest limits (deliberate, documented)
-- No raw mode: a piped child can't request /dev/consctl rawon, so full-screen
-  Plan 9 apps (vi, sam -d curses-style) get canonical mode only. rc, cat,
-  pipelines, compilers etc. are the use case — same as 9term for hostile apps.
+- Raw mode requires the alt-screen announcement (every bubbletea/curses-class
+  TUI does it). A full-screen app that never enters the alternate screen gets
+  canonical mode. Plan 9-native /dev/consctl apps still can't ask (no cons).
 - ^C interrupts the shell's note group; the shell survives (rc re-prompts).
   ^D/EOF, job control beyond that: not a thing on Plan 9.
 - Window title (GL9T) is wired in the protocol + gl9win2 (/dev/label) but

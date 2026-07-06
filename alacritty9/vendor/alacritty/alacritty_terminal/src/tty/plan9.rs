@@ -31,6 +31,12 @@ struct Shared {
     buf: Mutex<VecDeque<u8>>,
     poller: Mutex<Option<Arc<Poller>>>,
     eof: AtomicBool,
+    /// Raw mode, keyed on the child entering/leaving the alternate screen
+    /// (ESC[?1049h/l, ESC[?47h/l). There is no pty/termios to ask for raw
+    /// mode on Plan 9, but every full-screen TUI announces itself this way;
+    /// while set, the line discipline is bypassed entirely (no echo, no
+    /// line buffer, no ICRNL/ONLCR, escape sequences and ^C pass through).
+    raw: AtomicBool,
 }
 
 impl Shared {
@@ -47,22 +53,47 @@ impl Shared {
     }
 }
 
+/// Alt-screen enter/leave sequences that toggle raw mode. Matched with a
+/// rolling tail so a sequence split across two reads is still seen.
+const RAW_ON: [&[u8]; 2] = [b"\x1b[?1049h", b"\x1b[?47h"];
+const RAW_OFF: [&[u8]; 2] = [b"\x1b[?1049l", b"\x1b[?47l"];
+
 fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signal_eof: bool) {
     std::thread::Builder::new()
         .name("plan9 pty reader".into())
         .spawn(move || {
             let mut chunk = [0u8; 0x1_0000];
             let mut last = 0u8;
+            let mut tail: VecDeque<u8> = VecDeque::with_capacity(16);
             loop {
                 match pipe.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
                         let mut buf = shared.buf.lock().unwrap();
-                        // ONLCR: children on a pipe emit bare \n; a pty would
-                        // translate for the terminal, so we do (else output
-                        // stair-steps). \r\n passes through untouched.
                         for &byte in &chunk[..n] {
-                            if byte == b'\n' && last != b'\r' {
+                            // Track alt-screen toggles for raw mode.
+                            if tail.len() == 16 {
+                                tail.pop_front();
+                            }
+                            tail.push_back(byte);
+                            let ends_with = |pat: &[u8]| {
+                                tail.len() >= pat.len()
+                                    && tail.iter().rev().zip(pat.iter().rev()).all(|(a, b)| a == b)
+                            };
+                            if RAW_ON.iter().any(|p| ends_with(p)) {
+                                shared.raw.store(true, Ordering::Release);
+                            } else if RAW_OFF.iter().any(|p| ends_with(p)) {
+                                shared.raw.store(false, Ordering::Release);
+                            }
+
+                            // ONLCR: children on a pipe emit bare \n; a pty
+                            // would translate for the terminal, so we do
+                            // (else output stair-steps). Off in raw mode —
+                            // full-screen apps position explicitly.
+                            if byte == b'\n'
+                                && last != b'\r'
+                                && !shared.raw.load(Ordering::Acquire)
+                            {
                                 buf.push_back(b'\r');
                             }
                             buf.push_back(byte);
@@ -119,6 +150,17 @@ impl LineDiscipline {
 impl io::Write for LineDiscipline {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         use std::io::Write as _;
+
+        // Raw mode (child is on the alternate screen): the child owns the
+        // byte stream — keystrokes, escape sequences, mouse reports, ^C all
+        // pass through verbatim, no echo, no line buffer.
+        if self.shared.raw.load(Ordering::Acquire) {
+            self.line.clear();
+            self.stdin.write_all(data)?;
+            self.stdin.flush()?;
+            return Ok(data.len());
+        }
+
         for &byte in data {
             match byte {
                 0x03 => {
@@ -158,7 +200,21 @@ impl io::Write for LineDiscipline {
     }
 }
 
-pub fn new(config: &Options, _window_size: WindowSize, _window_id: u64) -> io::Result<Pty> {
+/// Publish the terminal size where piped children can see it. Plan 9 has no
+/// TIOCSWINSZ, but the child shares our env GROUP (no RFENVG at spawn), so
+/// /env/LINES and /env/COLS are live files it can re-read — pi9's bubbletea
+/// polls them the way it polls the vts size file.
+fn publish_size(window_size: WindowSize) {
+    // Single-threaded env access isn't a real concern on Plan 9 (env vars
+    // are per-group /env files), and both callers run on the same thread.
+    unsafe {
+        std::env::set_var("LINES", window_size.num_lines.to_string());
+        std::env::set_var("COLS", window_size.num_cols.to_string());
+    }
+}
+
+pub fn new(config: &Options, window_size: WindowSize, _window_id: u64) -> io::Result<Pty> {
+    publish_size(window_size);
     let (program, args) = match &config.shell {
         Some(shell) => (shell.program.as_str(), shell.args.as_slice()),
         // The 9term/win default: interactive rc even though stdin is a pipe.
@@ -196,6 +252,7 @@ pub fn new(config: &Options, _window_size: WindowSize, _window_id: u64) -> io::R
         buf: Mutex::new(VecDeque::new()),
         poller: Mutex::new(None),
         eof: AtomicBool::new(false),
+        raw: AtomicBool::new(false),
     });
 
     // One blocking reader thread per output pipe — the platform's substitute
@@ -321,9 +378,9 @@ impl EventedPty for Pty {
 }
 
 impl OnResize for Pty {
-    fn on_resize(&mut self, _window_size: WindowSize) {
-        // No TIOCSWINSZ on Plan 9: children on a pipe have no winsize to
-        // update. Plan 9 programs that care read their window's /dev/wctl,
-        // which doesn't exist for a piped child. Deliberately a no-op.
+    fn on_resize(&mut self, window_size: WindowSize) {
+        // No TIOCSWINSZ on Plan 9; the live size channel is /env (shared
+        // env group — see publish_size). TUIs poll it, shells don't care.
+        publish_size(window_size);
     }
 }
