@@ -80,6 +80,28 @@ file. Both sides fixed 2026-07-06 — before that pi9 hung at "pi9 starting..."
 (no WindowSizeMsg ever arrived) and mouse clicks typed SGR garbage like
 `[<0;56;9M` (reports mangled by the cooked discipline).
 
+## Performance on real hardware (the three layers, all measured on cirno)
+A full 892x592 present (2MB pipe + loadimage + draw to a real framebuffer)
+costs 200-340ms — the framebuffer blit, not softpipe, is the wall (qemu's
+virtio display hides this completely). The fixes, in order:
+1. Damage-based present: alacritty's damage rects → GL9D sub-rect records →
+   gl9win2 patches a persistent image (2-9ms for a small rect). gl9win2 also
+   drains the pipe with latest-wins for full frames so backlog can't become
+   latency.
+2. Damage-shaped render: per-rect scissored clears + grid cells culled
+   against the damage rects (softpipe pays tile writeback per cleared pixel
+   and interpreted vertex cost per submitted quad). Incremental draw+swap:
+   ~16ms (was 183-347ms). Never use a bounding box: a TUI touching header +
+   input line spans the whole window.
+3. Hidden-cursor traversal (alacritty_terminal): bubbletea repaints by
+   hiding the cursor and walking lines with linefeeds; damage_cursor() now
+   skips while the cursor is hidden (transitions damage the cell), so a pi9
+   keystroke damages 2 rows, not the full frame. Upstream-worthy.
+Remaining known slow case: bulk scroll = legitimately full-frame ≈ 3fps
+(scroll-blit the persistent image would be the next lever).
+Instrumentation: `gl9win2 -d` logs kbd traffic + per-record dt/blit/skips;
+`alacritty -vv` logs per-frame "plan9 draw+swap took".
+
 ## Honest limits (deliberate, documented)
 - Raw mode requires the alt-screen announcement (every bubbletea/curses-class
   TUI does it). A full-screen app that never enters the alternate screen gets
