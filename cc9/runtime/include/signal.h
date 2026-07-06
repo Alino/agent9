@@ -27,6 +27,14 @@ typedef void (*__sighandler_t)(int);
 #define SIGPIPE  13
 #define SIGALRM  14
 #define SIGTERM  15
+#define SIGSTKFLT 16
+#define SIGURG   23
+#define SIGVTALRM 26
+#define SIGPROF  27
+#define SIGWINCH 28
+#define SIGIO    29
+#define SIGPWR   30
+#define SIGSYS   31
 #define SIGCHLD  17
 #define SIGCONT  18
 #define SIGSTOP  19

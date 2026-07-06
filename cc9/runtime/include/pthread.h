@@ -1,5 +1,6 @@
 #ifndef _PTHREAD_H
 #define _PTHREAD_H
+#include <sched.h>
 #include <time.h>
 /* cc9 pthreads over Plan 9 rfork(RFMEM) + semaphores. pthread_t is the Plan 9
  * pid of the thread (rfork return / read from /dev/pid). */
@@ -62,4 +63,25 @@ int nanosleep(const struct timespec *, struct timespec *);
 #ifdef __cplusplus
 }
 #endif
+#endif
+#ifdef __cplusplus
+extern "C" {
+#endif
+int pthread_atfork(void (*)(void), void (*)(void), void (*)(void));
+int pthread_attr_init(pthread_attr_t *);
+int pthread_attr_destroy(pthread_attr_t *);
+int pthread_attr_setstacksize(pthread_attr_t *, size_t);
+int pthread_attr_getstacksize(const pthread_attr_t *, size_t *);
+int pthread_condattr_init(pthread_condattr_t *);
+int pthread_condattr_destroy(pthread_condattr_t *);
+int pthread_condattr_setclock(pthread_condattr_t *, int);
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *);
+int pthread_rwlock_trywrlock(pthread_rwlock_t *);
+int pthread_setname_np(pthread_t, const char *);
+int pthread_getname_np(pthread_t, char *, size_t);
+int pthread_sigmask(int, const unsigned long *, unsigned long *);
+int pthread_getschedparam(pthread_t, int *, struct sched_param *);
+int pthread_setschedparam(pthread_t, int, const struct sched_param *);
+#ifdef __cplusplus
+}
 #endif

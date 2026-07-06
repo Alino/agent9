@@ -33,4 +33,11 @@ size_t mbstowcs(wchar_t *, const char *, size_t); size_t wcstombs(char *, const 
 #ifdef __cplusplus
 }
 #endif
+#ifdef __cplusplus
+extern "C" {
+#endif
+char *mkdtemp(char *);
+#ifdef __cplusplus
+}
+#endif
 #endif

@@ -35,7 +35,28 @@ Bar: TUI editing + treesitter inside alacritty9 (VM + cirno). Jobs/:terminal/LSP
   (stdio.c). GOTCHA: /tmp/libcxx-thr got wiped by the macOS /tmp cleaner —
   regen recipe now committed as cc9/host/regen-libcxx.sh. Note: lj9 bss=270MB
   (virtual, lazily committed — loads fine).
-- [ ] **G2 poll() + libuv** — gate: uvgate.c (timer/pipe/spawn/async) on VM
+- [x] **G2 poll() + libuv** (2026-07-06) — **pollgate 12/12 + uvgate 8/8 PASS on dev VM**
+  (real libuv 1.52.1: loop, timer, pipe echo, uv_spawn w/ stdout capture + exit code,
+  cross-thread uv_async). cc9 runtime GAINED (the durable layer):
+  - poll.c: poll(2) readiness emulation (per-fd reader pthread + ring buffer +
+    ONE central counting sem, tsemacquire timeouts), fcntl(O_NONBLOCK/FD_CLOEXEC),
+    pipe2; fs.c read()/close() divert to it. POLLOUT = always-ready (ponytail).
+  - process layer (posix_llvm.c): REAL execv/execvp/execve (envp → private /env
+    via fork RFENVG; FD_CLOEXEC sweep before exec — libuv's error-pipe protocol
+    depends on it), async child reaper (thread reads /proc/<forker>/wait —
+    await(2) is per-proc but the wait FILE is same-user readable; zombies table
+    + raise(SIGCHLD)), waitpid(WNOHANG), kill() over /proc (note/ctl), system()
+    rerouted through it. socketpair() = n9_pipe (Plan 9 pipes are full-duplex).
+  - sem_* (semaphore.h), pthread_attr/condattr/atfork/sigmask/schedparam/name,
+    scandir/alphasort/mkdtemp, writev/readv, termios no-ops, ttyname_r,
+    resolver stubs, headers: limits/termios/semaphore/ifaddrs/grp/netdb/netinet/
+    arpa/net/if/sys.uio/sys.param + errno(+35)/signal(+8)/socket constants.
+  - crt0 exports __cc9_argv0 (uv_exepath).
+  libuv build: port/build-libuv.sh = pristine v1.52.1 + patches/libuv-plan9.patch
+  (unix.h __plan9__→uv/posix.h; fs.c statvfs guards) + port/uv-plan9.c platform
+  file (cygwin recipe: posix-poll/no-fsevents/no-proctitle/posix-hrtime).
+  tcp/udp/getaddrinfo COMPILE, fail ENOSYS at runtime (honest; /net bridge later).
+  Artifact: _out/libuv/libuv.a.
 - [ ] **G3 nvim headless** — gate: `nvim --headless "+lua print(...)" +q` on VM
 - [ ] **G4 TUI in alacritty9** — acceptance: edit/:w/treesitter colors, VM + cirno, screenshots
 - [ ] **G5 follow-ons**: jobs, :terminal, LSP, pac9 package

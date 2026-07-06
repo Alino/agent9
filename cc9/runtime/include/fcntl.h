@@ -12,6 +12,7 @@
 #define O_CLOEXEC 0x2000
 #define O_DIRECTORY 0x4000
 #define O_NOFOLLOW 0x8000
+#define O_NOCTTY 0
 #define AT_FDCWD (-100)
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_REMOVEDIR 0x200

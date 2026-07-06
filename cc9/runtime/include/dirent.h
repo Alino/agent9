@@ -16,4 +16,13 @@ int dirfd(DIR *); void rewinddir(DIR *);
 #ifdef __cplusplus
 }
 #endif
+#ifdef __cplusplus
+extern "C" {
+#endif
+int scandir(const char *, struct dirent ***, int (*)(const struct dirent *),
+            int (*)(const struct dirent **, const struct dirent **));
+int alphasort(const struct dirent **, const struct dirent **);
+#ifdef __cplusplus
+}
+#endif
 #endif

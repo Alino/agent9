@@ -84,8 +84,15 @@ int open(const char *path, int flags, ...){
 	return (int)fd;
 }
 int openat(int dfd, const char *path, int flags, ...){ char b[1024]; return open(at_path(dfd,path,b,sizeof b), flags); }
-int close(int fd){ return n9_close(fd) < 0 ? -1 : 0; }
-long read(int fd, void *buf, size_t n){ long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
+/* poll.c readiness layer (libuv): fds with a reader thread or O_NONBLOCK are
+ * served from its ring buffer; everything else takes the direct path. */
+extern int cc9_poll_owned(int);
+extern long cc9_poll_read(int, void *, long);
+extern void cc9_poll_onclose(int);
+int close(int fd){ cc9_poll_onclose(fd); return n9_close(fd) < 0 ? -1 : 0; }
+long read(int fd, void *buf, size_t n){
+	if(cc9_poll_owned(fd)) return cc9_poll_read(fd, buf, (long)n);
+	long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
 long write(int fd, const void *buf, size_t n){ long r=n9_pwrite(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
 long pread(int fd, void *buf, size_t n, long off){ return n9_pread(fd,buf,(long)n,off); }
 long pwrite(int fd, const void *buf, size_t n, long off){ return n9_pwrite(fd,buf,(long)n,off); }
@@ -375,5 +382,82 @@ int mkstemp(char *tmpl){
 		if(fd >= 0) return fd;
 	}
 	errno = EEXIST;
+	return -1;
+}
+
+/* writev/readv (sys/uio.h) — libuv's stream writes. writev loops each iov to
+ * completion; readv fills only iov[0] (short reads are legal, callers loop). */
+struct iovec { void *iov_base; size_t iov_len; };
+long writev(int fd, const struct iovec *iov, int n){
+	long total = 0;
+	for(int i = 0; i < n; i++){
+		const char *p = iov[i].iov_base;
+		size_t left = iov[i].iov_len;
+		while(left){
+			long w = write(fd, p, left);
+			if(w <= 0) return total ? total : w;
+			p += w; left -= (size_t)w; total += w;
+		}
+	}
+	return total;
+}
+long readv(int fd, const struct iovec *iov, int n){
+	for(int i = 0; i < n; i++)
+		if(iov[i].iov_len) return read(fd, iov[i].iov_base, iov[i].iov_len);
+	return 0;
+}
+
+/* mkdtemp — trailing XXXXXX replaced from /dev/random, then mkdir. */
+extern int mkdir(const char *, unsigned int);
+extern int rand(void);
+char *mkdtemp(char *tpl){
+	size_t len = strlen(tpl);
+	if(len < 6){ errno = EINVAL; return 0; }
+	char *x = tpl + len - 6;
+	for(int attempt = 0; attempt < 100; attempt++){
+		for(int i = 0; i < 6; i++) x[i] = 'a' + rand() % 26;
+		if(mkdir(tpl, 0700) == 0) return tpl;
+	}
+	errno = EEXIST;
+	return 0;
+}
+
+/* scandir/alphasort — over opendir/readdir, for libuv's uv_fs_scandir. */
+extern void *realloc(void *, size_t);
+extern int strcmp(const char *, const char *);
+extern void *memcpy(void *, const void *, size_t);
+extern void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
+int alphasort(const struct dirent **a, const struct dirent **b){
+	return strcmp((*a)->d_name, (*b)->d_name);
+}
+int scandir(const char *path, struct dirent ***out,
+            int (*filter)(const struct dirent *),
+            int (*cmp)(const struct dirent **, const struct dirent **)){
+	DIR *d = opendir(path);
+	if(!d) return -1;
+	struct dirent **v = 0; int n = 0, cap = 0;
+	struct dirent *e;
+	while((e = readdir(d))){
+		if(filter && !filter(e)) continue;
+		if(n == cap){
+			cap = cap ? cap*2 : 16;
+			struct dirent **nv = realloc(v, cap * sizeof *nv);
+			if(!nv) goto fail;
+			v = nv;
+		}
+		size_t sz = sizeof(struct dirent);
+		struct dirent *c = malloc(sz);
+		if(!c) goto fail;
+		memcpy(c, e, sz);
+		v[n++] = c;
+	}
+	closedir(d);
+	if(cmp && n > 1) qsort(v, n, sizeof *v, (int (*)(const void *, const void *))cmp);
+	*out = v;
+	return n;
+fail:
+	while(n) free(v[--n]);
+	free(v); closedir(d);
+	errno = ENOMEM;
 	return -1;
 }

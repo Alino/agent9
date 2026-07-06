@@ -41,6 +41,7 @@ INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/pthread.c" -o "$O/pthread.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/wchar.c" -o "$O/wchar.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/poll.c" -o "$O/poll.o"   # poll(2)/fcntl/pipe2 readiness layer (libuv)
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/fenv.c" -o "$O/fenv.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -O2 -c "$CC9/runtime/int128.c" -o "$O/int128.o"
 "$LLVM/clang++" "${base[@]}" $INSTR -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"

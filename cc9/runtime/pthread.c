@@ -484,3 +484,45 @@ int nanosleep(const struct timespec *req, struct timespec *rem){
 	}
 	return 0;
 }
+
+/* ---- POSIX unnamed semaphores (semaphore.h) — direct Plan 9 semaphores.
+ * sem_t.v IS the kernel semaphore word; pshared is meaningless under
+ * rfork(RFMEM) (all memory shared) and ignored. */
+extern int *__n9_errno(void);
+typedef struct { int v; } cc9_sem_t;
+int sem_init(cc9_sem_t *s, int pshared, unsigned int value){ (void)pshared; s->v = (int)value; return 0; }
+int sem_destroy(cc9_sem_t *s){ (void)s; return 0; }
+int sem_post(cc9_sem_t *s){ n9_semrelease(&s->v, 1); return 0; }
+int sem_wait(cc9_sem_t *s){ n9_semacquire(&s->v, 1); return 0; }
+int sem_trywait(cc9_sem_t *s){
+	if(n9_tsemacquire(&s->v, 0) == 1) return 0;
+	*__n9_errno() = 11 /*EAGAIN*/; return -1;
+}
+int sem_timedwait(cc9_sem_t *s, const struct timespec *abs){
+	struct timespec now; clock_gettime(0, &now);
+	long ms = (long)(abs->tv_sec - now.tv_sec)*1000 + (abs->tv_nsec - now.tv_nsec)/1000000;
+	if(ms < 0) ms = 0;
+	if(n9_tsemacquire(&s->v, ms) == 1) return 0;
+	*__n9_errno() = 110 /*ETIMEDOUT*/; return -1;
+}
+int sem_getvalue(cc9_sem_t *s, int *out){ *out = s->v; return 0; }
+
+/* pthread_atfork — accepted, never invoked. cc9 fork() is rfork+exec-shaped
+ * (libuv/nvim); nothing re-enters the runtime between fork and exec. */
+int pthread_atfork(void (*prep)(void), void (*parent)(void), void (*child)(void)){
+	(void)prep; (void)parent; (void)child; return 0;
+}
+
+/* attr/condattr are accepted-and-ignored (thread stacks are fixed-size heap
+ * blocks; the only clock is /dev/bintime). rwlock is a mutex, so try = trylock. */
+int pthread_attr_init(pthread_attr_t *a){ (void)a; return 0; }
+int pthread_attr_destroy(pthread_attr_t *a){ (void)a; return 0; }
+int pthread_attr_setstacksize(pthread_attr_t *a, size_t s){ (void)a; (void)s; return 0; }
+int pthread_attr_getstacksize(const pthread_attr_t *a, size_t *s){ (void)a; *s = 1<<20; return 0; }
+int pthread_condattr_init(pthread_condattr_t *a){ (void)a; return 0; }
+int pthread_condattr_destroy(pthread_condattr_t *a){ (void)a; return 0; }
+int pthread_condattr_setclock(pthread_condattr_t *a, int c){ (void)a; (void)c; return 0; }
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *l){ return pthread_mutex_trylock(l); }
+int pthread_rwlock_trywrlock(pthread_rwlock_t *l){ return pthread_mutex_trylock(l); }
+int pthread_setname_np(pthread_t t, const char *n){ (void)t; (void)n; return 0; }
+int pthread_getname_np(pthread_t t, char *buf, size_t n){ (void)t; if(n) buf[0]=0; return 0; }

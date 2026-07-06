@@ -12,6 +12,17 @@ typedef unsigned long rlim_t;
 #define RLIMIT_NPROC   6
 #define RLIMIT_NOFILE  7
 #define RLIMIT_AS      9
+#define PRIO_PROCESS 0
+#define PRIO_PGRP    1
+#define PRIO_USER    2
+#ifdef __cplusplus
+extern "C" {
+#endif
+int getpriority(int, unsigned int);
+int setpriority(int, unsigned int, int);
+#ifdef __cplusplus
+}
+#endif
 #define RUSAGE_SELF     0
 #define RUSAGE_CHILDREN (-1)
 struct rlimit { rlim_t rlim_cur, rlim_max; };

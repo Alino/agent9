@@ -39,7 +39,7 @@ pid_t getpid(void); pid_t getppid(void);
 uid_t getuid(void); uid_t geteuid(void); gid_t getgid(void); gid_t getegid(void);
 int getpagesize(void); long sysconf(int);
 unsigned int alarm(unsigned int); unsigned int sleep(unsigned int); int usleep(unsigned int);
-int pipe(int[2]); pid_t fork(void); void _exit(int);
+int pipe(int[2]); int pipe2(int[2], int); pid_t fork(void); void _exit(int);
 int execv(const char *, char *const[]); int execve(const char *, char *const[], char *const[]);
 int execvp(const char *, char *const[]);
 int gethostname(char *, unsigned long); int setsid(void); pid_t getsid(pid_t);
@@ -57,6 +57,18 @@ extern char **environ;
 #define _SC_GETPW_R_SIZE_MAX 70
 #define _SC_HOST_NAME_MAX    180
 int mkstemp(char *);                /* POSIX temp file; libc++ test framework uses it */
+#ifdef __cplusplus
+}
+#endif
+#ifdef __cplusplus
+extern "C" {
+#endif
+int setuid(uid_t); int setgid(gid_t); int setgroups(int, const gid_t *);
+char *ptsname(int);
+int ttyname_r(int, char *, size_t);
+int execv(const char *, char *const[]);
+int execvp(const char *, char *const[]);
+int execve(const char *, char *const[], char *const[]);
 #ifdef __cplusplus
 }
 #endif

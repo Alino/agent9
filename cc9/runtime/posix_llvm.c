@@ -157,10 +157,21 @@ extern long n9_rfork(int);
 extern long n9_exec(const char *, char **);
 extern long n9_await(char *, int);
 extern void n9_exits(const char *);
-/* Plan 9 rfork flags: RFPROC=1<<4, RFFDG=1<<2 (copy fd group). */
+/* Plan 9 rfork flags: RFPROC=1<<4, RFFDG=1<<2 (copy fd group), RFENVG=1<<1
+ * (copy env group — gives fork() POSIX private-environ semantics; execve
+ * then writes envp into the child's own /env). */
 #define N9_RFPROC 0x10
 #define N9_RFFDG  0x04
-int    fork(void) { return (int)n9_rfork(N9_RFPROC|N9_RFFDG); }
+#define N9_RFENVG 0x02
+static void cc9_reap_forked(int pid);      /* below: child bookkeeping + reaper */
+static void cc9_reap_child_reset(void);
+int waitpid(int, int *, int);
+int    fork(void) {
+	int pid = (int)n9_rfork(N9_RFPROC|N9_RFFDG|N9_RFENVG);
+	if (pid > 0) cc9_reap_forked(pid);
+	else if (pid == 0) cc9_reap_child_reset();   /* copied tables describe the parent's kids */
+	return pid;
+}
 
 /* system(): run `cmd` via `/bin/rc -c cmd`, await it, return 0 on clean exit.
  * The libc++ filesystem test framework uses system("mkdir -p ...") etc. With
@@ -175,27 +186,18 @@ int system(const char *cmd) {
 	 * regardless. Treat `chmod -R ...` as a successful no-op. Drop if 9front chmod
 	 * ever gains -R. */
 	if (n9_startswith(cmd, "chmod -R ")) return 0;
-	long pid = n9_rfork(N9_RFPROC|N9_RFFDG);
+	/* route through fork()/waitpid so the reaper bookkeeping stays coherent
+	 * (a bare await here would race the reaper thread for the waitmsg). */
+	int pid = fork();
 	if (pid < 0) return -1;
 	if (pid == 0) {
 		char *argv[4]; argv[0] = "rc"; argv[1] = "-c"; argv[2] = (char *)cmd; argv[3] = 0;
 		n9_exec("/bin/rc", argv);
 		n9_exits("exec");                 /* only reached if exec fails */
 	}
-	char w[256];
-	for (;;) {
-		long n = n9_await(w, sizeof w - 1);
-		if (n < 0) return -1;
-		w[n] = 0;
-		long wp = 0; const char *p = w; while (*p >= '0' && *p <= '9') wp = wp*10 + (*p++ - '0');
-		if (wp != pid) continue;          /* a different child; keep waiting */
-		/* await msg = "pid utime stime rtime 'status'"; the exit string is
-		 * QUOTED (Plan 9 %q): '' means empty == clean exit == success. */
-		int sp = 0; const char *q = w;
-		for (; *q && sp < 4; q++) if (*q == ' ') sp++;
-		if (*q == '\'') q++;              /* skip opening quote */
-		return (*q == '\'' || *q == 0) ? 0 : 1;   /* empty quoted status => 0 */
-	}
+	int st = 0;
+	if (waitpid(pid, &st, 0) < 0) return -1;
+	return st;
 }
 
 /* ---- STUB (POSIX failure; not on a compile path) ---- */
@@ -204,9 +206,52 @@ int    pipe(int fds[2]) { return (int)n9_pipe(fds); }
 int    dup3(int o, int n, int f) { (void)o; (void)n; (void)f; return -1; }
 int    setsid(void) { return -1; }
 int    getsid(int p) { (void)p; return -1; }
-int    execv(const char *p, char *const a[]) { (void)p; (void)a; return -1; }
-int    execvp(const char *p, char *const a[]) { (void)p; (void)a; return -1; }
-int    execve(const char *p, char *const a[], char *const e[]) { (void)p; (void)a; (void)e; return -1; }
+/* ---- exec over Plan 9 exec(2) ----
+ * execve: envp lands in the child's private /env (fork uses RFENVG), fds
+ * marked FD_CLOEXEC (poll.c table) are closed — libuv's spawn error-pipe
+ * protocol depends on close-on-exec actually happening. */
+extern int *__n9_errno(void);
+#define errno (*__n9_errno())
+extern int cc9_poll_cloexec(int);
+extern long n9_create(const char *, int, unsigned int);
+extern long n9_close(int);
+extern long n9_pwrite(int, const void *, long, long long);
+int    execve(const char *p, char *const a[], char *const e[]) {
+	if (e) {
+		for (int i = 0; e[i]; i++) {
+			const char *eq = e[i]; while (*eq && *eq != '=') eq++;
+			if (!*eq) continue;
+			char name[128]; int n = 0;
+			const char *s = e[i];
+			while (s < eq && n < (int)sizeof name - 6) name[n++] = *s++;
+			name[n] = 0;
+			char path[160]; char *d = path;
+			const char *pre = "/env/"; while (*pre) *d++ = *pre++;
+			for (int j = 0; j <= n; j++) *d++ = name[j];
+			int fd = (int)n9_create(path, 1 /*OWRITE*/, 0666);
+			if (fd >= 0) {
+				const char *v = eq + 1; long vl = 0; while (v[vl]) vl++;
+				n9_pwrite(fd, v, vl, -1);
+				n9_close(fd);
+			}
+		}
+	}
+	for (int fd = 3; fd < 64; fd++)
+		if (cc9_poll_cloexec(fd)) n9_close(fd);
+	n9_exec(p, (char **)a);
+	errno = 2 /*ENOENT*/;
+	return -1;
+}
+int    execv(const char *p, char *const a[]) { return execve(p, a, 0); }
+int    execvp(const char *p, char *const a[]) {
+	for (const char *s = p; *s; s++)
+		if (*s == '/') return execve(p, a, 0);
+	char b[256]; char *d = b;
+	const char *pre = "/bin/"; while (*pre) *d++ = *pre++;
+	const char *s = p; while (*s && d < b + sizeof b - 1) *d++ = *s++;
+	*d = 0;
+	return execve(b, a, 0);
+}
 /* waitpid over Plan 9 await(2): wait for child `pid` (or any if pid<=0), decode
  * the exit-status string into *s for the WIFEXITED/WEXITSTATUS macros. Plan 9
  * reports a non-empty child exit string to the parent as "<argv0> <pid>: <str>";
@@ -218,40 +263,175 @@ static const char *cc9_find(const char *h, const char *n){
 	for(; *h; h++){ const char *a=h,*b=n; while(*b && *a==*b){a++;b++;} if(!*b) return h; }
 	return 0;
 }
-int    waitpid(int pid, int *s, int o) {
-	(void)o;
-	char w[256];
-	for (;;) {
-		long n = n9_await(w, sizeof w - 1);
-		if (n < 0) return -1;
-		w[n] = 0;
-		long wp = 0; const char *p = w; while (*p >= '0' && *p <= '9') wp = wp*10 + (*p++ - '0');
-		if (pid > 0 && wp != pid) continue;          /* a different child; keep waiting */
-		/* locate the quoted exit string: skip "pid utime stime rtime " (4 spaces) */
-		int sp = 0; const char *q = w;
-		for (; *q && sp < 4; q++) if (*q == ' ') sp++;
-		if (*q == '\'') q++;                          /* skip opening quote */
-		if (s) {
-			const char *m = cc9_find(q, "cc9exit=");
-			if (*q == '\'' || *q == 0) *s = 0;                       /* clean exit 0 */
-			else if (m) {
-				m += 8; int neg = (*m=='-'); if (neg) m++;
-				int code = 0; while (*m >= '0' && *m <= '9') code = code*10 + (*m++ - '0');
-				*s = ((neg ? -code : code) & 0xff) << 8;             /* WIFEXITED, WEXITSTATUS=code */
-			}
-			/* a CPU trap (__builtin_trap/__builtin_verbose_trap -> "sys: trap:
-			 * invalid opcode") is libc++'s hardening trap path — report as SIGILL
-			 * so death tests map it to DeathCause::Trap, not SIGABRT. */
-			else if (cc9_find(q, "trap") || cc9_find(q, "invalid opcode") || cc9_find(q, "illegal"))
-				*s = 4;                                              /* SIGILL: WIFSIGNALED */
-			else *s = 6;                                             /* SIGABRT: WIFSIGNALED */
+/* decode one waitmsg ("pid utime stime rtime 'status'") -> pid, *s */
+static int cc9_wait_decode(const char *w, int *s) {
+	long wp = 0; const char *p = w; while (*p >= '0' && *p <= '9') wp = wp*10 + (*p++ - '0');
+	/* locate the quoted exit string: skip "pid utime stime rtime " (4 spaces) */
+	int sp = 0; const char *q = w;
+	for (; *q && sp < 4; q++) if (*q == ' ') sp++;
+	if (*q == '\'') q++;                          /* skip opening quote */
+	if (s) {
+		const char *m = cc9_find(q, "cc9exit=");
+		if (*q == '\'' || *q == 0) *s = 0;                       /* clean exit 0 */
+		else if (m) {
+			m += 8; int neg = (*m=='-'); if (neg) m++;
+			int code = 0; while (*m >= '0' && *m <= '9') code = code*10 + (*m++ - '0');
+			*s = ((neg ? -code : code) & 0xff) << 8;             /* WIFEXITED, WEXITSTATUS=code */
 		}
-		return (int)wp;
+		/* a CPU trap (__builtin_trap/__builtin_verbose_trap -> "sys: trap:
+		 * invalid opcode") is libc++'s hardening trap path — report as SIGILL
+		 * so death tests map it to DeathCause::Trap, not SIGABRT. */
+		else if (cc9_find(q, "trap") || cc9_find(q, "invalid opcode") || cc9_find(q, "illegal"))
+			*s = 4;                                              /* SIGILL: WIFSIGNALED */
+		else *s = 6;                                             /* SIGABRT: WIFSIGNALED */
+	}
+	return (int)wp;
+}
+
+/* ---- async child reaping (libuv needs waitpid(WNOHANG) + SIGCHLD) ----
+ * await(2) only works in the proc that forked, and it BLOCKS — useless for
+ * WNOHANG and for a reaper pthread (a different proc). But the forking proc's
+ * /proc/<pid>/wait FILE is readable by any same-user proc. So: fork() records
+ * the child under its forking proc; per forking proc a reaper thread blocks
+ * reading that wait file, parses waitmsgs into a zombie table, raise()s
+ * SIGCHLD (libuv's handler is a self-pipe write — thread-agnostic). waitpid()
+ * only consumes the table. Processes that never fork() keep the legacy
+ * direct-await path. ponytail: max 4 forking procs, 32 zombies — nvim forks
+ * from one loop thread; bump if a real workload outgrows it. */
+extern void n9_semacquire(int *, int);
+extern void n9_semrelease(int *, int);
+extern long n9_tsemacquire(int *, long);
+extern long n9_open(const char *, int);
+extern long n9_pread(int, void *, long, long long);
+extern int raise(int);
+typedef unsigned long cc9_pthread_t;
+extern int pthread_create(cc9_pthread_t *, const void *, void *(*)(void *), void *);
+extern int pthread_detach(cc9_pthread_t);
+
+static int zlock = 1;
+static struct { int pid; int status; } ztab[32];
+static int znum;
+static int reap_sem;                      /* released once per new zombie */
+static struct { int parent; int outstanding; int kick; int running; } rtab[4];
+
+static void *cc9_reaper(void *arg) {
+	int slot = (int)(long)arg;
+	char path[32], w[256];
+	/* "/proc/<pid>/wait" */
+	{ char *d = path; const char *p = "/proc/"; while (*p) *d++ = *p++;
+	  int v = rtab[slot].parent; char num[16]; int n = 0;
+	  do { num[n++] = '0' + v % 10; v /= 10; } while (v);
+	  while (n) *d++ = num[--n];
+	  p = "/wait"; while (*p) *d++ = *p++; *d = 0; }
+	for (;;) {
+		while (rtab[slot].outstanding == 0)
+			n9_semacquire(&rtab[slot].kick, 1);
+		int fd = (int)n9_open(path, 0 /*OREAD*/);
+		if (fd < 0) { rtab[slot].outstanding = 0; continue; }
+		long n = n9_pread(fd, w, sizeof w - 1, -1);
+		n9_close(fd);
+		if (n <= 0) continue;                     /* interrupted note etc: retry */
+		w[n] = 0;
+		int st = 0, pid = cc9_wait_decode(w, &st);
+		n9_semacquire(&zlock, 1);
+		if (znum < (int)(sizeof ztab / sizeof ztab[0])) { ztab[znum].pid = pid; ztab[znum].status = st; znum++; }
+		rtab[slot].outstanding--;
+		n9_semrelease(&zlock, 1);
+		n9_semrelease(&reap_sem, 1);
+		raise(17 /*SIGCHLD*/);
+	}
+	return 0;
+}
+
+static void cc9_reap_forked(int childpid) {
+	(void)childpid;
+	int me = getpid();
+	n9_semacquire(&zlock, 1);
+	int slot = -1;
+	for (int i = 0; i < 4; i++) if (rtab[i].running && rtab[i].parent == me) { slot = i; break; }
+	if (slot < 0)
+		for (int i = 0; i < 4; i++) if (!rtab[i].running) { slot = i; break; }
+	if (slot >= 0) {
+		if (!rtab[slot].running) {
+			rtab[slot].parent = me; rtab[slot].outstanding = 0; rtab[slot].kick = 0;
+			cc9_pthread_t t;
+			if (pthread_create(&t, 0, cc9_reaper, (void *)(long)slot) == 0) {
+				pthread_detach(t);
+				rtab[slot].running = 1;
+			}
+		}
+		if (rtab[slot].running) {
+			rtab[slot].outstanding++;
+			n9_semrelease(&rtab[slot].kick, 1);
+		}
+	}
+	n9_semrelease(&zlock, 1);
+}
+
+static void cc9_reap_child_reset(void) {
+	zlock = 1; znum = 0; reap_sem = 0;
+	for (int i = 0; i < 4; i++) { rtab[i].running = 0; rtab[i].outstanding = 0; rtab[i].kick = 0; }
+}
+
+static int cc9_reaping(void) {
+	for (int i = 0; i < 4; i++) if (rtab[i].running) return 1;
+	return 0;
+}
+
+int    waitpid(int pid, int *s, int o) {
+	if (!cc9_reaping()) {                          /* legacy: never fork()ed */
+		char w[256];
+		for (;;) {
+			long n = n9_await(w, sizeof w - 1);
+			if (n < 0) return -1;
+			w[n] = 0;
+			int st = 0, wp = cc9_wait_decode(w, &st);
+			if (pid > 0 && wp != pid) continue;
+			if (s) *s = st;
+			return wp;
+		}
+	}
+	for (;;) {
+		n9_semacquire(&zlock, 1);
+		int found = -1;
+		for (int i = 0; i < znum; i++)
+			if (pid <= 0 || ztab[i].pid == pid) { found = i; break; }
+		int rp = 0;
+		if (found >= 0) {
+			rp = ztab[found].pid;
+			if (s) *s = ztab[found].status;
+			ztab[found] = ztab[znum - 1]; znum--;
+		}
+		int pending = 0;
+		for (int i = 0; i < 4; i++) pending += rtab[i].outstanding;
+		n9_semrelease(&zlock, 1);
+		if (found >= 0) return rp;
+		if (pending == 0) { errno = 10 /*ECHILD*/; return -1; }
+		if (o & 1 /*WNOHANG*/) return 0;
+		n9_tsemacquire(&reap_sem, 200);            /* woken per zombie; re-scan */
 	}
 }
 int    wait4(int p, int *s, int o, void *r) { (void)r; return waitpid(p, s, o); }
 int    wait(int *s) { return waitpid(-1, s, 0); }
-int    kill(int p, int s) { (void)p; (void)s; return -1; }
+/* kill over /proc: SIGKILL writes "kill" to ctl (forced); sig 0 probes for
+ * existence; anything else posts an "interrupt" note. */
+int    kill(int p, int s) {
+	char path[40], *d = path;
+	const char *pre = "/proc/"; while (*pre) *d++ = *pre++;
+	{ int v = p; char num[16]; int n = 0;
+	  do { num[n++] = '0' + v % 10; v /= 10; } while (v > 0);
+	  while (n) *d++ = num[--n]; }
+	const char *suf = (s == 9 /*SIGKILL*/) ? "/ctl" : (s == 0) ? "/status" : "/note";
+	while (*suf) *d++ = *suf++;
+	*d = 0;
+	int fd = (int)n9_open(path, s == 0 ? 0 /*OREAD*/ : 1 /*OWRITE*/);
+	if (fd < 0) { errno = 3 /*ESRCH*/; return -1; }
+	int r = 0;
+	if (s == 9)      r = n9_pwrite(fd, "kill", 4, -1) == 4 ? 0 : -1;
+	else if (s != 0) r = n9_pwrite(fd, "interrupt", 9, -1) == 9 ? 0 : -1;
+	n9_close(fd);
+	return r;
+}
 unsigned int alarm(unsigned int s) { (void)s; return 0; }
 /* setitimer over Plan 9 alarm(2): ITIMER_REAL arms n9_alarm(ms); a SIGALRM note
  * then fires (crt0.c note handler). Other timers are accepted as no-ops.
@@ -267,7 +447,7 @@ int setitimer(int which, const struct itimerval *nv, struct itimerval *ov) {
 }
 int    usleep(unsigned int us) { (void)us; return 0; }
 int    ioctl(int fd, unsigned long req, ...) { (void)fd; (void)req; return -1; }
-int    fcntl(int fd, int cmd, ...) { (void)fd; (void)cmd; return 0; }  /* "locks succeed" */
+/* fcntl moved to poll.c (real O_NONBLOCK/FD_CLOEXEC; locks still "succeed") */
 int    chown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
 int    fchown(int fd, unsigned u, unsigned g) { (void)fd; (void)u; (void)g; return 0; }
 int    lchown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
@@ -391,3 +571,72 @@ int   dlclose(void *h) { (void)h; return 0; }
 void *dlsym(void *h, const char *n) { (void)h; (void)n; return 0; }
 char *dlerror(void) { return (char *)"cc9: no dynamic loading"; }
 int   dladdr(const void *a, void *info) { (void)a; (void)info; return 0; }
+
+/* ---- sockets: socketpair is REAL (Plan 9 pipes are full-duplex, exactly a
+ * SOCK_STREAM pair — backs libuv's spawn-stdio and uv_pipe(2)); the rest of
+ * the BSD socket surface is honest ENOSYS (networking on Plan 9 is /net). */
+int socketpair(int af, int type, int proto, int sv[2]) {
+	(void)af; (void)proto;
+	extern int pipe2(int[2], int);
+	return pipe2(sv, type & (0x1000|0x2000) /*SOCK_NONBLOCK|SOCK_CLOEXEC*/);
+}
+int getsockopt(int a, int b, int c, void *d, unsigned int *e) { (void)a;(void)b;(void)c;(void)d;(void)e; errno = 88 /*ENOTSOCK*/; return -1; }
+int getsockname(int a, void *b, unsigned int *c) { (void)a;(void)b;(void)c; errno = 88; return -1; }
+int getpeername(int a, void *b, unsigned int *c) { (void)a;(void)b;(void)c; errno = 88; return -1; }
+long sendmsg(int a, const void *m, int f) { (void)a;(void)m;(void)f; errno = 88; return -1; }
+long recvmsg(int a, void *m, int f) { (void)a;(void)m;(void)f; errno = 88; return -1; }
+
+/* ---- decorative termios (see include/termios.h) ---- */
+struct cc9_termios { unsigned int i, o, c, l; unsigned char cc[32]; unsigned int is, os; };
+int tcgetattr(int fd, struct cc9_termios *t) {
+	(void)fd;
+	memset(t, 0, sizeof *t);
+	t->i = 0400 /*ICRNL*/; t->o = 0005 /*OPOST|ONLCR*/;
+	t->c = 0260 /*CS8|CREAD*/; t->l = 0173 /*ISIG|ICANON|ECHO...*/;
+	return 0;
+}
+int tcsetattr(int fd, int act, const struct cc9_termios *t) { (void)fd; (void)act; (void)t; return 0; }
+void cfmakeraw(struct cc9_termios *t) { t->i = 0; t->o = 0; t->l = 0; }
+int tcflush(int fd, int q) { (void)fd; (void)q; return 0; }
+int tcdrain(int fd) { (void)fd; return 0; }
+
+/* ---- resolver stubs (no /net/cs bridge yet) ---- */
+int getaddrinfo(const char *n, const char *s, const void *h, void **res) {
+	(void)n; (void)s; (void)h; if (res) *res = 0; return -4 /*EAI_FAIL*/;
+}
+void freeaddrinfo(void *ai) { (void)ai; }
+int getnameinfo(const void *sa, unsigned int salen, char *host, unsigned int hl,
+                char *serv, unsigned int sl, int fl) {
+	(void)sa; (void)salen; (void)host; (void)hl; (void)serv; (void)sl; (void)fl;
+	return -4 /*EAI_FAIL*/;
+}
+const char *gai_strerror(int e) { (void)e; return "name resolution unavailable (no /net/cs bridge)"; }
+unsigned int if_nametoindex(const char *n) { (void)n; return 0; }
+char *if_indextoname(unsigned int i, char *buf) { (void)i; (void)buf; return 0; }
+void *getgrnam(const char *n) { (void)n; return 0; }
+void *getgrgid(unsigned g) { (void)g; return 0; }
+int setgroups(int n, const unsigned *g) { (void)n; (void)g; return 0; }
+int pthread_sigmask(int how, const unsigned long *set, unsigned long *old) { return sigprocmask(how, set, old); }
+struct cc9_sched_param { int sched_priority; };
+int sched_get_priority_min(int p) { (void)p; return 0; }
+int sched_get_priority_max(int p) { (void)p; return 0; }
+int pthread_getschedparam(unsigned long t, int *pol, struct cc9_sched_param *sp) { (void)t; if (pol) *pol = 0; if (sp) sp->sched_priority = 0; return 0; }
+int pthread_setschedparam(unsigned long t, int pol, const struct cc9_sched_param *sp) { (void)t; (void)pol; (void)sp; return 0; }
+int getpriority(int which, unsigned int who) { (void)which; (void)who; return 0; }
+int setpriority(int which, unsigned int who, int prio) { (void)which; (void)who; (void)prio; return 0; }
+int getgrgid_r(unsigned g, void *grp, char *buf, unsigned long n, void **res) { (void)g; (void)grp; (void)buf; (void)n; if (res) *res = 0; return 0; }
+int setuid(unsigned u) { (void)u; return 0; }
+int setgid(unsigned g) { (void)g; return 0; }
+int getifaddrs(void **out) { if (out) *out = 0; errno = 38 /*ENOSYS*/; return -1; }
+void freeifaddrs(void *l) { (void)l; }
+char *ptsname(int fd) { (void)fd; return 0; }   /* no ptys on Plan 9 */
+int ttyname_r(int fd, char *buf, unsigned long n) {
+	/* the terminal is whatever fd 0/1/2 point at; name it /dev/cons */
+	const char *s = "/dev/cons"; unsigned long i = 0;
+	(void)fd;
+	if (n == 0) return 34 /*ERANGE*/;
+	while (s[i] && i < n - 1) { buf[i] = s[i]; i++; }
+	buf[i] = 0;
+	return 0;
+}
+const unsigned char in6addr_any[16];   /* matches struct in6_addr layout */

@@ -3,7 +3,7 @@
 #include <sys/types.h>
 struct statvfs {
   unsigned long f_bsize, f_frsize, f_blocks, f_bfree, f_bavail,
-                f_files, f_ffree, f_favail, f_fsid, f_flag, f_flags, f_namemax;
+                f_files, f_ffree, f_favail, f_fsid, f_flag, f_flags, f_namemax, f_type;
 };
 /* Mount flags. cc9 sets f_flags=0, so LLVM's is_local() answers "remote"
  * conservatively — it never matters for compilation. */

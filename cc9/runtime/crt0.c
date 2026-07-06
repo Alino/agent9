@@ -44,6 +44,7 @@ void cc9_fpmask(void)
 
 extern unsigned long __cc9_ksp;
 extern void __cc9_build_environ(void);
+const char *__cc9_argv0 = "a.out";   /* set from the real argv in __cc9_run */
 extern long n9_pwrite(int, const void *, long, long long);
 extern long n9_notify(void *);
 extern void cc9_notetramp(void);
@@ -227,6 +228,7 @@ void __cc9_run(void)
 		argc = (int)ks[0];
 		argv = (char **)(ks + 1);
 	} else { argc = 1; argv = fallback; }
+	{ extern const char *__cc9_argv0; __cc9_argv0 = argv[0]; }   /* uv_exepath et al */
 	STAGE('d');
 	__cc9_build_environ();
 	STAGE('e');
