@@ -43,6 +43,11 @@ gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9/gl9-amd64.
 # fonts bundled) + gl9win2, the interactive native window host. Self-contained
 # (~5 MB download / ~19 MB installed). Run `alacritty9` from a rio window.
 alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacritty9/alacritty9-amd64.tar.gz
+# neovim9 — real upstream Neovim 0.12.4 on 9front: static a.out (LuaJIT
+# interpreter + libuv + 7 treesitter parsers) + the runtime tree at nvim's
+# compiled-in /usr/local/share/nvim. TUI needs a terminal — run inside
+# alacritty9 (or any TERM-setting host). jobs/:terminal/LSP all work.
+neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9/neovim9-amd64.tar.gz
 mxio	https://github.com/Alino/agent9	src/mxio	-
 vts	https://github.com/Alino/agent9	src/vts	-
 vtwin	https://github.com/Alino/agent9	src/vtwin	-

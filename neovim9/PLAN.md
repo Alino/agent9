@@ -110,9 +110,18 @@ Bar: TUI editing + treesitter inside alacritty9 (VM + cirno). Jobs/:terminal/LSP
   force_crlf=true (ONLCR), terminal.c does local echo (skip when an ESC is in
   flight; \r or \n → echo "\r\n", 0x7f/0x08 → "\b \b"); ex_docmd.c passes -i
   to rc so it prompts. 4 more files in nvim-plan9.patch (now 7).
-- [ ] **G5c LSP smoke test**: initialize handshake + hover over stdio pipes.
-- [ ] **G5d pac9 neovim9 package**: tarball (nvim + runtime tree + parser
-  markers) + registry entry, rust9/alacritty9 pattern.
+- [x] **G5c LSP smoke test** (2026-07-06): full vim.lsp round-trip over stdio
+  pipes — initialize handshake, hoverProvider capability, textDocument/hover
+  reply, clean client:stop() — PASS on VM AND bare-metal cirno, zero new code
+  needed (uv_spawn + pipes from G2/G5a carry it). Server = test/lsp-server.lua
+  (minimal Content-Length-framed LSP server run via `nvim -l`), client =
+  test/lsp-client.lua (`nvim --clean --headless -l`, prints LSPGATE PASS).
+- [x] **G5d pac9 neovim9 package** (2026-07-06): release/make-tarball.sh →
+  neovim9-amd64.tar.gz (8.8MB: /amd64/bin/nvim + /usr/local/share/nvim/runtime
+  + 7 parser markers) + registry entry. Live-verified on the VM the pac9 way:
+  wiped the old install, hget + tar xf at /, then treesitter add("c")=true,
+  $VIMRUNTIME resolves, LSP gate passes. GitHub release upload pending gh auth
+  (same as rust9): `gh release create neovim9 release/neovim9-amd64.tar.gz`.
 
 ## Dev loop
 
