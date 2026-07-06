@@ -843,63 +843,73 @@ impl Display {
         #[cfg(target_os = "plan9")]
         let plan9_draw_start = std::time::Instant::now();
 
-        // alacritty9: scissor the clear + render to the damage bounding box.
-        // Softpipe writes back every tile the clear touches, so a full-frame
-        // clear costs full-frame time even when one row changed; with the
-        // scissor, render cost scales with the damage. Regions outside the
-        // scissor keep last frame's pixels in the OSMesa buffer, which is
-        // exactly what the damage-based present expects. The bbox (pixel
-        // coords, GL bottom-up origin) is kept to also cull undamaged cells
-        // from the draw below.
+        // alacritty9: shape the render to the damage RECT LIST, not a
+        // bounding box — a TUI updating its header and its input line in
+        // one frame (pi9 does, every keystroke) has a full-window bbox but
+        // two small rects. Softpipe pays tile writeback for every cleared
+        // pixel and interpreted vertex cost for every submitted quad, so:
+        // clear each damage rect under its own scissor, cull grid cells
+        // whose rows overlap no rect, and keep a bbox scissor on during the
+        // draw (whatever alacritty draws without damaging stays out of the
+        // buffer, which must keep matching the screen — the present only
+        // ships the damage rects). Full damage (or debug) = normal path.
         #[cfg(target_os = "plan9")]
-        let plan9_bbox = if self.damage_tracker.debug {
+        let plan9_damage = if self.damage_tracker.debug {
             None
         } else {
+            let width = self.size_info.width() as i32;
+            let height = self.size_info.height() as i32;
             let damage = self.damage_tracker.shape_frame_damage(self.size_info.into());
-            let mut x0 = i32::MAX;
-            let mut y0 = i32::MAX;
-            let mut x1 = i32::MIN;
-            let mut y1 = i32::MIN;
-            for r in &damage {
-                x0 = x0.min(r.x);
-                y0 = y0.min(r.y);
-                x1 = x1.max(r.x + r.width);
-                y1 = y1.max(r.y + r.height);
-            }
-            if x0 < x1 && y0 < y1 {
-                unsafe {
-                    crate::gl::Enable(crate::gl::SCISSOR_TEST);
-                    crate::gl::Scissor(x0, y0, x1 - x0, y1 - y0);
-                }
-                Some((y0, y1))
-            } else {
-                None
-            }
+            let full = damage.is_empty()
+                || damage.iter().any(|r| r.width >= width && r.height >= height);
+            if full { None } else { Some(damage) }
         };
 
-        // alacritty9: softpipe pays interpreted per-vertex cost for every
-        // submitted quad, damaged or not — the scissor only culls fragments.
-        // Drop cells whose row can't intersect the damage bbox (the scissor
-        // guarantees correctness either way; this is purely less work).
         #[cfg(target_os = "plan9")]
-        let grid_cells = match plan9_bbox {
-            Some((y0, y1)) => {
+        let grid_cells = match &plan9_damage {
+            Some(damage) => {
                 let height = self.size_info.height() as i32;
                 let cell_height = self.size_info.cell_height() as i32;
                 let pad_y = self.size_info.padding_y() as i32;
-                let top_min = height - y1;
-                let top_max = height - y0;
+                // damage rects are GL bottom-up; cell rows are top-down
+                let bands: Vec<(i32, i32)> =
+                    damage.iter().map(|r| (height - (r.y + r.height), height - r.y)).collect();
                 grid_cells
                     .into_iter()
                     .filter(|cell| {
                         let top = pad_y + cell.point.line as i32 * cell_height;
-                        top + cell_height > top_min && top < top_max
+                        let bottom = top + cell_height;
+                        bands.iter().any(|&(bmin, bmax)| bottom > bmin && top < bmax)
                     })
                     .collect::<Vec<_>>()
             },
             None => grid_cells,
         };
 
+        #[cfg(target_os = "plan9")]
+        {
+            if let Some(damage) = &plan9_damage {
+                let mut x0 = i32::MAX;
+                let mut y0 = i32::MAX;
+                let mut x1 = i32::MIN;
+                let mut y1 = i32::MIN;
+                unsafe {
+                    crate::gl::Enable(crate::gl::SCISSOR_TEST);
+                    for r in damage {
+                        crate::gl::Scissor(r.x, r.y, r.width, r.height);
+                        self.renderer.clear(background_color, config.window_opacity());
+                        x0 = x0.min(r.x);
+                        y0 = y0.min(r.y);
+                        x1 = x1.max(r.x + r.width);
+                        y1 = y1.max(r.y + r.height);
+                    }
+                    crate::gl::Scissor(x0, y0, x1 - x0, y1 - y0);
+                }
+            } else {
+                self.renderer.clear(background_color, config.window_opacity());
+            }
+        }
+        #[cfg(not(target_os = "plan9"))]
         self.renderer.clear(background_color, config.window_opacity());
         let mut lines = RenderLines::new();
 

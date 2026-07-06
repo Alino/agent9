@@ -253,12 +253,14 @@ pub mod egl {
                 }
             }
 
-            /// Present only the damaged region: the bounding box of `rects`
-            /// goes through gl9egl_swap_damage as a "GL9D" sub-rect record.
-            /// A full-window blit to a real framebuffer costs ~100x a small
-            /// one on 9front, so this is what makes typing feel instant.
-            /// Rects are in EGL convention (origin bottom-left); the C side
-            /// flips them. Empty damage = full swap (the KHR semantics).
+            /// Present only the damaged regions: each rect goes through
+            /// gl9egl_swap_damage as its own "GL9D" sub-rect record — NOT a
+            /// bounding box, which a header+footer update would inflate to
+            /// the whole window. A full-window blit to a real framebuffer
+            /// costs ~100x a small one on 9front; this is what makes typing
+            /// feel instant. Rects are in EGL convention (origin
+            /// bottom-left); the C side flips them. Empty damage = full
+            /// swap (the KHR semantics).
             pub fn swap_buffers_with_damage(
                 &self,
                 context: &PossiblyCurrentContext,
@@ -267,26 +269,21 @@ pub mod egl {
                 if rects.is_empty() {
                     return self.swap_buffers(context);
                 }
-                let mut x0 = i32::MAX;
-                let mut y0 = i32::MAX;
-                let mut x1 = i32::MIN;
-                let mut y1 = i32::MIN;
                 for r in rects {
-                    x0 = x0.min(r.x);
-                    y0 = y0.min(r.y);
-                    x1 = x1.max(r.x + r.width);
-                    y1 = y1.max(r.y + r.height);
+                    let ok = unsafe {
+                        ffi::gl9egl_swap_damage(
+                            self.raw as ffi::EGLSurface,
+                            r.x,
+                            r.y,
+                            r.width,
+                            r.height,
+                        )
+                    };
+                    if ok == 0 {
+                        return Err(super::last_egl_error());
+                    }
                 }
-                let ok = unsafe {
-                    ffi::gl9egl_swap_damage(
-                        self.raw as ffi::EGLSurface,
-                        x0,
-                        y0,
-                        x1 - x0,
-                        y1 - y0,
-                    )
-                };
-                if ok == 0 { Err(super::last_egl_error()) } else { Ok(()) }
+                Ok(())
             }
         }
     }

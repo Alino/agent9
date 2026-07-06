@@ -1019,6 +1019,16 @@ impl<T> Term<T> {
 
     #[inline]
     fn damage_cursor(&mut self) {
+        // alacritty9: an invisible cursor leaves no pixels to repair. TUIs
+        // hide the cursor for their repaint and walk the screen with
+        // linefeeds (bubbletea does, every keystroke) — without this guard
+        // that traversal damages every line it passes and each keystroke
+        // becomes a full-frame redraw. The hide/show transitions themselves
+        // damage the cursor cell (see NamedPrivateMode::ShowCursor).
+        if !self.mode.contains(TermMode::SHOW_CURSOR) {
+            return;
+        }
+
         // The normal cursor coordinates are always in viewport.
         let point =
             Point::new(self.grid.cursor.point.line.0 as usize, self.grid.cursor.point.column);
@@ -1948,7 +1958,11 @@ impl<T: EventListener> Handler for Term<T> {
                     self.swap_alt();
                 }
             },
-            NamedPrivateMode::ShowCursor => self.mode.insert(TermMode::SHOW_CURSOR),
+            NamedPrivateMode::ShowCursor => {
+                self.mode.insert(TermMode::SHOW_CURSOR);
+                // The cursor becomes visible where it stands: repaint it.
+                self.damage_cursor();
+            },
             NamedPrivateMode::CursorKeys => self.mode.insert(TermMode::APP_CURSOR),
             // Mouse protocols are mutually exclusive.
             NamedPrivateMode::ReportMouseClicks => {
@@ -2011,7 +2025,11 @@ impl<T: EventListener> Handler for Term<T> {
                     self.swap_alt();
                 }
             },
-            NamedPrivateMode::ShowCursor => self.mode.remove(TermMode::SHOW_CURSOR),
+            NamedPrivateMode::ShowCursor => {
+                // Damage while still visible so the glyph gets erased.
+                self.damage_cursor();
+                self.mode.remove(TermMode::SHOW_CURSOR);
+            },
             NamedPrivateMode::CursorKeys => self.mode.remove(TermMode::APP_CURSOR),
             NamedPrivateMode::ReportMouseClicks => {
                 self.mode.remove(TermMode::MOUSE_REPORT_CLICK);
