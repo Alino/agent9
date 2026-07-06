@@ -41,7 +41,12 @@ static int handoff_sem = 0;       /* child signals it has consumed the handoff *
  * never dereferences t — t/stack may be freed by a concurrent join. On amd64
  * (TSO) the lock-free scan is safe: the writer sets stklo/stkhi/pid BEFORE used,
  * and a cleared slot (used=0) is skipped, so no stale match and no use-after-free. */
-static struct { int used; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; int errno_v; } th_tab[MAXTH];
+/* dead=1: the thread finished (trampoline end / pthread_exit park) but its
+ * slot may still be needed for pthread_join lookup. kill_threads MUST skip
+ * dead entries — Plan 9 reuses pids, and a "kill" note aimed at a finished
+ * thread's recycled pid murders an innocent process (this killed webfs and
+ * rio's wsys srv during nvim sessions). */
+static struct { int used; int dead; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; int errno_v; } th_tab[MAXTH];
 static int th_lock = 1;
 
 /* Per-thread errno slot, resolved by %rsp stack-range like cur_pid (lock-free,
@@ -80,7 +85,7 @@ void cc9_kill_threads(void){
 	unsigned long self = cur_pid();
 	for(int i=0;i<MAXTH;i++){
 		unsigned long pid = th_tab[i].pid;
-		if(!th_tab[i].used || pid==0 || pid==self) continue;
+		if(!th_tab[i].used || th_tab[i].dead || pid==0 || pid==self) continue;
 		char path[40]; int k=0;
 		for(const char *p="/proc/"; *p; p++) path[k++]=*p;
 		char num[20]; int n=0; unsigned long v=pid;
@@ -89,7 +94,22 @@ void cc9_kill_threads(void){
 		for(const char *p="/note"; *p; p++) path[k++]=*p;
 		path[k]=0;
 		long fd = n9_open(path, 1 /*OWRITE*/);
-		if(fd>=0){ n9_pwrite((int)fd,"kill",4,-1); n9_close((int)fd); }
+		long wr = -2;
+		if(fd>=0){ wr = n9_pwrite((int)fd,"kill",4,-1); n9_close((int)fd); }
+		{ extern char *getenv(const char *);
+		  if(getenv("CC9_EXIT_TRACE")){
+			char b[64]; int k=0;
+			for(const char *q="kil "; *q; q++) b[k++]=*q;
+			for(int j=0;j<k;j++) ; /* noop */
+			unsigned long v2=pid; char num2[20]; int n2=0;
+			do { num2[n2++]='0'+(v2%10); v2/=10; } while(v2);
+			while(n2>0) b[k++]=num2[--n2];
+			b[k++]=' '; b[k++] = fd>=0 ? 'o' : 'X';
+			b[k++] = wr==4 ? 'w' : 'x';
+			b[k++]='\n';
+			n9_pwrite(2,b,k,-1);
+		  }
+		}
 	}
 }
 
@@ -174,7 +194,7 @@ static void trampoline(void *p){
 	unsigned long lo = (unsigned long)t->stack, hi = lo + t->stksize;
 	n9_semacquire(&th_lock,1);
 	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){
-		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi; th_tab[i].errno_v=0;
+		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi; th_tab[i].errno_v=0; th_tab[i].dead=0;
 		__asm__ volatile("":::"memory");   /* release: publish range before used (pairs w/ cur_pid) */
 		th_tab[i].used=1; break;
 	}
@@ -187,6 +207,10 @@ static void trampoline(void *p){
 	run_thread_atexit(t->pid);   /* thread_local dtors + set_value_at_thread_exit */
 	run_thread_keys(t->pid);     /* POSIX TSD destructors (frees __thread_struct etc.) */
 	t->done = 1;
+	{ unsigned long mypid = t->pid;
+	  n9_semacquire(&th_lock,1);
+	  for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==mypid){ th_tab[i].dead=1; break; }
+	  n9_semrelease(&th_lock,1); }
 	if(t->detached){
 		/* nobody will join. Can't free our own running stack here — park it for a
 		 * later create/join to reclaim. reap_slot makes the park single-owner. */

@@ -252,7 +252,10 @@ const char *cc9_exitstr(int code){
 	buf[k]=0;
 	return buf;
 }
-void exit(int code){ n9_exits(cc9_exitstr(code)); for(;;){} }
+/* through crt0's common epilogue: atexit handlers + cc9_kill_threads — a
+ * direct n9_exits here orphans worker threads (they'd keep reading fd 0 and
+ * steal the parent shell's input). */
+void exit(int code){ extern void cc9_exit_common(const char *); cc9_exit_common(cc9_exitstr(code)); for(;;){} }
 void _Exit(int code){ exit(code); }
 void quick_exit(int code){ exit(code); }
 int at_quick_exit(void (*f)(void)){ (void)f; return 0; }   /* no handler table */

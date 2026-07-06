@@ -47,7 +47,14 @@ int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; ret
 int msync(void *p, n9size_t len, int fl) { (void)p; (void)len; (void)fl; return 0; }
 
 extern const char *cc9_exitstr(int);
-void _exit(int code) { n9_exits(cc9_exitstr(code)); for (;;) {} }
+/* _exit skips atexit (POSIX) but must still kill worker threads — Plan 9
+ * doesn't reparent orphans and a leaked reader steals the shell's stdin. */
+void _exit(int code) {
+	extern void cc9_kill_threads(void) __attribute__((weak));
+	if (cc9_kill_threads) cc9_kill_threads();
+	n9_exits(cc9_exitstr(code));
+	for (;;) {}
+}
 
 n9size_t strnlen(const char *s, n9size_t max) {
 	n9size_t n = 0; while (n < max && s[n]) n++; return n;

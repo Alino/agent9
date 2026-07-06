@@ -12,6 +12,7 @@ extern cc9_fn __fini_array_start[];
 extern cc9_fn __fini_array_end[];
 extern int main(int, char **);
 extern void n9_exits(const char *);
+void cc9_exit_common(const char *status);
 
 /* atexit registry (libc++ and user code register destructors here). Each entry
  * is a (fn, arg) pair: __cxa_atexit MUST pass the object pointer back as arg, or
@@ -261,23 +262,51 @@ void __cc9_run(void)
 	STAGE('g');
 	int rc = main(argc, argv);
 	STAGE('h');
+	cc9_exit_common(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");
+}
+
+/* Shared process-exit epilogue — the ONLY correct way off the process.
+ * exit() (n9libc.c) must come through here too: it used to n9_exits()
+ * directly, which skipped cc9_kill_threads — any program with live worker
+ * threads (e.g. nvim's poll-layer stdin readers) leaked them as orphans
+ * still blocked in pread on fd 0, where they STEAL the parent shell's
+ * input after exit (Plan 9 doesn't reparent orphans). */
+void
+cc9_exit_common(const char *status)
+{
 	/* Run atexit/__cxa_atexit handlers LIFO, RE-READING atexit_n each step so a
 	 * handler that registers a new one (e.g. a thread_local/static object whose
 	 * destructor constructs another) has it run NEXT — [basic.start.term]: an
 	 * object whose construction completes later is destroyed first. Decrement
 	 * before calling so the new registration appends past the current entry. */
+	/* CC9_EXIT_TRACE: print each handler's address before it runs (map with
+	 * nm) — the last line printed names the one that wedged. */
+	int extrace = 0;
+	{ extern char *getenv(const char *); extrace = getenv("CC9_EXIT_TRACE") != 0; }
 	while (atexit_n > 0) {
 		int i = --atexit_n;
+		if (extrace) {
+			char b[32]; int k = 0;
+			b[k++]='a'; b[k++]='t'; b[k++]='x'; b[k++]=' ';
+			unsigned long v = (unsigned long)atexit_tab[i].fn;
+			for (int s = 60; s >= 0; s -= 4) b[k++] = "0123456789abcdef"[(v>>s)&0xf];
+			b[k++]='\n';
+			extern long n9_pwrite(int, const void *, long, long long);
+			n9_pwrite(2, b, k, -1);
+		}
 		atexit_tab[i].fn(atexit_tab[i].arg);
 	}
+	if (extrace) { extern long n9_pwrite(int, const void *, long, long long); n9_pwrite(2, "atx done\n", 9, -1); }
 	for (cc9_fn *p = __fini_array_end; p > __fini_array_start; )
 		(*--p)();
+	if (extrace) { extern long n9_pwrite(int, const void *, long, long long); n9_pwrite(2, "fini done\n", 10, -1); }
 	/* Kill any surviving rfork(RFMEM) worker threads before exiting. Plan 9 does
 	 * not reparent orphans, so a thread that outlives main (or is mid-teardown)
 	 * would leak as a stuck proc and can post a note that kills the parent shell.
 	 * Weak: a thread-free program links a no-op. */
 	{ extern void cc9_kill_threads(void) __attribute__((weak)); if (cc9_kill_threads) cc9_kill_threads(); }
-	n9_exits(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");
+	if (extrace) { extern long n9_pwrite(int, const void *, long, long long); n9_pwrite(2, "kill done\n", 10, -1); }
+	n9_exits(status);
 }
 
 /* main() runs on this BSS stack, NOT the kernel-provided per-process stack.

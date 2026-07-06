@@ -126,11 +126,32 @@ pub struct Pty {
 /// ponytail: no raw-mode switch — a piped child can't request one (that
 /// needs /dev/consctl, which only real cons/9term namespaces have), so
 /// full-screen apps are out of scope; rc/sam -d/cat-class programs work.
+/// Escape-sequence swallow state for cooked mode (see `write`).
+#[derive(Clone, Copy, PartialEq)]
+enum EscSwallow {
+    None,
+    /// Saw ESC, deciding the sequence kind.
+    Esc,
+    /// Inside CSI/SS3: ends at a final byte 0x40-0x7e.
+    Csi,
+    /// Inside OSC/DCS/APC/PM/SOS: ends at BEL or ST (ESC \).
+    Str,
+    /// Saw ESC inside a string sequence (possible ST).
+    StrEsc,
+}
+
 pub struct LineDiscipline {
     stdin: ChildStdin,
     line: Vec<u8>,
     shared: Arc<Shared>,
     child_pid: u32,
+    swallow: EscSwallow,
+    /// Escape sequences swallowed while cooked (terminal query REPLIES).
+    /// A fullscreen app queries the terminal BEFORE its smcup reaches us, so
+    /// its replies arrive while we are still cooked — hold them and deliver
+    /// the moment raw mode turns on (else nvim times out: E1568). Dropped at
+    /// 4KB: a shell session that never goes raw has no use for them.
+    pending: Vec<u8>,
 }
 
 impl LineDiscipline {
@@ -140,6 +161,13 @@ impl LineDiscipline {
         let mut buf = self.shared.buf.lock().unwrap();
         buf.extend(bytes);
         self.shared.wake_read();
+    }
+
+    /// Hold a swallowed byte for delivery when raw mode turns on.
+    fn hold(&mut self, byte: u8) {
+        if self.pending.len() < 4096 {
+            self.pending.push(byte);
+        }
     }
 
     fn interrupt(&self) {
@@ -156,12 +184,65 @@ impl io::Write for LineDiscipline {
         // pass through verbatim, no echo, no line buffer.
         if self.shared.raw.load(Ordering::Acquire) {
             self.line.clear();
+            self.swallow = EscSwallow::None;
+            if !self.pending.is_empty() {
+                let held = std::mem::take(&mut self.pending);
+                self.stdin.write_all(&held)?;
+            }
             self.stdin.write_all(data)?;
             self.stdin.flush()?;
             return Ok(data.len());
         }
 
         for &byte in data {
+            // Swallow whole escape sequences. Alacritty writes terminal
+            // QUERY REPLIES (DA1 "ESC[?6c", DECRPM, OSC color reports) and
+            // key-release/focus reports into the child's stdin; a cooked
+            // shell can never use them, and only dropping the control bytes
+            // would leak the printable tail ("[?6c") into the line buffer —
+            // rc then reads "\x1b[?6cecho hi" and the command "doesn't run".
+            // (Replies a fullscreen app requested but exited without reading
+            // land here too, once its rmcup flips us back to cooked.)
+            match self.swallow {
+                EscSwallow::None if byte == 0x1b => {
+                    self.swallow = EscSwallow::Esc;
+                    self.hold(byte);
+                    continue;
+                },
+                EscSwallow::None => {},
+                EscSwallow::Esc => {
+                    self.swallow = match byte {
+                        b'[' | b'O' => EscSwallow::Csi,
+                        b']' | b'P' | b'X' | b'^' | b'_' => EscSwallow::Str,
+                        _ => EscSwallow::None, // two-byte sequence, done
+                    };
+                    self.hold(byte);
+                    continue;
+                },
+                EscSwallow::Csi => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        self.swallow = EscSwallow::None;
+                    }
+                    self.hold(byte);
+                    continue;
+                },
+                EscSwallow::Str => {
+                    if byte == 0x07 {
+                        self.swallow = EscSwallow::None;
+                    } else if byte == 0x1b {
+                        self.swallow = EscSwallow::StrEsc;
+                    }
+                    self.hold(byte);
+                    continue;
+                },
+                EscSwallow::StrEsc => {
+                    self.swallow =
+                        if byte == b'\\' { EscSwallow::None } else { EscSwallow::Str };
+                    self.hold(byte);
+                    continue;
+                },
+            }
+
             match byte {
                 0x03 => {
                     // ^C: interrupt the child (Plan 9 note), drop the line.
@@ -267,6 +348,8 @@ pub fn new(config: &Options, window_size: WindowSize, _window_id: u64) -> io::Re
         line: Vec::new(),
         shared: shared.clone(),
         child_pid: child.id(),
+        swallow: EscSwallow::None,
+        pending: Vec::new(),
     };
     let reader = PtyReader { shared: shared.clone() };
 
