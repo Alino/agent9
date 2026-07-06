@@ -1,3 +1,37 @@
+diff --git a/src/nvim/channel.c b/src/nvim/channel.c
+index 31f6c80..ab45ab6 100644
+--- a/src/nvim/channel.c
++++ b/src/nvim/channel.c
+@@ -889,7 +889,13 @@ void channel_terminal_alloc(buf_T *buf, Channel *chan)
+     .resize_cb = term_resize,
+     .resume_cb = term_resume,
+     .close_cb = term_close,
++#ifdef __plan9__
++    // pipe-backed "pty" has no ONLCR line discipline; let terminal_receive
++    // insert the missing carriage returns (see pty_proc_unix.c plan9_forkpty)
++    .force_crlf = true,
++#else
+     .force_crlf = false,
++#endif
+   };
+   buf->b_p_channel = (OptInt)chan->id;  // 'channel' option
+   channel_incref(chan);
+diff --git a/src/nvim/ex_docmd.c b/src/nvim/ex_docmd.c
+index 9531fc3..8cc9c38 100644
+--- a/src/nvim/ex_docmd.c
++++ b/src/nvim/ex_docmd.c
+@@ -8331,6 +8331,11 @@ static void ex_terminal(exarg_T *eap)
+       p++;
+     }
+     shell_free_argv(argv);
++#ifdef __plan9__
++    // No pty line discipline: rc only prints a prompt when explicitly
++    // interactive, so a bare :terminal gets "-i" appended.
++    xstrlcat(shell_argv, ",\"-i\"", sizeof(shell_argv));
++#endif
+ 
+     snprintf(ex_cmd + len, sizeof(ex_cmd) - len,
+              " | call jobstart([%s], {'term':v:true})", shell_argv + 1);
 diff --git a/src/nvim/lua/treesitter.c b/src/nvim/lua/treesitter.c
 index fa7d3a1..f0ac630 100644
 --- a/src/nvim/lua/treesitter.c
@@ -47,6 +81,126 @@ index fa7d3a1..f0ac630 100644
  
  static const TSLanguage *load_language_from_wasm(lua_State *L, const char *path,
                                                   const char *lang_name)
+diff --git a/src/nvim/os/pty_proc_unix.c b/src/nvim/os/pty_proc_unix.c
+index c981b40..4efdbae 100644
+--- a/src/nvim/os/pty_proc_unix.c
++++ b/src/nvim/os/pty_proc_unix.c
+@@ -167,6 +167,53 @@ pid_t vim_forkpty(int *amaster, char *name, struct termios *termp, struct winsiz
+ #endif
+ 
+ /// @returns zero on success, or negative error code
++#ifdef __plan9__
++// No ptys on Plan 9 — but a Plan 9 pipe is DUPLEX, so one end serves as the
++// "master" and the other becomes the child's stdin/stdout/stderr. Initial
++// size reaches the child as LINES/COLS env vars (the alacritty9 convention;
++// cc9 fork gives the child a private env group); resize after spawn is a
++// no-op (TIOCSWINSZ no-ops). There is no kernel line discipline: local echo
++// happens in terminal_send() instead.
++static pid_t plan9_forkpty(int *amaster, char *name, const struct termios *termp,
++                           const struct winsize *winp)
++{
++  (void)name;
++  (void)termp;
++  int p[2];
++  if (pipe(p) < 0) {
++    return -1;
++  }
++  pid_t pid = fork();
++  if (pid < 0) {
++    close(p[0]);
++    close(p[1]);
++    return -1;
++  }
++  if (pid == 0) {
++    close(p[0]);
++    dup2(p[1], 0);
++    dup2(p[1], 1);
++    dup2(p[1], 2);
++    if (p[1] > 2) {
++      close(p[1]);
++    }
++    if (winp != NULL) {
++      char buf[16];
++      snprintf(buf, sizeof buf, "%d", winp->ws_row);
++      setenv("LINES", buf, 1);
++      snprintf(buf, sizeof buf, "%d", winp->ws_col);
++      setenv("COLS", buf, 1);
++    }
++    return 0;
++  }
++  close(p[1]);
++  *amaster = p[0];
++  return pid;
++}
++# undef forkpty
++# define forkpty plan9_forkpty
++#endif
++
+ int pty_proc_spawn(PtyProc *ptyproc)
+   FUNC_ATTR_NONNULL_ALL
+ {
+@@ -323,6 +370,9 @@ static void init_child(PtyProc *ptyproc)
+ 
+   assert(proc->env);
+   environ = tv_dict_to_env(proc->env);
++#ifdef __plan9__
++  execve(prog, proc->argv, environ);  // envp lands in the child's private /env
++#endif
+   execvp(prog, proc->argv);
+   ELOG("execvp(%s) failed: %s", prog, strerror(errno));
+ 
+diff --git a/src/nvim/terminal.c b/src/nvim/terminal.c
+index 004a002..0d6a19c 100644
+--- a/src/nvim/terminal.c
++++ b/src/nvim/terminal.c
+@@ -1249,7 +1249,47 @@ static void terminal_send(Terminal *term, const char *data, size_t size)
+     kv_concat_len(*term->pending.send, data, size);
+     return;
+   }
++#ifdef __plan9__
++  // ICRNL, normally the pty line discipline's job: line-reading children (rc)
++  // need '\n', but terminal Enter is '\r'. Translate outgoing input in
++  // chunks. Ceiling: children wanting a raw '\r' (rare full-screen TUIs
++  // inside :terminal) see '\n' instead.
++  {
++    char xl[512];
++    size_t done = 0;
++    while (done < size) {
++      size_t n = MIN(size - done, sizeof(xl));
++      memcpy(xl, data + done, n);
++      for (size_t i = 0; i < n; i++) {
++        if (xl[i] == '\r') {
++          xl[i] = '\n';
++        }
++      }
++      term->opts.write_cb(xl, n, term->opts.data);
++      done += n;
++    }
++  }
++#else
+   term->opts.write_cb(data, size, term->opts.data);
++#endif
++#ifdef __plan9__
++  // Pipe-backed "pty" (see pty_proc_unix.c): no kernel echo, so echo locally.
++  // Chunks containing ESC (arrow keys, paste guards) are not echoed; BS/DEL
++  // erases; CR advances a line. TUIs that repaint the screen tolerate the
++  // stray echo; see neovim9 PORT notes.
++  if (memchr(data, 0x1b, size) == NULL) {
++    for (size_t i = 0; i < size; i++) {
++      unsigned char c = (unsigned char)data[i];
++      if (c == '\r' || c == '\n') {
++        terminal_receive(term, "\r\n", 2);
++      } else if (c == 0x7f || c == 0x08) {
++        terminal_receive(term, "\b \b", 3);
++      } else if (c >= 0x20) {
++        terminal_receive(term, (const char *)data + i, 1);
++      }
++    }
++  }
++#endif
+ }
+ 
+ static bool is_filter_char(int c)
 diff --git a/src/nvim/tui/terminfo.c b/src/nvim/tui/terminfo.c
 index 493454d..3e9f41d 100644
 --- a/src/nvim/tui/terminfo.c

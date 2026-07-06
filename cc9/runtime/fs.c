@@ -359,12 +359,21 @@ static void env_path(const char *name, char *path, int n){
 	const char *pfx="/env/"; int i=0; while(pfx[i]){ path[i]=pfx[i]; i++; }
 	int j=0; while(name[j] && i<n-1){ path[i++]=name[j++]; } path[i]=0;
 }
+/* POSIX-compat defaults for vars Plan 9 spells differently ($path is a NUL-
+ * separated rc list; there is no $SHELL). POSIX code (nvim jobstart/'shell',
+ * execvp users) expects these; /bin is the 9front union bin so a single-entry
+ * PATH covers everything. A real /env/PATH or /env/SHELL overrides. */
+static const char *env_default(const char *name){
+	if(name[0]=='P'&&name[1]=='A'&&name[2]=='T'&&name[3]=='H'&&!name[4]) return "/bin";
+	if(name[0]=='S'&&name[1]=='H'&&name[2]=='E'&&name[3]=='L'&&name[4]=='L'&&!name[5]) return "/bin/rc";
+	return 0;
+}
 char *getenv(const char *name){
 	static char val[1024]; char path[300];
 	env_path(name, path, sizeof path);
-	long fd=n9_open(path, 0); if(fd<0) return 0;
+	long fd=n9_open(path, 0); if(fd<0) return (char*)env_default(name);
 	long n=n9_pread((int)fd, val, sizeof val - 1, -1); n9_close((int)fd);
-	if(n<=0) return 0;
+	if(n<=0) return (char*)env_default(name);
 	while(n>0 && (val[n-1]=='\n'||val[n-1]==0)) n--;   /* /env values may be NUL/NL-terminated */
 	val[n]=0; return val;
 }
@@ -406,6 +415,29 @@ void __cc9_build_environ(void){
 		int k=0; for(int j=0;j<i;j++) kv[k++]=name[j]; kv[k++]='=';
 		for(int j=0;j<vl;j++) kv[k++]=v[j]; kv[k]=0;
 		tab[n++]=kv;
+	}
+	/* surface the POSIX-compat defaults in the array too */
+	{
+		static const char *dflt[] = { "PATH", "SHELL", 0 };
+		for(int di = 0; dflt[di] && n < 511; di++){
+			int seen = 0;
+			int dl = 0; while(dflt[di][dl]) dl++;
+			for(int t = 0; t < n; t++){
+				const char *kv = tab[t]; int j = 0;
+				while(j < dl && kv[j] == dflt[di][j]) j++;
+				if(j == dl && kv[j] == '='){ seen = 1; break; }
+			}
+			if(seen) continue;
+			const char *v = env_default(dflt[di]);
+			int vl = 0; while(v[vl]) vl++;
+			char *kv = (char*)malloc(dl + 1 + vl + 1); if(!kv) break;
+			int k = 0;
+			for(int j = 0; j < dl; j++) kv[k++] = dflt[di][j];
+			kv[k++] = '=';
+			for(int j = 0; j < vl; j++) kv[k++] = v[j];
+			kv[k] = 0;
+			tab[n++] = kv;
+		}
 	}
 	tab[n]=0; closedir(d); environ=tab;
 }

@@ -96,7 +96,23 @@ Bar: TUI editing + treesitter inside alacritty9 (VM + cirno). Jobs/:terminal/LSP
   real ioctl(TIOCGWINSZ) over /env. GOTCHAS: swapfile E325 dialog blocks
   scripted runs after a kill (use -n / rm swap dir); alacritty9 -e is NOT wired
   on plan9 (use alacritty.toml [terminal.shell]); listen1 `&&` = rc syntax error.
-- [ ] **G5 follow-ons (not started)**: jobs, :terminal, LSP, pac9 package
+- [x] **G5a jobs** (2026-07-06): `:!ls`, `system('pwd')`, `jobstart(['ls','/tmp'])`
+  + on_stdout/on_exit all verified live on the VM. cc9 fixes: getenv() POSIX
+  defaults (PATH=/bin, SHELL=/bin/rc — Plan 9 has $path not $PATH; nvim's
+  'shell' option comes from $SHELL) + environ gets them appended; execvp tries
+  /bin/<name>. nvim needed NO patch for jobs — uv_spawn from G2 just works.
+- [x] **G5b :terminal** (2026-07-06): interactive `:terminal` runs rc inside
+  nvim inside alacritty9 (screenshots/nvim-terminal-vm.png — command echo on
+  its own line, output below, fresh prompt). No kernel pty on Plan 9, so
+  plan9_forkpty (pty_proc_unix.c) = pipe pair + fork, child dup2s the pipe to
+  fd 0/1/2 and gets LINES/COLS in env; the missing line discipline is emulated
+  in nvim: terminal_send translates \r→\n (ICRNL), channel.c sets
+  force_crlf=true (ONLCR), terminal.c does local echo (skip when an ESC is in
+  flight; \r or \n → echo "\r\n", 0x7f/0x08 → "\b \b"); ex_docmd.c passes -i
+  to rc so it prompts. 4 more files in nvim-plan9.patch (now 7).
+- [ ] **G5c LSP smoke test**: initialize handshake + hover over stdio pipes.
+- [ ] **G5d pac9 neovim9 package**: tarball (nvim + runtime tree + parser
+  markers) + registry entry, rust9/alacritty9 pattern.
 
 ## Dev loop
 
