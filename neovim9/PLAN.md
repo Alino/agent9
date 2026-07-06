@@ -71,8 +71,32 @@ Bar: TUI editing + treesitter inside alacritty9 (VM + cirno). Jobs/:terminal/LSP
   speed, WCONTINUED/WIFCONTINUED, killpg, protoent stubs, iovec via sys/socket.h.
   Delivery: 5.9MB via `hget http://10.0.2.2:8977/` (python http.server on host) —
   the byte-writer channel is for small binaries only.
-- [ ] **G4 TUI in alacritty9** — acceptance: edit/:w/treesitter colors, VM + cirno, screenshots
-- [ ] **G5 follow-ons**: jobs, :terminal, LSP, pac9 package
+- [x] **G4 TUI in alacritty9 — ACCEPTANCE MET** (2026-07-06): nvim 0.12.4 TUI runs
+  inside alacritty9 on the dev VM (interactive: typed insert + :w verified on disk,
+  treesitter highlighter confirmed active) AND on bare-metal cirno (config-shell
+  scripted run: +normal edit + +w cat-verified; treesitter colors visible).
+  Screenshots: screenshots/*.png. **The three root-caused cc9 bugs (all found by
+  instrumenting, not guessing):**
+  1. stat() reported pipes as S_IFREG → uv_guess_handle said UV_FILE → nvim RPC
+     channels used blocking-file I/O → post-ui_attach wedge. Fix: wire Dir.type
+     '|' (offset 2) → S_IFIFO. Diagnosed with the new env-gated CC9_POLL_TRACE
+     byte-accounting layer (poll.c) after /proc regs showed main in n9_pread.
+  2. ttyname_r returned "/dev/cons" → uv_tty_init REOPENED it over the pipe fd
+     (uv__tty_is_slave: our ptsname NULL = "slave") → EPIPE writes / output to
+     the wrong place. Fix: ttyname_r fails (ENOSYS) → libuv keeps the fd with
+     blocking writes.
+  3. fcntl(F_GETFL) returned access mode 0 = O_RDONLY → uv streams never
+     writable. Fix: report O_RDWR (Plan 9 pipes are bidirectional).
+  nvim patches (port/patches/nvim-plan9.patch, 3 files): terminfo.c alacritty→
+  xterm-256color builtin (no terminfo db on Plan 9; "ansi" fallback had no
+  smcup/colors), treesitter.c static parser table behind __plan9__ (no dlopen;
+  runtime/parser/<lang>.so are empty marker files for discovery), tui.c
+  /env/LINES+COLS poller thread → raise(SIGWINCH). cc9 also gained: notes
+  "interrupt"/"hangup" → SIGINT/SIGHUP dispatch (crt0), isatty = fd<3 && $TERM,
+  real ioctl(TIOCGWINSZ) over /env. GOTCHAS: swapfile E325 dialog blocks
+  scripted runs after a kill (use -n / rm swap dir); alacritty9 -e is NOT wired
+  on plan9 (use alacritty.toml [terminal.shell]); listen1 `&&` = rc syntax error.
+- [ ] **G5 follow-ons (not started)**: jobs, :terminal, LSP, pac9 package
 
 ## Dev loop
 

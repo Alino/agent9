@@ -1,0 +1,137 @@
+diff --git a/src/nvim/lua/treesitter.c b/src/nvim/lua/treesitter.c
+index fa7d3a1..f0ac630 100644
+--- a/src/nvim/lua/treesitter.c
++++ b/src/nvim/lua/treesitter.c
+@@ -131,6 +131,36 @@ static int tslua_add_language_from_object(lua_State *L)
+   return add_language(L, false);
+ }
+ 
++#ifdef __plan9__
++// Plan 9 has no dlopen; the bundled parsers are linked in statically and
++// resolved from this table by their tree_sitter_<symbol> name.
++#define TS_STATIC_LANG(sym) extern TSLanguage *tree_sitter_##sym(void);
++TS_STATIC_LANG(c)
++TS_STATIC_LANG(lua)
++TS_STATIC_LANG(vim)
++TS_STATIC_LANG(vimdoc)
++TS_STATIC_LANG(query)
++TS_STATIC_LANG(markdown)
++TS_STATIC_LANG(markdown_inline)
++static const struct { const char *name; TSLanguage *(*fn)(void); } ts_static_langs[] = {
++  { "c", tree_sitter_c }, { "lua", tree_sitter_lua }, { "vim", tree_sitter_vim },
++  { "vimdoc", tree_sitter_vimdoc }, { "query", tree_sitter_query },
++  { "markdown", tree_sitter_markdown }, { "markdown_inline", tree_sitter_markdown_inline },
++};
++
++static const TSLanguage *load_language_from_object(lua_State *L, const char *path,
++                                                   const char *lang_name, const char *symbol)
++{
++  for (size_t i = 0; i < ARRAY_SIZE(ts_static_langs); i++) {
++    if (strcmp(ts_static_langs[i].name, symbol) == 0) {
++      return ts_static_langs[i].fn();
++    }
++  }
++  luaL_error(L, "Failed to load parser for language '%s': no dlopen on Plan 9 "
++             "and '%s' is not linked in", lang_name, symbol);
++  return NULL;
++}
++#else
+ static const TSLanguage *load_language_from_object(lua_State *L, const char *path,
+                                                    const char *lang_name, const char *symbol)
+ {
+@@ -160,6 +190,7 @@ static const TSLanguage *load_language_from_object(lua_State *L, const char *pat
+ 
+   return lang;
+ }
++#endif
+ 
+ static const TSLanguage *load_language_from_wasm(lua_State *L, const char *path,
+                                                  const char *lang_name)
+diff --git a/src/nvim/tui/terminfo.c b/src/nvim/tui/terminfo.c
+index 493454d..3e9f41d 100644
+--- a/src/nvim/tui/terminfo.c
++++ b/src/nvim/tui/terminfo.c
+@@ -73,7 +73,13 @@ const TerminfoEntry *terminfo_from_builtin(const char *term, char **termname)
+   if (strequal(term, "ghostty") || strequal(term, "xterm-ghostty")) {
+     *termname = "ghostty";
+     return &ghostty_terminfo;
+-  } else if (terminfo_is_term_family(term, "xterm")) {
++  } else if (terminfo_is_term_family(term, "xterm")
++#ifdef __plan9__
++             // no terminfo db on Plan 9; alacritty (alacritty9) is
++             // xterm-compatible and must not fall back to "ansi"
++             || terminfo_is_term_family(term, "alacritty")
++#endif
++             ) {
+     *termname = "xterm";
+     return &xterm_256colour_terminfo;
+   } else if (terminfo_is_term_family(term, "screen")) {
+diff --git a/src/nvim/tui/tui.c b/src/nvim/tui/tui.c
+index 7d56424..56bcd05 100644
+--- a/src/nvim/tui/tui.c
++++ b/src/nvim/tui/tui.c
+@@ -168,6 +168,12 @@ void tui_start(TUIData **tui_p, int *width, int *height, char **term, bool *rgb)
+   kv_init(tui->urlbuf);
+   signal_watcher_init(tui->loop, &tui->winch_handle, tui);
+   signal_watcher_start(&tui->winch_handle, sigwinch_cb, SIGWINCH);
++#ifdef __plan9__
++  {
++    extern void tui_plan9_winch_poller_start(void);
++    tui_plan9_winch_poller_start();
++  }
++#endif
+ 
+   // TODO(bfredl): zero hl is empty, send this explicitly?
+   kv_push(tui->attrs, HLATTRS_INIT);
+@@ -710,6 +716,51 @@ void tui_free_all_mem(TUIData *tui)
+ }
+ #endif
+ 
++#ifdef __plan9__
++// No SIGWINCH on Plan 9. alacritty9 publishes the live size as the /env/LINES
++// and /env/COLS files (updated on every resize); poll them and raise(SIGWINCH)
++// into cc9's handler table, which feeds libuv's normal signal machinery.
++# include <pthread.h>
++static int tui_plan9_env_num(const char *path)
++{
++  FILE *f = fopen(path, "r");
++  if (f == NULL) {
++    return 0;
++  }
++  int v = 0;
++  int c;
++  while ((c = fgetc(f)) >= '0' && c <= '9') {
++    v = v * 10 + (c - '0');
++  }
++  fclose(f);
++  return v;
++}
++static void *tui_plan9_winch_poller(void *arg)
++{
++  (void)arg;
++  int rows = tui_plan9_env_num("/env/LINES");
++  int cols = tui_plan9_env_num("/env/COLS");
++  while (true) {
++    uv_sleep(300);
++    int r = tui_plan9_env_num("/env/LINES");
++    int c = tui_plan9_env_num("/env/COLS");
++    if (r > 0 && c > 0 && (r != rows || c != cols)) {
++      rows = r;
++      cols = c;
++      raise(SIGWINCH);
++    }
++  }
++  return NULL;
++}
++void tui_plan9_winch_poller_start(void)
++{
++  pthread_t t;
++  if (pthread_create(&t, NULL, tui_plan9_winch_poller, NULL) == 0) {
++    pthread_detach(t);
++  }
++}
++#endif
++
+ static void sigwinch_cb(SignalWatcher *watcher, int signum, void *cbdata)
+ {
+   TUIData *tui = cbdata;
