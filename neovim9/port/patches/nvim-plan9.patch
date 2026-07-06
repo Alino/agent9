@@ -1,3 +1,111 @@
+diff --git a/runtime/lua/netrw_fastlist.lua b/runtime/lua/netrw_fastlist.lua
+new file mode 100644
+index 0000000..55b7c17
+--- /dev/null
++++ b/runtime/lua/netrw_fastlist.lua
+@@ -0,0 +1,52 @@
++-- netrw_fastlist — one-pass local directory listing for netrw.
++-- nvim-plan9: netrw's s:NetrwLocalListingList classifies every entry with
++-- ~4 stat-class vimscript calls plus ~30 interpreted lines — ~8ms/file on a
++-- slow CPU (2.5s for a 300-file directory). This does the same work in one
++-- lua pass (~0.3ms/file). Only the default shapes go through here (thin and
++-- wide listings, sort-by-name); netrw falls back to its own loop otherwise.
++local M = {}
++
++local band = bit.band
++
++function M.list(dirname)
++  local uv = vim.uv
++  local sep = dirname:sub(-1) == '/' and '' or '/'
++  -- '.' and '..' first, exactly like netrw's readdir prelude; both are
++  -- always directories.
++  local out = { './', '../' }
++  local fs = uv.fs_scandir(dirname)
++  if not fs then
++    return out
++  end
++  while true do
++    local name, t = uv.fs_scandir_next(fs)
++    if not name then
++      break
++    end
++    local st
++    if t == nil or t == 'file' then
++      -- need the mode for the executable '*' marker (and the type at all
++      -- when scandir doesn't provide one)
++      st = uv.fs_lstat(dirname .. sep .. name)
++      if st then
++        t = st.type
++      end
++    end
++    if t == 'link' then
++      out[#out + 1] = name .. '@'
++    elseif t == 'socket' then
++      out[#out + 1] = name .. '='
++    elseif t == 'fifo' then
++      out[#out + 1] = name .. '|'
++    elseif t == 'directory' then
++      out[#out + 1] = name .. '/'
++    elseif st and band(st.mode, 73) ~= 0 then -- 0111: executable by anyone
++      out[#out + 1] = name .. '*'
++    else
++      out[#out + 1] = name
++    end
++  end
++  return out
++end
++
++return M
+diff --git a/runtime/pack/dist/opt/netrw/autoload/netrw.vim b/runtime/pack/dist/opt/netrw/autoload/netrw.vim
+index db3c1b8..f227a3d 100644
+--- a/runtime/pack/dist/opt/netrw/autoload/netrw.vim
++++ b/runtime/pack/dist/opt/netrw/autoload/netrw.vim
+@@ -212,7 +212,12 @@ call s:NetrwInit("g:netrw_decompress", {
+             \ })
+ unlet s:xz_opt
+ call s:NetrwInit("g:netrw_dirhistmax"       , 10)
+-call s:NetrwInit("g:netrw_fastbrowse"       , 1)
++" nvim-plan9: default 2 (reuse listing buffers). On a slow CPU the
++" recreate-per-browse default costs ~1.3s per visit of a big directory
++" (fresh buffer -> FileType/ftplugin/syntax re-fire + full re-list); reuse
++" makes revisits ~5ms. Listings can go stale — ctrl-l refreshes (fast now:
++" the listing loop is lua). Set g:netrw_fastbrowse=1 for always-fresh.
++call s:NetrwInit("g:netrw_fastbrowse"       , 2)
+ call s:NetrwInit("g:netrw_ftp_browse_reject", '^total\s\+\d\+$\|^Trying\s\+\d\+.*$\|^KERBEROS_V\d rejected\|^Security extensions not\|No such file\|: connect to address [0-9a-fA-F:]*: No route to host$')
+ if !exists("g:netrw_ftp_list_cmd")
+   if has("unix") || g:netrw_cygwin
+@@ -7485,7 +7490,12 @@ function s:PerformListing(islocal)
+     "  call DechoBuf(bufnr("%"))
+ 
+     " set up syntax highlighting {{{3
+-    sil! setl ft=netrw
++    " nvim-plan9: setl ft=netrw re-fires FileType (ftplugin+indent+syntax
++    " re-source) on EVERY browse even when the buffer is already netrw —
++    " ~770ms per browse on a slow CPU. Only set it on a fresh buffer.
++    if &filetype !=# 'netrw'
++        sil! setl ft=netrw
++    endif
+ 
+     NetrwKeepj call s:NetrwOptionsSafe(a:islocal)
+     setl noro ma
+@@ -8456,6 +8466,17 @@ function s:NetrwLocalListingList(dirname,setmaxfilenamelen)
+     " get the list of files contained in the current directory
+     let dirname    = a:dirname
+     let dirnamelen = strlen(dirname)
++
++    " nvim-plan9: the per-file loop below costs ~8ms/file on a slow CPU
++    " (4 stat-class calls + ~30 interpreted lines per entry). For the
++    " default shapes (thin/wide listing, sort by name) one lua pass does
++    " the same job ~25x faster; anything else falls through to the
++    " original loop.
++    if has('nvim') && w:netrw_liststyle != s:LONGLIST
++                \ && g:netrw_sort_by !~# '^[ts]'
++                \ && !(a:setmaxfilenamelen && get(g:, 'netrw_dynamic_maxfilenamelen', 0))
++        return v:lua.require('netrw_fastlist').list(dirname)
++    endif
+     let filelist   = map(['.', '..'] + readdir(dirname), 'netrw#fs#PathJoin(dirname, v:val)')
+ 
+     if g:netrw_cygwin == 0 && has("win32")
 diff --git a/src/nvim/channel.c b/src/nvim/channel.c
 index 31f6c80..ab45ab6 100644
 --- a/src/nvim/channel.c
