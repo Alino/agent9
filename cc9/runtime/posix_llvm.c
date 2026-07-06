@@ -640,3 +640,12 @@ int ttyname_r(int fd, char *buf, unsigned long n) {
 	return 0;
 }
 const unsigned char in6addr_any[16];   /* matches struct in6_addr layout */
+void *getprotobyname(const char *n) { (void)n; return 0; }
+void *getprotobynumber(int p) { (void)p; return 0; }
+int openpty(int *m, int *s, char *name, const void *t, const void *w) { (void)m;(void)s;(void)name;(void)t;(void)w; errno = 38; return -1; }
+int forkpty(int *m, char *name, const void *t, const void *w) { (void)m;(void)name;(void)t;(void)w; errno = 38; return -1; }
+int login_tty(int fd) { (void)fd; errno = 38; return -1; }
+void tzset(void) {}   /* no tz db: local == UTC */
+int cfsetispeed(void *t, unsigned s) { (void)t; (void)s; return 0; }
+int cfsetospeed(void *t, unsigned s) { (void)t; (void)s; return 0; }
+int killpg(int pgrp, int sig) { extern int kill(int, int); return kill(pgrp, sig); }

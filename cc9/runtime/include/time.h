@@ -16,6 +16,7 @@ extern "C" {
 #endif
 time_t time(time_t *); clock_t clock(void);
 double difftime(time_t, time_t); time_t mktime(struct tm *);
+void tzset(void);
 char *asctime(const struct tm *); char *ctime(const time_t *);
 struct tm *gmtime(const time_t *); struct tm *localtime(const time_t *);
 struct tm *gmtime_r(const time_t *, struct tm *); struct tm *localtime_r(const time_t *, struct tm *);

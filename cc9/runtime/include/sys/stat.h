@@ -27,6 +27,8 @@ struct stat {
 #define S_ISFIFO(m) (((m)&S_IFMT)==S_IFIFO)
 #define S_ISSOCK(m) (((m)&S_IFMT)==S_IFSOCK)
 #define S_IRWXU 0700
+#define S_IREAD  0400
+#define S_IWRITE 0200
 #define S_IRUSR 0400
 #define S_IWUSR 0200
 #define S_IXUSR 0100

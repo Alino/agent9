@@ -244,7 +244,14 @@ int fcntl(int fd, int cmd, ...){
 	cc9_pfd *p;
 	switch(cmd){
 	case F_DUPFD:
-		return (int)n9_dup(fd, -1);   /* ponytail: ignores the >=arg floor */
+	case F_DUPFD_CLOEXEC: {
+		int nfd = (int)n9_dup(fd, -1);   /* ponytail: ignores the >=arg floor */
+		if(nfd >= 0 && cmd == F_DUPFD_CLOEXEC){
+			cc9_pfd *np = ensure(nfd, 0);
+			if(np) np->flags |= O_CLOEXEC;
+		}
+		return nfd;
+	}
 	case F_GETFD:
 		return cc9_poll_cloexec(fd) ? FD_CLOEXEC : 0;
 	case F_SETFD:

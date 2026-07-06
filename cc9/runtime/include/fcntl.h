@@ -25,6 +25,7 @@
 #define F_GETLK  5
 #define F_SETLK  6
 #define F_SETLKW 7
+#define F_DUPFD_CLOEXEC 1030
 #define FD_CLOEXEC 1
 /* advisory record locks (LLVM Path.inc lockFile/unlockFile). cc9's fcntl is a
  * stub returning 0, so locks always "succeed" — single-writer is the norm. */

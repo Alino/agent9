@@ -1,6 +1,7 @@
 #ifndef _SYS_SOCKET_H
 #define _SYS_SOCKET_H
 #include <sys/types.h>
+#include <sys/uio.h>   /* struct iovec — msghdr aggregates it; uv.h expects it here */
 /* Minimal Berkeley sockets surface so LLVM's raw_socket_stream compiles. cc9
  * has no socket layer yet; the calls are stubs returning -1 (not on any
  * compiler compute path). Real Plan 9 networking is via /net, not BSD sockets. */

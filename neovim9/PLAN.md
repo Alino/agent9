@@ -57,7 +57,20 @@ Bar: TUI editing + treesitter inside alacritty9 (VM + cirno). Jobs/:terminal/LSP
   file (cygwin recipe: posix-poll/no-fsevents/no-proctitle/posix-hrtime).
   tcp/udp/getaddrinfo COMPILE, fail ENOSYS at runtime (honest; /net bridge later).
   Artifact: _out/libuv/libuv.a.
-- [ ] **G3 nvim headless** — gate: `nvim --headless "+lua print(...)" +q` on VM
+- [x] **G3 nvim headless** (2026-07-06) — **real nvim 0.12.4 runs on the dev VM**:
+  `--headless +edit +normal +wq` round-trips a file (cat-verified), vim.fn/vim.version
+  work, runtime tree loads (VIMRUNTIME=/tmp/runtime). Build: port/build-deps.sh
+  (unibilium/utf8proc/tree-sitter/lpeg/luv+compat53 + 6 static parser .a) +
+  port/build-nvim.py (harvest bridge: `ninja -t inputs bin/nvim` object list minus
+  nlua0, host -D/-I flags minus macOS-isms, plan9-patched copy of cmake.config —
+  drops HAVE_LANGINFO/PWD_FUNCS/DIRFD_FLOCK/SDT/NSGETENVIRON/LIBINTL/EXECINFO/
+  STRPTIME + CASE_INSENSITIVE_FILENAME, ENDIAN_INCLUDE_FILE→<endian.h>) → 5.9MB
+  a.out. cc9 gained this round: iconv stub, strcasecmp/strncasecmp+strings.h,
+  strtok_r, sprintf/vsprintf, tzset, pty.h stubs (openpty/forkpty ENOSYS),
+  endian.h, S_IREAD/S_IWRITE, F_DUPFD_CLOEXEC, E2BIG/ESPIPE/ECHILD, termios V*/
+  speed, WCONTINUED/WIFCONTINUED, killpg, protoent stubs, iovec via sys/socket.h.
+  Delivery: 5.9MB via `hget http://10.0.2.2:8977/` (python http.server on host) —
+  the byte-writer channel is for small binaries only.
 - [ ] **G4 TUI in alacritty9** — acceptance: edit/:w/treesitter colors, VM + cirno, screenshots
 - [ ] **G5 follow-ons**: jobs, :terminal, LSP, pac9 package
 

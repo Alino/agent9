@@ -747,3 +747,35 @@ int cc9_atomic_cas(size_t n,void*ptr,void*exp,const void*des,int s,int f){
 	if(memcmp(ptr,exp,n)==0){ memcpy(ptr,des,n); return 1; }
 	memcpy(exp,ptr,n); return 0;
 }
+
+/* strings.h */
+static int cc9_lower(int c){ return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+int strcasecmp(const char *a, const char *b){
+	while(*a && cc9_lower((unsigned char)*a) == cc9_lower((unsigned char)*b)){ a++; b++; }
+	return cc9_lower((unsigned char)*a) - cc9_lower((unsigned char)*b);
+}
+int strncasecmp(const char *a, const char *b, unsigned long n){
+	for(; n; n--, a++, b++){
+		int d = cc9_lower((unsigned char)*a) - cc9_lower((unsigned char)*b);
+		if(d || !*a) return d;
+	}
+	return 0;
+}
+
+/* stub iconv (see include/iconv.h) */
+void *iconv_open(const char *to, const char *from){ (void)to; (void)from; return (void *)-1; }
+unsigned long iconv(void *cd, char **in, unsigned long *inb, char **out, unsigned long *outb){
+	(void)cd; (void)in; (void)inb; (void)out; (void)outb; return (unsigned long)-1;
+}
+int iconv_close(void *cd){ (void)cd; return 0; }
+
+char *strtok_r(char *s, const char *sep, char **save){
+	if(!s) s = *save;
+	while(*s && strchr(sep, *s)) s++;
+	if(!*s){ *save = s; return 0; }
+	char *tok = s;
+	while(*s && !strchr(sep, *s)) s++;
+	if(*s){ *s = 0; s++; }
+	*save = s;
+	return tok;
+}

@@ -10,6 +10,8 @@ struct addrinfo {
 	char *ai_canonname;
 	struct addrinfo *ai_next;
 };
+struct protoent { char *p_name; char **p_aliases; int p_proto; };
+struct servent { char *s_name; char **s_aliases; int s_port; char *s_proto; };
 struct hostent { char *h_name; char **h_aliases; int h_addrtype; int h_length; char **h_addr_list; };
 #define AI_PASSIVE     1
 #define AI_CANONNAME   2
@@ -42,6 +44,8 @@ int getaddrinfo(const char *, const char *, const struct addrinfo *, struct addr
 void freeaddrinfo(struct addrinfo *);
 int getnameinfo(const struct sockaddr *, socklen_t, char *, socklen_t, char *, socklen_t, int);
 const char *gai_strerror(int);
+struct protoent *getprotobyname(const char *);
+struct protoent *getprotobynumber(int);
 #ifdef __cplusplus
 }
 #endif

@@ -56,7 +56,13 @@ struct termios {
 #define VSTOP  9
 #define VSUSP  10
 #define VEOL   11
+#define VEOL2  16
+#define VREPRINT 12
+#define VWERASE  14
+#define VLNEXT   15
+#define VDISCARD 13
 /* tcsetattr actions */
+#define _POSIX_VDISABLE 0
 #define TCSANOW   0
 #define TCSADRAIN 1
 #define TCSAFLUSH 2
@@ -68,6 +74,8 @@ int tcsetattr(int, int, const struct termios *);
 void cfmakeraw(struct termios *);
 int tcflush(int, int);
 int tcdrain(int);
+int cfsetispeed(struct termios *, speed_t);
+int cfsetospeed(struct termios *, speed_t);
 #ifdef __cplusplus
 }
 #endif

@@ -70,6 +70,7 @@ extern "C" {
 __sighandler_t signal(int, __sighandler_t);
 int raise(int);
 int kill(int, int);
+int killpg(int, int);
 int sigaction(int, const struct sigaction *, struct sigaction *);
 int sigprocmask(int, const sigset_t *, sigset_t *);
 int sigemptyset(sigset_t *);

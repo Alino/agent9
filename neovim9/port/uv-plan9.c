@@ -37,10 +37,7 @@ int uv_interface_addresses(uv_interface_address_t** addresses, int* count) {
   *count = 0;
   return 0;
 }
-
-void uv_free_interface_addresses(uv_interface_address_t* addresses, int count) {
-  (void)addresses; (void)count;
-}
+/* uv_free_interface_addresses: generic impl in uv-common.c */
 
 /* exepath: cc9 crt0 stashes argv[0]. Absolute -> as is; contains '/' ->
  * cwd-relative; bare name -> /bin (the 9front union bin). */

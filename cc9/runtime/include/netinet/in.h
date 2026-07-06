@@ -22,6 +22,8 @@ struct ipv6_mreq { struct in6_addr ipv6mr_multiaddr; unsigned int ipv6mr_interfa
 struct ip_mreq_source { struct in_addr imr_multiaddr, imr_interface, imr_sourceaddr; };
 struct group_source_req { unsigned int gsr_interface; struct sockaddr_storage gsr_group, gsr_source; };
 extern const struct in6_addr in6addr_any;
+#define INET_ADDRSTRLEN  16
+#define INET6_ADDRSTRLEN 46
 #define INADDR_ANY       0u
 #define INADDR_LOOPBACK  0x7f000001u
 #define INADDR_BROADCAST 0xffffffffu

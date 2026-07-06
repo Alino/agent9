@@ -302,6 +302,9 @@ int vsnprintf(char *out, size_t n, const char *f, va_list ap){
 	return (int)b.len;
 }
 int snprintf(char *out, size_t n, const char *f, ...){ va_list ap; __builtin_va_start(ap,f); int r=vsnprintf(out,n,f,ap); __builtin_va_end(ap); return r; }
+/* unbounded variants: callers guarantee the buffer (C89 surface) */
+int vsprintf(char *out, const char *f, va_list ap){ return vsnprintf(out, (size_t)1<<30, f, ap); }
+int sprintf(char *out, const char *f, ...){ va_list ap; __builtin_va_start(ap,f); int r=vsnprintf(out,(size_t)1<<30,f,ap); __builtin_va_end(ap); return r; }
 int vasprintf(char **out, const char *f, va_list ap){
 	char buf[256];
 	va_list ap2; __builtin_va_copy(ap2, ap);
