@@ -839,6 +839,67 @@ impl Display {
         // Make sure this window's OpenGL context is active.
         self.make_current();
 
+        // alacritty9: per-frame draw timing for latency hunting (-vv).
+        #[cfg(target_os = "plan9")]
+        let plan9_draw_start = std::time::Instant::now();
+
+        // alacritty9: scissor the clear + render to the damage bounding box.
+        // Softpipe writes back every tile the clear touches, so a full-frame
+        // clear costs full-frame time even when one row changed; with the
+        // scissor, render cost scales with the damage. Regions outside the
+        // scissor keep last frame's pixels in the OSMesa buffer, which is
+        // exactly what the damage-based present expects. The bbox (pixel
+        // coords, GL bottom-up origin) is kept to also cull undamaged cells
+        // from the draw below.
+        #[cfg(target_os = "plan9")]
+        let plan9_bbox = if self.damage_tracker.debug {
+            None
+        } else {
+            let damage = self.damage_tracker.shape_frame_damage(self.size_info.into());
+            let mut x0 = i32::MAX;
+            let mut y0 = i32::MAX;
+            let mut x1 = i32::MIN;
+            let mut y1 = i32::MIN;
+            for r in &damage {
+                x0 = x0.min(r.x);
+                y0 = y0.min(r.y);
+                x1 = x1.max(r.x + r.width);
+                y1 = y1.max(r.y + r.height);
+            }
+            if x0 < x1 && y0 < y1 {
+                unsafe {
+                    crate::gl::Enable(crate::gl::SCISSOR_TEST);
+                    crate::gl::Scissor(x0, y0, x1 - x0, y1 - y0);
+                }
+                Some((y0, y1))
+            } else {
+                None
+            }
+        };
+
+        // alacritty9: softpipe pays interpreted per-vertex cost for every
+        // submitted quad, damaged or not — the scissor only culls fragments.
+        // Drop cells whose row can't intersect the damage bbox (the scissor
+        // guarantees correctness either way; this is purely less work).
+        #[cfg(target_os = "plan9")]
+        let grid_cells = match plan9_bbox {
+            Some((y0, y1)) => {
+                let height = self.size_info.height() as i32;
+                let cell_height = self.size_info.cell_height() as i32;
+                let pad_y = self.size_info.padding_y() as i32;
+                let top_min = height - y1;
+                let top_max = height - y0;
+                grid_cells
+                    .into_iter()
+                    .filter(|cell| {
+                        let top = pad_y + cell.point.line as i32 * cell_height;
+                        top + cell_height > top_min && top < top_max
+                    })
+                    .collect::<Vec<_>>()
+            },
+            None => grid_cells,
+        };
+
         self.renderer.clear(background_color, config.window_opacity());
         let mut lines = RenderLines::new();
 
@@ -1031,8 +1092,18 @@ impl Display {
             self.renderer.draw_rects(&self.size_info, &metrics, rects);
         }
 
+        // alacritty9: the scissor must not leak into the next frame's
+        // resize/clear paths.
+        #[cfg(target_os = "plan9")]
+        unsafe {
+            crate::gl::Disable(crate::gl::SCISSOR_TEST);
+        }
+
         // Clearing debug highlights from the previous frame requires full redraw.
         self.swap_buffers();
+
+        #[cfg(target_os = "plan9")]
+        debug!("plan9 draw+swap took {:?}", plan9_draw_start.elapsed());
 
         if matches!(self.raw_window_handle, RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_)) {
             // On X11 `swap_buffers` does not block for vsync. However the next OpenGl command
