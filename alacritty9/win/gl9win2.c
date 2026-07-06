@@ -97,83 +97,106 @@ isspecial(Rune r)
 	return r >= KF || r == Kdown;	/* Kdown is 0x80, below KF */
 }
 
+int kbddebug;
+
+static Rune down[MAXDOWN];
+static uchar emitted[MAXDOWN];
+static int ndown, mods;
+
+/* Handle ONE kbd message (NUL-terminated). A read on /dev/kbd can carry
+ * several queued messages back to back (fast typing) — the caller loops. */
+static void
+kbdmsg(char *buf)
+{
+	Rune new[MAXDOWN], r;
+	uchar nemit[MAXDOWN];
+	char *p;
+	int i, j, nnew, found;
+
+	if(kbddebug)
+		fprint(2, "gl9win2 kbd: %s\n", buf);
+	switch(buf[0]){
+	case 'k':	/* current down set, after a press */
+	case 'K':	/* current down set, after a release */
+		nnew = 0;
+		for(p = buf + 1; *p != 0 && nnew < MAXDOWN; ){
+			p += chartorune(&r, p);
+			new[nnew++] = r;
+		}
+		/* recompute mods from the new state */
+		mods = 0;
+		for(i = 0; i < nnew; i++)
+			mods |= modbit(new[i]);
+		/* presses: in new, not in down */
+		for(i = 0; i < nnew; i++){
+			found = 0;
+			for(j = 0; j < ndown; j++)
+				if(down[j] == new[i])
+					found = 1;
+			nemit[i] = 0;
+			if(!found){
+				if(ismod(new[i])){
+					emit(EVKEY, 1, mods, new[i], 0);
+					nemit[i] = 1;
+				}else if((mods & (MODCTL|MODALT)) && !isspecial(new[i])){
+					/* chorded base rune: Alacritty gets V+ctl, not ^V */
+					emit(EVKEY, 1, mods, new[i], 0);
+					nemit[i] = 1;
+				}
+			}else{
+				for(j = 0; j < ndown; j++)
+					if(down[j] == new[i])
+						nemit[i] = emitted[j];
+			}
+		}
+		/* releases: in down, not in new */
+		for(j = 0; j < ndown; j++){
+			found = 0;
+			for(i = 0; i < nnew; i++)
+				if(down[j] == new[i])
+					found = 1;
+			if(!found && emitted[j])
+				emit(EVKEY, 0, mods, down[j], 0);
+		}
+		memmove(down, new, nnew * sizeof(Rune));
+		memmove(emitted, nemit, nnew);
+		ndown = nnew;
+		break;
+	case 'c':	/* composed character (case + auto-repeat correct) */
+		chartorune(&r, buf + 1);
+		if(r == 0)
+			break;
+		/* Suppress only the control BYTES of chords already emitted from
+		 * 'k' — never printable runes, so a missed modifier release can't
+		 * silently eat typing. */
+		if((mods & (MODCTL|MODALT)) && !isspecial(r) && (r < 0x20 || r == 0x7f))
+			break;
+		emit(EVKEY, 1, mods, r, 0);
+		emit(EVKEY, 0, mods, r, 0);
+		break;
+	}
+}
+
 static void
 kbdproc(void*)
 {
-	static Rune down[MAXDOWN];
-	static uchar emitted[MAXDOWN];
-	Rune new[MAXDOWN], r;
-	uchar nemit[MAXDOWN];
-	char buf[256], *p;
-	int fd, n, i, j, nnew, ndown, mods, found;
+	char buf[512], *p, *e;
+	int fd, n;
 
 	if((fd = open("/dev/kbd", OREAD)) < 0)
 		threadexitsall("open /dev/kbd");
 
-	ndown = 0;
-	mods = 0;
 	for(;;){
 		n = read(fd, buf, sizeof buf - 1);
 		if(n <= 0)
 			break;
 		buf[n] = 0;
-		switch(buf[0]){
-		case 'k':	/* current down set, after a press */
-		case 'K':	/* current down set, after a release */
-			nnew = 0;
-			for(p = buf + 1; *p != 0 && nnew < MAXDOWN; ){
-				p += chartorune(&r, p);
-				new[nnew++] = r;
-			}
-			/* recompute mods from the new state */
-			mods = 0;
-			for(i = 0; i < nnew; i++)
-				mods |= modbit(new[i]);
-			/* presses: in new, not in down */
-			for(i = 0; i < nnew; i++){
-				found = 0;
-				for(j = 0; j < ndown; j++)
-					if(down[j] == new[i])
-						found = 1;
-				nemit[i] = 0;
-				if(!found){
-					if(ismod(new[i])){
-						emit(EVKEY, 1, mods, new[i], 0);
-						nemit[i] = 1;
-					}else if((mods & (MODCTL|MODALT)) && !isspecial(new[i])){
-						/* chorded base rune: Alacritty gets V+ctl, not ^V */
-						emit(EVKEY, 1, mods, new[i], 0);
-						nemit[i] = 1;
-					}
-				}else{
-					for(j = 0; j < ndown; j++)
-						if(down[j] == new[i])
-							nemit[i] = emitted[j];
-				}
-			}
-			/* releases: in down, not in new */
-			for(j = 0; j < ndown; j++){
-				found = 0;
-				for(i = 0; i < nnew; i++)
-					if(down[j] == new[i])
-						found = 1;
-				if(!found && emitted[j])
-					emit(EVKEY, 0, mods, down[j], 0);
-			}
-			memmove(down, new, nnew * sizeof(Rune));
-			memmove(emitted, nemit, nnew);
-			ndown = nnew;
-			break;
-		case 'c':	/* composed character (case + auto-repeat correct) */
-			chartorune(&r, buf + 1);
-			if(r == 0)
-				break;
-			if((mods & (MODCTL|MODALT)) && !isspecial(r))
-				break;	/* chords already emitted from 'k' */
-			emit(EVKEY, 1, mods, r, 0);
-			emit(EVKEY, 0, mods, r, 0);
-			break;
-		}
+		/* one read may hold SEVERAL NUL-terminated messages — walk all;
+		 * dropping the tail loses key releases and wedges the mod state */
+		e = buf + n;
+		for(p = buf; p < e; p += strlen(p) + 1)
+			if(*p != 0)
+				kbdmsg(p);
 	}
 	/* /dev/kbd read fails when the window goes away */
 	emit(EVQUIT, 0, 0, 0, 0);
@@ -290,8 +313,13 @@ threadmain(int argc, char **argv)
 	Point o;
 	char title[256];
 
+	if(argc >= 2 && strcmp(argv[1], "-d") == 0){
+		kbddebug = 1;
+		argv++;
+		argc--;
+	}
 	if(argc < 2){
-		fprint(2, "usage: gl9win2 cmd [args...]\n");
+		fprint(2, "usage: gl9win2 [-d] cmd [args...]\n");
 		threadexitsall("usage");
 	}
 
