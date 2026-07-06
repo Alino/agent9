@@ -15,6 +15,10 @@
 #include <GL/gl.h>
 #include "gl9egl_platform.h"
 
+/* gl9 additions to vendored osmesa.c (damage-rect flush_front snapshot) */
+extern void OSMesaGL9SetDamage(int x, int y, int w, int h);
+extern void OSMesaGL9ClearDamage(void);
+
 extern long write(int, const void *, long);
 extern void *malloc(unsigned long);
 extern void free(void *);
@@ -271,16 +275,20 @@ gl9egl_swap_damage(EGLSurface surf, int x, int y, int w, int h)
 	int i;
 
 	if (!s || !s->window) return 0;
-	glFinish();
 	/* flip to top-left origin, then clamp */
 	y = s->h - (y + h);
 	if (x < 0) { w += x; x = 0; }
 	if (y < 0) { h += y; y = 0; }
 	if (x + w > s->w) w = s->w - x;
 	if (y + h > s->h) h = s->h - y;
-	if (w <= 0 || h <= 0) return 1;      /* nothing visible changed */
+	if (w <= 0 || h <= 0) { glFinish(); return 1; } /* nothing visible changed */
 	if (w == s->w && h == s->h)          /* full frame: use the plain path */
 		return eglSwapBuffers(GL9_DISPLAY, surf);
+	/* tell OSMesa's flush_front to snapshot only this rect — the
+	 * full-surface copy is ~20ms at 940x640, the rect is ~free */
+	OSMesaGL9SetDamage(x, y, w, h);
+	glFinish();
+	OSMesaGL9ClearDamage();
 	rows = malloc((unsigned long)w * h * 4);
 	if (!rows)
 		return eglSwapBuffers(GL9_DISPLAY, surf);

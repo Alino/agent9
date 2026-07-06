@@ -114,7 +114,12 @@ impl MonitorHandle {
     }
 
     pub fn refresh_rate_millihertz(&self) -> Option<u32> {
-        None
+        // There is no vsync behind the GL9F pipe — this only paces
+        // alacritty's FrameTimer. None falls back to 60Hz (= up to 16.7ms
+        // added input latency); 120Hz halves that without letting heavy
+        // output render unbatched. ponytail: raise if input lag still
+        // bothers, softpipe render time (~25ms/frame) is the real floor.
+        Some(120_000)
     }
 
     pub fn video_modes(&self) -> impl Iterator<Item = VideoModeHandle> {

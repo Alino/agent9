@@ -114,7 +114,7 @@ kbdmsg(char *buf)
 	int i, j, nnew, found;
 
 	if(kbddebug)
-		fprint(2, "gl9win2 kbd: %s\n", buf);
+		fprint(2, "gl9win2 kbd: %s t=%lldms\n", buf, nsec()/1000000);
 	switch(buf[0]){
 	case 'k':	/* current down set, after a press */
 	case 'K':	/* current down set, after a release */
@@ -505,9 +505,10 @@ threadmain(int argc, char **argv)
 		if(kbddebug){
 			vlong now = nsec();
 			if(lastns != 0)
-				fprint(2, "gl9win2 %s: %ludx%lud dt=%lldms skipped=%d\n",
+				fprint(2, "gl9win2 %s: %ludx%lud dt=%lldms t=%lldms skipped=%d\n",
 					f->full ? "frame" : "damage",
-					f->w, f->h, (now - lastns)/1000000, nskipped);
+					f->w, f->h, (now - lastns)/1000000,
+					now/1000000, nskipped);
 			lastns = now;
 			nskipped = 0;
 			blitns = now;

@@ -1131,10 +1131,16 @@ impl Display {
         }
 
         // Clearing debug highlights from the previous frame requires full redraw.
+        #[cfg(target_os = "plan9")]
+        let plan9_swap_start = std::time::Instant::now();
         self.swap_buffers();
 
         #[cfg(target_os = "plan9")]
-        debug!("plan9 draw+swap took {:?}", plan9_draw_start.elapsed());
+        debug!(
+            "plan9 draw+swap took {:?} (swap {:?})",
+            plan9_draw_start.elapsed(),
+            plan9_swap_start.elapsed()
+        );
 
         if matches!(self.raw_window_handle, RawWindowHandle::Xcb(_) | RawWindowHandle::Xlib(_)) {
             // On X11 `swap_buffers` does not block for vsync. However the next OpenGl command
