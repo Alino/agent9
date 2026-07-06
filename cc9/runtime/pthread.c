@@ -27,7 +27,13 @@ extern void n9_exits(const char *);
 static long cc9_thread_stack = 0;
 void cc9_set_thread_stack(long n){ cc9_thread_stack = n; }
 
-typedef struct { void *(*start)(void *); void *arg; void *ret; int joinsem; int done; int detached; void *stack; unsigned long stksize; unsigned long pid; } n9_thread;
+/* pid is the SYNTHETIC tid (pthread_t, a counter from 2) used for join/table
+ * lookups. realpid is the kernel pid from rfork's return in the parent — the
+ * ONLY value /proc accepts. kill_threads used to post notes to the tid
+ * (/proc/2/note, /proc/3/note...): on a fresh boot those are real early
+ * system processes (webfs! rio!) — every threaded cc9 program exit was
+ * murdering them — while the actual threads never died. */
+typedef struct { void *(*start)(void *); void *arg; void *ret; int joinsem; int done; int detached; void *stack; unsigned long stksize; unsigned long pid; unsigned long realpid; } n9_thread;
 
 /* Identify the current thread WITHOUT a real getpid (/dev/pid isn't in the
  * listener namespace, and main's BSS stack has no kernel TOS). Each thread has a
@@ -84,8 +90,10 @@ extern long n9_pwrite(int, const void *, long, long long);
 void cc9_kill_threads(void){
 	unsigned long self = cur_pid();
 	for(int i=0;i<MAXTH;i++){
-		unsigned long pid = th_tab[i].pid;
-		if(!th_tab[i].used || th_tab[i].dead || pid==0 || pid==self) continue;
+		if(!th_tab[i].used || th_tab[i].dead || th_tab[i].pid==0 || th_tab[i].pid==self) continue;
+		n9_thread *kt = th_tab[i].t;
+		unsigned long pid = kt ? kt->realpid : 0;   /* KERNEL pid, not the tid */
+		if(pid == 0) continue;
 		char path[40]; int k=0;
 		for(const char *p="/proc/"; *p; p++) path[k++]=*p;
 		char num[20]; int n=0; unsigned long v=pid;
@@ -245,7 +253,7 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	static unsigned long tid_ctr = 1;
 	static int tid_lock = 1;
 	n9_semacquire(&tid_lock,1); unsigned long tid = ++tid_ctr; n9_semrelease(&tid_lock,1);
-	t->start=start; t->arg=arg; t->ret=0; t->joinsem=0; t->done=0; t->detached=0; t->pid=tid;
+	t->start=start; t->arg=arg; t->ret=0; t->joinsem=0; t->done=0; t->detached=0; t->pid=tid; t->realpid=0;
 	size_t ss = cc9_thread_stack > STACKSIZE ? (size_t)cc9_thread_stack : STACKSIZE;
 	char *stk = malloc(ss); if(!stk){ free(t); return 11; }
 	t->stack=stk; t->stksize=ss;
@@ -255,6 +263,7 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	if(pid < 0){   /* rfork failed: no child will ever release handoff_sem */
 		n9_semrelease(&create_lock, 1); free(stk); free(t); return 11;
 	}
+	t->realpid = (unsigned long)pid;   /* the kernel pid — what /proc wants */
 	n9_semacquire(&handoff_sem, 1);   /* wait until the child registered + copied the handoff */
 	n9_semrelease(&create_lock, 1);
 	*th = (pthread_t)tid;
