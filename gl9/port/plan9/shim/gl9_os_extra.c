@@ -56,18 +56,10 @@ pthread_barrier_wait(pthread_barrier_t *b)
 extern void *malloc(unsigned long);
 extern void *memset(void *, int, unsigned long);
 
-/* cc9 declares these in <stdio.h>/<string.h> but doesn't implement them.
- * (this file is compiled -fno-builtin so clang doesn't intercept sprintf.) */
-int
-sprintf(char *s, const char *fmt, ...)
-{
-	va_list ap;
-	int n;
-	va_start(ap, fmt);
-	n = vsnprintf(s, ~0UL, fmt, ap);	/* unbounded, like C sprintf */
-	va_end(ap);
-	return n;
-}
+/* sprintf/strcasecmp/strncasecmp/strtok_r/pthread_sigmask used to be defined
+ * here; cc9's runtime grew them (neovim9 port), so they're gone to avoid
+ * duplicate symbols. (this file is compiled -fno-builtin so clang doesn't
+ * intercept the str* defs below.) */
 
 char *
 stpcpy(char *d, const char *s)
@@ -82,54 +74,6 @@ strchrnul(const char *s, int c)
 	while (*s && *s != (char)c)
 		s++;
 	return (char *)s;
-}
-
-static int
-lc(int c)
-{
-	return (c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c;
-}
-
-int
-strcasecmp(const char *a, const char *b)
-{
-	while (*a && lc(*a) == lc(*b)) { a++; b++; }
-	return lc((unsigned char)*a) - lc((unsigned char)*b);
-}
-
-int
-strncasecmp(const char *a, const char *b, unsigned long n)
-{
-	while (n && *a && lc(*a) == lc(*b)) { a++; b++; n--; }
-	if (n == 0)
-		return 0;
-	return lc((unsigned char)*a) - lc((unsigned char)*b);
-}
-
-static int
-in_set(char c, const char *set)
-{
-	for (; *set; set++)
-		if (c == *set)
-			return 1;
-	return 0;
-}
-
-char *
-strtok_r(char *s, const char *delim, char **save)
-{
-	char *t;
-	if (s == 0)
-		s = *save;
-	while (*s && in_set(*s, delim))
-		s++;
-	if (*s == 0) { *save = s; return 0; }
-	t = s;
-	while (*s && !in_set(*s, delim))
-		s++;
-	if (*s) { *s = 0; s++; }
-	*save = s;
-	return t;
 }
 
 /* open_memstream over cc9's fmemopen. ponytail: fixed 1 MB buffer (calloc'd, so
@@ -150,15 +94,6 @@ open_memstream(char **bufp, unsigned long *sizep)
 }
 
 /* --- pthread gaps: single-threaded softpipe, so signals/timeouts are moot -- */
-int
-pthread_sigmask(int how, const sigset_t *set, sigset_t *old)
-{
-	(void)how; (void)set;
-	if (old)
-		*old = 0;
-	return 0;			/* 9front has no POSIX signal delivery */
-}
-
 int
 pthread_mutex_timedlock(pthread_mutex_t *m, const struct timespec *t)
 {

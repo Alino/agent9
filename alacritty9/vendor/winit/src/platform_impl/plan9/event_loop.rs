@@ -221,6 +221,14 @@ impl<T: 'static> EventLoop<T> {
                 if let Some(named_key) = named_key_opt {
                     logical_key = Key::Named(named_key);
                     key_without_modifiers = logical_key.clone();
+                    // Plan 9 keyboards deliver Enter as '\n', but every other
+                    // winit platform reports text "\r" — and that text is what
+                    // alacritty writes to the child. Sending '\n' makes vim
+                    // treat Enter as <NL> (cursor down) instead of <CR>.
+                    if named_key == NamedKey::Enter && pressed {
+                        text = Some(SmolStr::new("\r"));
+                        text_with_all_modifiers = text.clone();
+                    }
                 }
 
                 event_handler(event::Event::WindowEvent {
