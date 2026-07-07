@@ -7,7 +7,7 @@ REM Adds the install directory to PATH or run from inside it.
 setlocal
 cd /d "%~dp0"
 
-set IMG=agent9-v0.5.0.qcow2
+set IMG=agent9-v0.5.1.qcow2
 
 if not exist %IMG% (
   echo error: %IMG% not found in %CD%

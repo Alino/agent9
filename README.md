@@ -22,7 +22,7 @@ than leave you to find it in the log.
 
 ## Two ways to get it
 
-**Boot the image.** Download `agent9-v0.5.0.qcow2` from the
+**Boot the image.** Download `agent9-v0.5.1.qcow2` from the
 [Releases page](https://github.com/Alino/agent9/releases), drop it next to the
 runner script for your OS, and run it:
 
@@ -167,7 +167,8 @@ with `/login`.
 
 ## Status
 
-This is **v0.5.0**. The newest work is cc9 growing up: its C++ runtime now passes
+This is **v0.5.1**, which preinstalls **pac9** (the package manager) in the image
+(issue #9). v0.5.0's headline was cc9 growing up: its C++ runtime now passes
 the full upstream conformance triad (libc++, libc++abi, libunwind) with zero
 runtime failures, a reduced clang and lld run natively on 9front, and the image
 ships a Stockfish 11 demo whose `bench` self-verifies to the exact reference node

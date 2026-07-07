@@ -2,8 +2,10 @@
 
 You need two things:
 1. **QEMU 7.2+** on your host.
-2. **agent9-v0.5.0.qcow2** — the disk image. Download from the
-   GitHub Releases page. New in v0.5.0: **cc9** — modern C++ on 9front —
+2. **agent9-v0.5.1.qcow2** — the disk image. Download from the
+   GitHub Releases page. New in v0.5.1: **pac9** (the package manager) is
+   preinstalled — `pac9 install go`, `pac9 update`, etc. v0.5.0 added
+   **cc9** — modern C++ on 9front —
    now also compiles **on the box** (a reduced native clang + `ld.lld`), and
    the image ships seven prebuilt C++ demos under `/usr/glenda/cc9/` (run
    `/usr/glenda/cc9/RUNDEMOS`): **Stockfish** (self-verifying bench), a
@@ -177,7 +179,7 @@ fidelity/limitations write-up and stock-9front install steps.
 
 The qcow2 stores all your state — sessions, downloaded files, edited
 source. Back up the qcow2 file to back up your environment. Snapshot
-with `qemu-img snapshot -c name agent9-v0.5.0.qcow2` between
+with `qemu-img snapshot -c name agent9-v0.5.1.qcow2` between
 experiments.
 
 ## Troubleshooting
