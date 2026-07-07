@@ -409,8 +409,12 @@ wctlcmd(Window *w, Rectangle r, int cmd, char *err)
 		return 1;
 	case Current:
 		if(Dx(w->screenr)<=0){
-			strcpy(err, "window is hidden");
-			return -1;
+			/* minimized: clicking its taskbar button restores it */
+			if(wunhide(w) <= 0){
+				strcpy(err, "window is hidden");
+				return -1;
+			}
+			return 1;
 		}
 		wcurrent(w);
 		wtopme(w);

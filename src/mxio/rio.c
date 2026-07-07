@@ -618,7 +618,7 @@ mousethread(void*)
 							while(mouse->buttons)
 								readmouse(mousectl);
 							if(whittest(wu, mouse->xy) == 2)
-								wtopme(wu);
+								whide(wu);
 							goto Again;
 						}
 						if(hz2 == 3){
@@ -680,11 +680,11 @@ mousethread(void*)
 						goto Again;
 					}
 					if(hz == 2){
-						/* Minimize — hide window (bottom it) */
+						/* Minimize — hide window; taskbar restores it */
 						while(mouse->buttons)
 							readmouse(mousectl);
 						if(whittest(winput, mouse->xy) == 2)
-							wtopme(winput);	/* TODO: proper hide */
+							whide(winput);
 						goto Again;
 					}
 					if(hz == 3){
