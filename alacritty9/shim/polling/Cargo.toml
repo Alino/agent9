@@ -1,7 +1,0 @@
-[package]
-name = "polling"
-version = "3.11.0"
-edition = "2021"
-description = "Plan 9 shim: no poll/select exists on 9front; readiness is emulated with a Mutex+Condvar (see alacritty9/PORT-NOTES.md)"
-
-[workspace]

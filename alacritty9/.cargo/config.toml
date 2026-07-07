@@ -1,8 +1,0 @@
-# Cross-compile everything under alacritty9/ for 9front via rust9.
-# Same recipe as rust9/rgrep (the proven flagship path).
-[build]
-target = "/Users/claw/Projects/agent9/rust9/targets/x86_64-unknown-plan9.json"
-
-[unstable]
-build-std = ["std", "panic_abort"]
-json-target-spec = true

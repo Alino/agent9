@@ -1,7 +1,0 @@
-#!/bin/rc
-cd /usr/glenda/node9/nt
-rm -f /tmp/nt.log
-for(t in parallel/*.js){
-	/amd64/bin/qjs run-one.js $t >>/tmp/nt.log >[2=1]
-}
-echo ALLDONE >>/tmp/nt.log

@@ -1,7 +1,0 @@
-#!/bin/rc
-# Launch netsurf inside mxio's wsys (matches launch-vtwin.rc pattern).
-RIOSRV=/srv/rio.glenda.449
-mount -bc $RIOSRV /mnt/wsys >/dev/null >[2=1]
-echo bind_status=$status
-echo 'new -r 50 50 870 670 /amd64/bin/netsurf' > /mnt/wsys/wctl
-echo write_status=$status

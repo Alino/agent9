@@ -1,9 +1,0 @@
-#!/bin/rc
-# node9 Phase 1 — compile all pure-engine TUs (no libc) with the node9 shims.
-cd /usr/glenda/node9/work
-rm -f *.6 /tmp/eng.log
-for(f in quickjs libregexp libunicode dtoa){
-	echo '=== '^$f^' ===' >>/tmp/eng.log
-	pcc -c -I. -DPLAN9 -D__DJGPP -DNO_TM_GMTOFF '-D_POSIX_SOURCE' '-D__STDC_NO_ATOMICS__=1' $f.c >>/tmp/eng.log >[2=1]
-}
-echo ALL_DONE >>/tmp/eng.log

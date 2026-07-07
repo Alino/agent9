@@ -1,9 +1,0 @@
-#!/bin/rc
-# kill all vts processes in 9front
-for(p in `{ps -a | awk '/vts/ && !/grep/ {print $2}'}) {
-	echo killing $p
-	echo kill > /proc/$p/note >[2]/dev/null
-}
-sleep 1
-echo === after ===
-ps -a | grep vts | grep -v grep | head

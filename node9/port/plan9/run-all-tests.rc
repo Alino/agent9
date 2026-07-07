@@ -1,6 +1,0 @@
-#!/bin/rc
-cd /usr/glenda/node9/work
-for(t in nested path-proof events-proof os-proof qs-proof util-proof phase3-test filereq promise-test async-test timer-test){
-	/amd64/bin/qjs $t.js >/tmp/res-$t.txt >[2=1]
-}
-echo done >/tmp/res-ALLDONE.txt

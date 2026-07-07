@@ -1,7 +1,0 @@
-#!/bin/rc
-# run-mk.rc — build nsport inside the 9front VM.
-# Writes log to /tmp/nsbuild.log and exit status to /tmp/nsbuild.done.
-cd /usr/glenda/nsport
-rm -f /tmp/nsbuild.log /tmp/nsbuild.done
-mk >/tmp/nsbuild.log >[2=1]
-echo $status > /tmp/nsbuild.done

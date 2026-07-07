@@ -1,4 +1,0 @@
-#!/bin/rc
-cd /sys/src/cmd/mxio
-mk install >>/tmp/bld.log 2>>/tmp/bld.log
-echo DONE >> /tmp/bld.log

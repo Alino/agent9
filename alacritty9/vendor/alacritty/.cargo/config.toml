@@ -1,9 +1,0 @@
-# Link the gl9 substrate into alacritty: the static EGL-over-OSMesa object and
-# the Mesa softpipe archive. Order matters: gl9egl.app.o pulls OSMesa* from the
-# archive; libc/libc++/libm resolve in rust9-ld's trailing --start-group.
-# (build.target + build-std come from alacritty9/.cargo/config.toml via walk-up.)
-[target.x86_64-unknown-plan9]
-rustflags = [
-    "-C", "link-arg=/Users/claw/Projects/agent9/gl9/_out/gl9egl.app.o",
-    "-C", "link-arg=/Users/claw/Projects/agent9/gl9/_out/libgl9mesa.a",
-]

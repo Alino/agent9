@@ -1,4 +1,0 @@
-#!/bin/bash
-# rust9-cc — C/asm compiler for x86_64-unknown-plan9: clang targeting x86_64 ELF.
-# Used by the `cc` crate (psm asm, blake3 SIMD asm) during cross-compile of rustc.
-exec /opt/homebrew/opt/llvm/bin/clang --target=x86_64-unknown-none-elf "$@"

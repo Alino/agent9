@@ -1,9 +1,0 @@
-#!/bin/rc
-pac9 uninstall rust9
-echo UNINSTALL-STATUS $status
-ls /usr/glenda/rust >[2=1] | sed 1q
-ls /rc/bin/rustc >[2=1]
-ls /rc/bin/cargo9 >[2=1]
-grep rust9 /sys/lib/pac9/installed >[2=1]
-echo GREP-STATUS $status
-echo DONE-UNINSTALL

@@ -1,6 +1,0 @@
-# Release staging + built tarball (the tarball is a GitHub Release asset).
-release/stage/
-release/*.tar.gz
-
-# cargo build dirs
-target/

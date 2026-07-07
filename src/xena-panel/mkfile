@@ -1,9 +1,0 @@
-</$objtype/mkfile
-BIN=/$objtype/bin
-
-TARG=xena-panel
-OFILES=xena-panel.$O
-
-</sys/src/cmd/mkone
-
-$O.out:	/$objtype/lib/libdraw.a /$objtype/lib/libthread.a /$objtype/lib/libc.a

@@ -1,7 +1,0 @@
-[package]
-name = "home"
-version = "0.5.11"
-edition = "2021"
-description = "Plan 9 shim: home_dir from $home (Plan 9) / $HOME"
-
-[workspace]

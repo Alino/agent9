@@ -1,9 +1,0 @@
-#!/bin/rc
-# install.rc — bootstrap pac9 onto this 9front box.
-# Run from the pac9/ directory (where `pac9` and `registry` live):
-#     rc install.rc
-cp pac9 /rc/bin/pac9
-chmod +x /rc/bin/pac9
-mkdir -p /sys/lib/pac9
-cp registry /sys/lib/pac9/registry
-echo 'pac9 installed.  try:  pac9 install netsurf'

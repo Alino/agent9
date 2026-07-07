@@ -1,7 +1,0 @@
-# Vendored Zig (source + host toolchain) — regenerable via fetch.sh, large.
-vendor/
-test/_out/
-
-# Python harness caches
-__pycache__/
-*.pyc
