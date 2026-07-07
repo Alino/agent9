@@ -97,6 +97,7 @@ Either way, `pac9` is now on your path.
 | `pac9 install go` | the real Go toolchain (upstream go1.26.0) — `go build` runs natively |
 | `pac9 install gl9` | OpenGL 3.3 (Mesa softpipe) — `gl9 cube` / `gl9 egl` (pulls in gl9win) |
 | `pac9 install alacritty9` | real Alacritty 0.17.0, the GPU terminal, in a rio window — run `alacritty9` |
+| `pac9 install neovim9` | real Neovim 0.12.4 — run `nvim` inside alacritty9 (treesitter, jobs, `:terminal`, LSP) |
 | `pac9 install netsurf` | the NetSurf web browser |
 | `pac9 install mxio` | the window manager |
 | `pac9 install vts vtwin` | the terminal server and its window |
@@ -148,6 +149,7 @@ Mac/Linux box to build plan9 binaries; the compiler doesn't run on 9front). See
 | **gl9** | OpenGL 3.3 on 9front via Mesa's softpipe (software rasteriser), cross-compiled with cc9. Presents to a libdraw window through **gl9win**; `gl9 cube` draws a spinning lit 3D cube, `gl9 egl` a triangle through the EGL API. | C / Mesa |
 | **go** | The real Go toolchain, upstream go1.26.0 — plan9/amd64 is a supported upstream port, so this is packaging, not a port: built once with Go's own `bootstrap.bash`, installed to `/sys/lib/go`. `go build` compiles and runs natively on the box (goroutines, channels, the lot). No cgo, as upstream. | Go |
 | **alacritty9** | Real upstream Alacritty 0.17.0 — the GPU-accelerated terminal — running in a rio window on stock 9front. Built on rust9 + gl9: a new winit Plan 9 backend, an EGL-over-OSMesa context, pure-Rust font rasterization (Go Mono), rc on pipes with a 9term-style line discipline, `/dev/snarf` clipboard, and damage/scroll-blit presentation that gets keystrokes to ~25ms on a fanless box. Full-screen TUIs work — pi9 runs inside it. | Rust / C |
+| **neovim9** | Real upstream Neovim 0.12.4 with treesitter highlighting, jobs, an interactive `:terminal`, and LSP over stdio — the full TUI inside alacritty9 on bare metal. The port forced cc9 to grow `poll(2)`, real `fork`/`execve`, and child reaping; LuaJIT runs in interpreter mode (stock 9front is W^X), treesitter parsers are linked in statically. Keystroke→pixels ~22ms; a 300-file directory relists in 60ms. | C / Lua |
 | **NetSurf** | A web browser, from [netsurf-plan9](https://github.com/netsurf-plan9). | C |
 
 Each component has its own README with the real detail — the parity contracts,
