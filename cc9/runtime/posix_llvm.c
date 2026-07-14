@@ -65,6 +65,11 @@ void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
 	return p;
 }
 int munmap(void *p, n9size_t len) { (void)len; if (is_exec_map(p)) return 0; free(p); return 0; }
+/* POSIX shm — 9front has no shm_open; the JIT's in-process mapper never calls
+ * these (only the cross-process SharedMemoryMapper does). Fail cleanly. */
+int shm_open(const char *n, int f, unsigned m) { (void)n; (void)f; (void)m; return -1; }
+int shm_unlink(const char *n) { (void)n; return -1; }
+unsigned long getauxval(unsigned long t) { (void)t; return 0; }
 int mprotect(void *p, n9size_t len, int prot) { (void)p; (void)len; (void)prot; return 0; }
 int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; return 0; }
 int msync(void *p, n9size_t len, int fl) { (void)p; (void)len; (void)fl; return 0; }

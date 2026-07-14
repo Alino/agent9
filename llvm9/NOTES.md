@@ -26,6 +26,28 @@ Smallest decisive experiment before committing to the full multi-session build.
 Prereq restored on the way: `/tmp/libcxx-thr` (freestanding libc++ headers) is
 ephemeral and was gone — `cc9/host/regen-libcxx.sh` rebuilds it.
 
+## Phase 1 — full JIT lib set through cc9 — **DONE (2026-07-15)**
+
+`host/build-llvm9.py`: compiles all configured /lib TUs from build9's
+compile_commands with cc9 (best-effort, -j8, incremental), archives successes
+into `_out/libllvm9.a`, reports failures grouped by signature. Strategy: compile
+all, let the hello-JIT link's undefined symbols drive which failures matter (the
+archive pulls on demand — extra objects are harmless).
+
+**Result: 1931/1938 TUs (99.6%) → libllvm9.a = 157 MB.** The 7 skips are all
+irrelevant to an in-process ELF JIT: COFF_x86_64 / COFFDirectiveParser /
+COFFLinkGraphBuilder (Windows object format), llvm-dlltool + llvm-lib (tool
+drivers), Program.cpp + Signals.cpp (subprocess spawn + crash handlers). No
+codegen/JIT wall.
+
+Headers generated first (no full native compile needed): docker `ninja
+intrinsics_gen X86CommonTableGen analysis_gen vt_gen target_parser_gen omp_gen
+acc_gen` builds llvm-tblgen + emits the .inc/.h. cc9 shim gaps filled on contact
+(all trivial): created build9's `VCSRevision.h` (empty; AsmPrinter/IRSymtab),
+and cc9/runtime/include `malloc.h`, `spawn.h`, `execinfo.h`, `sys/auxv.h` +
+shm_open/shm_unlink decls in `sys/mman.h`; posix_llvm.c gained shm_open/
+shm_unlink/getauxval stubs (fail-clean; the in-process JIT never calls them).
+
 ## Next (the grind, not a wall)
 
 1. Widen the cc9 build to the full JIT lib set: Core, CodeGen, X86 target

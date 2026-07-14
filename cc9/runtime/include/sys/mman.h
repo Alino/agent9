@@ -29,6 +29,11 @@ extern "C" {
 void *mmap(void *, size_t, int, int, int, off_t);
 int   munmap(void *, size_t);
 int   mprotect(void *, size_t, int);
+/* POSIX shared memory: declared so LLVM's Orc MemoryMapper.cpp compiles. Only
+ * its cross-process SharedMemoryMapper calls these; the in-process mapper (what
+ * an on-box JIT uses) never does. Stubbed to failure in posix_llvm.c. */
+int   shm_open(const char *, int, mode_t);
+int   shm_unlink(const char *);
 int   madvise(void *, size_t, int);
 int   msync(void *, size_t, int);
 #ifdef __cplusplus
