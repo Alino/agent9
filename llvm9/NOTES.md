@@ -48,6 +48,27 @@ and cc9/runtime/include `malloc.h`, `spawn.h`, `execinfo.h`, `sys/auxv.h` +
 shm_open/shm_unlink decls in `sys/mman.h`; posix_llvm.c gained shm_open/
 shm_unlink/getauxval stubs (fail-clean; the in-process JIT never calls them).
 
+## Phase 2 — hello-JIT — **DONE (2026-07-15): `f() = 42` on 9front** 🎉
+
+`test/hellojit.cpp`: MCJIT builds IR for `i32 @f(){ret 42}`, JIT-compiles it with
+the X86 backend, calls it. Links libllvm9.a + cc9 runtime → 39 MB a.out → runs on
+the wxallow dev VM → prints `LLVM JIT on 9front: f() = 42`. LLVM's codegen+JIT
+RUN on 9front. The link-undefined chase (20 → 0) that got us here, all small:
+- **RWX memory manager** (the one real runtime piece): a custom RTDyldMemoryManager
+  whose allocateCode/DataSection mmap PROT_READ|WRITE|EXEC up front (cc9 routes to
+  segattach SG_EXEC) and finalizeMemory is a no-op — sidesteps the mmap(RW)+
+  mprotect(RX) that 9front can't do.
+- **C files**: LLVM Support has 9 .c TUs (regex, BLAKE3) — driver now compiles .c
+  as C (clang, gnu11). BLAKE3 needs `-DBLAKE3_NO_{AVX512,AVX2,SSE41,SSE2}` (portable
+  only; the x86 SIMD is hand-written .S we don't build).
+- **cc9 shim fills** (Process/Signals/Program needed at link): sys/auxv.h AT_PAGESZ +
+  getauxval(AT_PAGESZ)=4096; signal.h stack_t/MINSIGSTKSZ/sigaltstack; malloc.h
+  mallinfo/mallinfo2 structs; arc4random (stdlib.h); posix_spawn*/backtrace/
+  __register_frame/__deregister_frame stubs (posix_llvm.c) — none called on the JIT
+  path. **dlopen(NULL) must return a non-null sentinel** (main-program handle) — MCJIT
+  opens it at startup for symbol search and treats null as a hard failure (was the
+  final `EE create failed: cc9: no dynamic loading`).
+
 ## Next (the grind, not a wall)
 
 1. Widen the cc9 build to the full JIT lib set: Core, CodeGen, X86 target

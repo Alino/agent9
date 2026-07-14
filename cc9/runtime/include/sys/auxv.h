@@ -1,5 +1,6 @@
 #ifndef _SYS_AUXV_H
 #define _SYS_AUXV_H
+#define AT_PAGESZ 6
 #ifdef __cplusplus
 extern "C" {
 #endif

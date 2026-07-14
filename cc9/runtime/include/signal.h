@@ -64,9 +64,19 @@ struct sigaction {
   void (*sa_restorer)(void);
 };
 
+/* alternate signal stack — LLVM's Signals.inc references stack_t/sigaltstack to
+ * catch stack-overflow crashes. cc9 delivers no signals, so sigaltstack is a
+ * no-op stub; these exist so Signals.cpp compiles+links. */
+typedef struct { void *ss_sp; int ss_flags; size_t ss_size; } stack_t;
+#define SS_ONSTACK 1
+#define SS_DISABLE 2
+#define MINSIGSTKSZ 2048
+#define SIGSTKSZ    8192
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+int sigaltstack(const stack_t *, stack_t *);
 __sighandler_t signal(int, __sighandler_t);
 int raise(int);
 int kill(int, int);

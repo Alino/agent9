@@ -16,8 +16,10 @@ REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 LLVMSRC = os.environ.get("CC9_LLVMSRC", f"{HOME}/Projects/llvm-project")
 BUILD = f"{LLVMSRC}/build9"
 CC = f"{BUILD}/compile_commands.json"
-CLANGXX = os.environ.get("CC9_LLVM", "/opt/homebrew/opt/llvm/bin") + "/clang++"
-AR = os.environ.get("CC9_LLVM", "/opt/homebrew/opt/llvm/bin") + "/llvm-ar"
+BIN = os.environ.get("CC9_LLVM", "/opt/homebrew/opt/llvm/bin")
+CLANGXX = BIN + "/clang++"
+CLANG = BIN + "/clang"
+AR = BIN + "/llvm-ar"
 LIBCXX = os.environ.get("CC9_LIBCXX", "/tmp/libcxx-thr/include/c++/v1")
 INC = f"{REPO}/cc9/runtime/include"
 CONTAINER = "/work/llvm-project"
@@ -25,12 +27,16 @@ OUT = f"{REPO}/llvm9/_out"
 OBJ = f"{OUT}/obj"
 ARCHIVE = f"{OUT}/libllvm9.a"
 
-DROP_D = {"_GNU_SOURCE", "_GLIBCXX_USE_CXX11_ABI", "_FORTIFY_SOURCE"}
-CC9_FLAGS = ["--target=x86_64-unknown-none", "-nostdlib", "-DNDEBUG",
-             "-D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE", "-D_LIBCPP_HAS_CLOCK_GETTIME",
-             "-femulated-tls", "-funwind-tables", "-fno-pic",
+DROP_D = {"_GNU_SOURCE", "_GLIBCXX_USE_CXX11_ABI", "_FORTIFY_SOURCE",
+          "HAVE_MALLINFO2", "HAVE_MALLINFO", "HAVE_MALLCTL"}
+# shared target flags; the C++ ones (libc++, rtti/exceptions) are added only for C++ TUs
+BASE_FLAGS = ["--target=x86_64-unknown-none", "-nostdlib", "-DNDEBUG",
+              "-femulated-tls", "-funwind-tables", "-fno-pic", "-isystem", INC,
+              # BLAKE3 dispatch: no hand-written x86 SIMD .S in our build -> portable only
+              "-DBLAKE3_NO_AVX512", "-DBLAKE3_NO_AVX2", "-DBLAKE3_NO_SSE41", "-DBLAKE3_NO_SSE2"]
+CXX_FLAGS = ["-D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE", "-D_LIBCPP_HAS_CLOCK_GETTIME",
              "-fno-exceptions", "-fno-rtti", "-fvisibility-inlines-hidden",
-             "-nostdinc++", "-isystem", LIBCXX, "-isystem", INC]
+             "-nostdinc++", "-isystem", LIBCXX]
 
 def remap(p): return p.replace(CONTAINER, LLVMSRC)
 
@@ -39,7 +45,9 @@ def objname(src):
 
 def cc9_cmd(entry, obj):
     toks = shlex.split(entry.get("command") or " ".join(entry["arguments"]))[1:]
-    keep, std = [], "-std=c++17"
+    src = remap(entry["file"])
+    is_c = src.endswith(".c")
+    keep, std = [], ("-std=gnu11" if is_c else "-std=c++17")
     i = 0
     while i < len(toks):
         t = toks[i]
@@ -49,11 +57,12 @@ def cc9_cmd(entry, obj):
             if t[2:].split("=",1)[0] not in DROP_D: keep.append(t)
         elif t.startswith("-std="): std = t
         i += 1
-    src = remap(entry["file"])
-    return [CLANGXX, *CC9_FLAGS, std, *keep, "-O1", "-c", src, "-o", obj], src
+    cc = CLANG if is_c else CLANGXX
+    flags = BASE_FLAGS if is_c else BASE_FLAGS + CXX_FLAGS
+    return [cc, *flags, std, *keep, "-O1", "-c", src, "-o", obj], src
 
 def load(filt=None):
-    e = [x for x in json.load(open(CC)) if x["file"].endswith((".cpp", ".cc"))]
+    e = [x for x in json.load(open(CC)) if x["file"].endswith((".cpp", ".cc", ".c"))]
     # exclude tool/unittest TUs that slip in; keep lib/*
     e = [x for x in e if "/lib/" in x["file"]]
     if filt: e = [x for x in e if filt in x["file"]]

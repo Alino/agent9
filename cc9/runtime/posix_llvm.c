@@ -7,6 +7,7 @@
  *           record locks, signals, rlimits, sockets, mmap-of-files, passwd db.
  * None of the STUBs are reached when clang merely parses + emits an object. */
 #include <stdint.h>
+#include <malloc.h>
 
 typedef unsigned long n9size_t;
 extern void *malloc(n9size_t);
@@ -69,7 +70,27 @@ int munmap(void *p, n9size_t len) { (void)len; if (is_exec_map(p)) return 0; fre
  * these (only the cross-process SharedMemoryMapper does). Fail cleanly. */
 int shm_open(const char *n, int f, unsigned m) { (void)n; (void)f; (void)m; return -1; }
 int shm_unlink(const char *n) { (void)n; return -1; }
-unsigned long getauxval(unsigned long t) { (void)t; return 0; }
+int sigaltstack(const void *a, void *b) { (void)a; (void)b; return 0; }
+struct mallinfo  mallinfo(void)  { struct mallinfo  m; memset(&m, 0, sizeof m); return m; }
+struct mallinfo2 mallinfo2(void) { struct mallinfo2 m; memset(&m, 0, sizeof m); return m; }
+extern int rand(void);
+unsigned arc4random(void) { return ((unsigned)rand() << 16) ^ (unsigned)rand(); }
+unsigned arc4random_uniform(unsigned u) { return u ? arc4random() % u : 0; }
+void arc4random_buf(void *b, unsigned long n) { unsigned char *p = b; for (unsigned long i = 0; i < n; i++) p[i] = (unsigned char)rand(); }
+/* JIT unwind-frame registration: RuntimeDyld calls these to tell the unwinder
+ * about JIT'd code's .eh_frame. Our JIT'd code never throws -> no-op is safe. */
+void __register_frame(const void *fde) { (void)fde; }
+void __deregister_frame(const void *fde) { (void)fde; }
+int backtrace(void **b, int n) { (void)b; (void)n; return 0; }
+char **backtrace_symbols(void *const *b, int n) { (void)b; (void)n; return 0; }
+void backtrace_symbols_fd(void *const *b, int n, int fd) { (void)b; (void)n; (void)fd; }
+int posix_spawn(int *pid, const char *p, const void *fa, const void *at, char *const av[], char *const ev[]) { (void)pid;(void)p;(void)fa;(void)at;(void)av;(void)ev; return -1; }
+int posix_spawnp(int *pid, const char *p, const void *fa, const void *at, char *const av[], char *const ev[]) { (void)pid;(void)p;(void)fa;(void)at;(void)av;(void)ev; return -1; }
+int posix_spawn_file_actions_init(void *a) { (void)a; return 0; }
+int posix_spawn_file_actions_destroy(void *a) { (void)a; return 0; }
+int posix_spawn_file_actions_adddup2(void *a, int x, int y) { (void)a;(void)x;(void)y; return 0; }
+int posix_spawn_file_actions_addopen(void *a, int x, const char *p, int f, unsigned m) { (void)a;(void)x;(void)p;(void)f;(void)m; return 0; }
+unsigned long getauxval(unsigned long t) { return t == 6 ? 4096 : 0; } /* AT_PAGESZ */
 int mprotect(void *p, n9size_t len, int prot) { (void)p; (void)len; (void)prot; return 0; }
 int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; return 0; }
 int msync(void *p, n9size_t len, int fl) { (void)p; (void)len; (void)fl; return 0; }
@@ -594,8 +615,12 @@ int   getpwnam_r(const char *nm, void *pw, char *buf, unsigned long n, void **re
 /* sockets: REAL now — over /net in net9.c (socket/bind/listen/accept/connect/
  * send/recv/sendto/recvfrom/shutdown/get·setsockopt/getsock·peername). */
 
-/* dynamic loading: static binaries only. */
-void *dlopen(const char *p, int m) { (void)p; (void)m; return 0; }
+/* dynamic loading: static binaries only. dlopen(NULL) = a handle to the main
+ * program (standard semantics) — LLVM's MCJIT opens it at startup for symbol
+ * search and treats a null return as a hard failure. Named libraries still fail
+ * (can't load .so on 9front). dlsym always misses -> the JIT falls back to its
+ * explicitly-registered symbols (all a static-linked JIT needs). */
+void *dlopen(const char *p, int m) { (void)m; return p ? (void *)0 : (void *)0x1; }
 int   dlclose(void *h) { (void)h; return 0; }
 void *dlsym(void *h, const char *n) { (void)h; (void)n; return 0; }
 char *dlerror(void) { return (char *)"cc9: no dynamic loading"; }
