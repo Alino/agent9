@@ -104,11 +104,45 @@ Known cosmetic: gallivm passes `-avx512er`/`-avx512pf`, removed in LLVM 22 →
 "not a recognized feature (ignoring)" noise. Harmless; scrub in util_cpu_caps if
 it bothers.
 
+## Phase 4 — **MEASURED on bare metal: llvmpipe is ~15x softpipe (2026-07-15)** 📊
+
+`test/corpus/bench_cube.c` — cube_demo's per-pixel Phong at 512x512, same binary,
+driver switched by `GALLIUM_DRIVER` (so the rasterizer is the only variable).
+Run on **bare-metal cirno** (Broadwell); TCG timings would be noise since QEMU
+distorts exactly the SIMD llvmpipe wins on.
+
+| driver   | first frame (JIT) | steady    | fps       |
+|----------|-------------------|-----------|-----------|
+| softpipe | 242 ms            | 220-269 ms| 3.7 - 4.5 |
+| llvmpipe | 1059-1107 ms      | 14.7-16.5 ms | **60 - 68** |
+
+**Speedup 15.0x and 16.2x across two samples (3 and 15 frames).** Identical meanR
+in both drivers each run = same image, fair comparison. llvmpipe's first frame
+costs ~820ms MORE (the one-time shader JIT) — it breaks even after ~4 frames.
+So: unusable 4fps -> comfortably real-time 60fps+ on a Celeron-class CPU, no GPU.
+This lands mid-range of the 5-20x predicted when the llvmpipe path was chosen.
+
+**cirno now runs the wxallow kernel** (installed 2026-07-15): the patch was built
+on-box from its own sources, `9pc64.old` kept on 9fat as the console fallback,
+`wxallow=1` in plan9.ini. Rebooted in ~15s; `segattach(SG_EXEC)`+call returns 42
+on real Broadwell (the patch was previously only proven on TCG).
+
+Gotchas that cost time here:
+- **`bc` is 9front's calculator** — naming the test binary `bc` and running it
+  bare silently ran /bin/bc (reads EOF, exits 0, no output). Use an explicit path.
+- The listener's inherited namespace has a DEAD `/n/9fat` mount that can't even be
+  unmounted ("i/o on hungup channel"). Mount the 9fat partition at a FRESH path
+  (`mount -c /srv/dos /tmp/fat /dev/sdE0/9fat`) and it just works. Also `9fs 9fat`
+  won't start dossrv if a stale `/srv/dos` exists — rm it first.
+- rc parse traps that abort a whole batch with NO output: a word starting with `=`
+  (`echo ===FOO===`), and bash redirections (`2>/dev/null`; rc is `>[2]/dev/null`).
+  Plan 9 grep has no `-A/-B`. rc has no double-quote grouping — single quotes only.
+
 ## Next
 
-- **Measure the speedup** (the whole point): llvmpipe vs softpipe on a real
-  workload (cube_demo), ideally on bare-metal cirno — TCG timings are noise.
-- Wire llvmpipe into gl9's launcher/parity suite + the pac9 package.
+- Wire llvmpipe into gl9's launcher/parity suite + the pac9 package (default to
+  llvmpipe when wxallow is present, fall back to softpipe on a stock kernel).
+- Try the real workload: alacritty9 / cube_demo in a window at native res.
 
 ## Older next-steps (superseded)
 
