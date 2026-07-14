@@ -17,11 +17,34 @@ extern n9size_t strlen(const char *);
 extern long  n9_pread(int, void *, long, long long);
 extern void  n9_exits(const char *);
 
-/* ---- memory: no real mmap. Anonymous => zeroed malloc; file-backed => malloc
- * + pread (the plan's read-fallback). munmap frees; mprotect/madvise/msync are
- * no-ops. Read-only consumers (the compiler's MemoryBuffer) are satisfied. */
+/* ---- executable memory: an anonymous PROT_EXEC request (a JIT asking for W^X
+ * memory, e.g. Mesa's rtasm vertex-fetch codegen) can't come from malloc — the
+ * kernel NX-enforces the heap. Route it to segattach(SG_EXEC), which the wxallow
+ * kernel patch makes writable+executable. These blocks must NOT be free()d in
+ * munmap (they aren't heap), so record them in a tiny table.
+ * ponytail: fixed 64-slot table + global (Mesa allocs ONE 10MB exec heap, never
+ * frees it); grow to a real allocator / add segdetach if a JIT churns exec maps. */
+extern void *n9_segattach(unsigned long attr, const char *cls, void *va, unsigned long len);
+enum { SG_EXEC = 04000 };
+#define EXEC_PGSZ 0x1000ul
+static void *exec_tab[64];
+static int   exec_n;
+static int is_exec_map(void *p) {
+	for (int i = 0; i < exec_n; i++) if (exec_tab[i] == p) return 1;
+	return 0;
+}
+
 void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
-	(void)addr; (void)prot;
+	(void)addr;
+	if ((prot & 4) && (flags & 0x20)) {   /* PROT_EXEC + MAP_ANON: JIT memory */
+		n9size_t sz = (len + EXEC_PGSZ - 1) & ~(EXEC_PGSZ - 1);
+		void *p = n9_segattach(SG_EXEC, "memory", 0, sz ? sz : EXEC_PGSZ);
+		if (p == (void *)-1) return (void *)-1;
+		if (exec_n < (int)(sizeof exec_tab / sizeof exec_tab[0]))
+			exec_tab[exec_n++] = p;
+		return p;
+	}
+	(void)prot;
 	/* Allocate len+1 and zero the trailing byte. Real mmap zero-pads the file's
 	 * last page past EOF; clang's MemoryBuffer maps exactly FileSize bytes and then
 	 * asserts the byte AT [FileSize] is 0 (its null terminator). A bare malloc(len)
@@ -41,7 +64,7 @@ void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
 	}
 	return p;
 }
-int munmap(void *p, n9size_t len) { (void)len; free(p); return 0; }
+int munmap(void *p, n9size_t len) { (void)len; if (is_exec_map(p)) return 0; free(p); return 0; }
 int mprotect(void *p, n9size_t len, int prot) { (void)p; (void)len; (void)prot; return 0; }
 int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; return 0; }
 int msync(void *p, n9size_t len, int fl) { (void)p; (void)len; (void)fl; return 0; }
@@ -453,6 +476,8 @@ int setitimer(int which, const struct itimerval *nv, struct itimerval *ov) {
 	return 0;
 }
 int    usleep(unsigned int us) { (void)us; return 0; }
+extern long n9_sleep(long);
+unsigned int sleep(unsigned int sec) { n9_sleep((long)sec * 1000); return 0; }
 /* ioctl moved to fs.c (real TIOCGWINSZ over /env/LINES + /env/COLS) */
 /* fcntl moved to poll.c (real O_NONBLOCK/FD_CLOEXEC; locks still "succeed") */
 int    chown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
@@ -561,16 +586,8 @@ int   getpwuid_r(unsigned uid, void *pw, char *buf, unsigned long n, void **res)
 void *getpwnam(const char *nm) { (void)nm; return 0; }
 int   getpwnam_r(const char *nm, void *pw, char *buf, unsigned long n, void **res) { (void)nm; (void)pw; (void)buf; (void)n; if (res) *res = 0; return 0; }
 
-/* sockets: no BSD layer (Plan 9 networking is /net). All fail. */
-int  socket(int a, int b, int c) { (void)a; (void)b; (void)c; return -1; }
-int  bind(int a, const void *b, unsigned c) { (void)a; (void)b; (void)c; return -1; }
-int  listen(int a, int b) { (void)a; (void)b; return -1; }
-int  accept(int a, void *b, unsigned *c) { (void)a; (void)b; (void)c; return -1; }
-int  connect(int a, const void *b, unsigned c) { (void)a; (void)b; (void)c; return -1; }
-long send(int a, const void *b, unsigned long c, int d) { (void)a; (void)b; (void)c; (void)d; return -1; }
-long recv(int a, void *b, unsigned long c, int d) { (void)a; (void)b; (void)c; (void)d; return -1; }
-int  setsockopt(int a, int b, int c, const void *d, unsigned e) { (void)a; (void)b; (void)c; (void)d; (void)e; return -1; }
-int  shutdown(int a, int b) { (void)a; (void)b; return -1; }
+/* sockets: REAL now — over /net in net9.c (socket/bind/listen/accept/connect/
+ * send/recv/sendto/recvfrom/shutdown/get·setsockopt/getsock·peername). */
 
 /* dynamic loading: static binaries only. */
 void *dlopen(const char *p, int m) { (void)p; (void)m; return 0; }
@@ -587,9 +604,6 @@ int socketpair(int af, int type, int proto, int sv[2]) {
 	extern int pipe2(int[2], int);
 	return pipe2(sv, type & (0x1000|0x2000) /*SOCK_NONBLOCK|SOCK_CLOEXEC*/);
 }
-int getsockopt(int a, int b, int c, void *d, unsigned int *e) { (void)a;(void)b;(void)c;(void)d;(void)e; errno = 88 /*ENOTSOCK*/; return -1; }
-int getsockname(int a, void *b, unsigned int *c) { (void)a;(void)b;(void)c; errno = 88; return -1; }
-int getpeername(int a, void *b, unsigned int *c) { (void)a;(void)b;(void)c; errno = 88; return -1; }
 long sendmsg(int a, const void *m, int f) { (void)a;(void)m;(void)f; errno = 88; return -1; }
 long recvmsg(int a, void *m, int f) { (void)a;(void)m;(void)f; errno = 88; return -1; }
 
@@ -607,17 +621,7 @@ void cfmakeraw(struct cc9_termios *t) { t->i = 0; t->o = 0; t->l = 0; }
 int tcflush(int fd, int q) { (void)fd; (void)q; return 0; }
 int tcdrain(int fd) { (void)fd; return 0; }
 
-/* ---- resolver stubs (no /net/cs bridge yet) ---- */
-int getaddrinfo(const char *n, const char *s, const void *h, void **res) {
-	(void)n; (void)s; (void)h; if (res) *res = 0; return -4 /*EAI_FAIL*/;
-}
-void freeaddrinfo(void *ai) { (void)ai; }
-int getnameinfo(const void *sa, unsigned int salen, char *host, unsigned int hl,
-                char *serv, unsigned int sl, int fl) {
-	(void)sa; (void)salen; (void)host; (void)hl; (void)serv; (void)sl; (void)fl;
-	return -4 /*EAI_FAIL*/;
-}
-const char *gai_strerror(int e) { (void)e; return "name resolution unavailable (no /net/cs bridge)"; }
+/* resolver: REAL now — /net/cs in net9.c */
 unsigned int if_nametoindex(const char *n) { (void)n; return 0; }
 char *if_indextoname(unsigned int i, char *buf) { (void)i; (void)buf; return 0; }
 void *getgrnam(const char *n) { (void)n; return 0; }

@@ -1,0 +1,19 @@
+--- a/src/gallium/auxiliary/rtasm/rtasm_execmem.c
++++ b/src/gallium/auxiliary/rtasm/rtasm_execmem.c
+@@ -47,6 +47,16 @@
+ #include <windows.h>
+ #endif
+ 
++/* gl9: plan9 sets neither DETECT_OS_UNIX nor _WINDOWS, so the stock fallback
++ * below returns plain MALLOC memory — non-executable on 9front, so the x86 JIT
++ * faults (NX) when called. Use the pooled-mmap UNIX path instead: cc9's
++ * mmap(PROT_EXEC) routes to segattach(SG_EXEC), which the wxallow kernel makes
++ * writable+executable. One 10MB exec heap, not a segment per draw. */
++#if !DETECT_OS_UNIX && !DETECT_OS_WINDOWS
++#undef DETECT_OS_UNIX
++#define DETECT_OS_UNIX 1
++#endif
++
+ #if DETECT_OS_UNIX
+ 
+ 
