@@ -69,7 +69,48 @@ RUN on 9front. The link-undefined chase (20 → 0) that got us here, all small:
   opens it at startup for symbol search and treats null as a hard failure (was the
   final `EE create failed: cc9: no dynamic loading`).
 
-## Next (the grind, not a wall)
+## Phase 3 — **llvmpipe RENDERS ON 9FRONT, pixel-exact (2026-07-15)** 🎉
+
+`02_triangle` under `GALLIUM_DRIVER=llvmpipe` on the wxallow VM: `SIG mean=84,67,8
+px=64x64` — and its PPM is **byte-identical (31413 B) to the softpipe run**. LLVM
+JIT-compiled shaders produce pixel-exact output vs the reference rasterizer.
+
+Build: `host/mesa-llvmpipe-configure.sh` (meson, llvm=enabled, separate
+`gl9/build-gen-llvm`) → `host/build-llvmpipe.py` (917/917 TUs → 31 MB
+`gl9/_out/libgl9mesa-llvm.a`) → link with `libllvm9.a` + cc9 runtime → 73 MB a.out.
+
+The four real bugs found (each a durable lesson):
+1. **cc9's atexit had a fixed 256 cap and returned -1 when full.** LLVM's
+   ManagedStatic/cl::opt register hundreds, so Mesa's
+   `if (atexit(destroy_st_manager) != 0) return;` bailed -> `global_fscreen` NULL
+   -> fault at `st_api_create_context+0x27` reading `0x28(NULL)`. crt0's table now
+   GROWS (realloc). A silent cap is a trap for any LLVM-scale C++ program.
+2. **9front can't mprotect-upgrade to exec**, but LLVM's SectionMemoryManager does
+   mmap(RW)+mprotect(RX) -> NX fault (`pc==addr`) on the first JIT'd shader call.
+   Fixed IN LLVM (`patches/01-memory-rwx-plan9.patch`, guarded by `-DCC9_JIT_RWX`):
+   `allocateMappedMemory` ORs in PROT_EXEC up front — one place, every JIT client.
+3. **One segattach per exec allocation exhausts Plan 9's small per-proc segment
+   table (NSEG)** -> `LLVM ERROR: Unable to allocate section memory!`. cc9's
+   posix_llvm.c now segattaches ONE 64MB exec pool and bump-sub-allocates; the
+   range check also tells munmap to keep out. (Mesa's rtasm_execmem does the same.)
+4. Meson/harvest traps: fake `llvm-config` + `-Dcpp_rtti=false` (our LLVM has no
+   RTTI); key objects on meson's **output** path not the source (mapi's entry.c is
+   compiled 3x with different -D — keying on source collides them and loses the
+   gl* entrypoints); exclude `dummy_errors.c` + glsl `standalone` scaffolding (dup
+   `_mesa_*`); remap container paths **inside -D values** (MAPI_ABI_HEADER);
+   `-flifetime-dse` is GCC-only; libc++ `-isystem` must precede cc9's C headers.
+
+Known cosmetic: gallivm passes `-avx512er`/`-avx512pf`, removed in LLVM 22 →
+"not a recognized feature (ignoring)" noise. Harmless; scrub in util_cpu_caps if
+it bothers.
+
+## Next
+
+- **Measure the speedup** (the whole point): llvmpipe vs softpipe on a real
+  workload (cube_demo), ideally on bare-metal cirno — TCG timings are noise.
+- Wire llvmpipe into gl9's launcher/parity suite + the pac9 package.
+
+## Older next-steps (superseded)
 
 1. Widen the cc9 build to the full JIT lib set: Core, CodeGen, X86 target
    (X86CodeGen/AsmPrinter/Desc/Info), ExecutionEngine, ORC + JITLink (or RuntimeDyld),

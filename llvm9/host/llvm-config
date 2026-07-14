@@ -1,0 +1,46 @@
+#!/bin/sh
+# Fake llvm-config for Mesa's meson: reports our cross-built LLVM 22 tree so
+# meson configures llvmpipe/gallivm against the SAME headers as libllvm9.a. We
+# never native-link llvmpipe (cc9 does the target build from harvested compile
+# commands), so the --libs/--ldflags answers are minimal — only --version,
+# --components, --targets-built, and the include flags need to be real.
+#
+# In-container paths: repo at /work, llvm-project at /work-llvm (see the
+# reconfigure script's -v mounts).
+LLVM=/work-llvm/llvm
+BUILD=/work-llvm/build9
+INCS="-I$BUILD/include -I$LLVM/include"
+
+out=""
+for a in "$@"; do
+  case "$a" in
+    --version)        out="$out 22.1.8" ;;
+    --prefix)         out="$out $BUILD" ;;
+    --bindir)         out="$out $BUILD/bin" ;;
+    --libdir)         out="$out $BUILD/lib" ;;
+    --includedir)     out="$out $LLVM/include" ;;
+    --cmakedir)       out="$out $BUILD/lib/cmake/llvm" ;;
+    --cppflags|--cflags|--cxxflags)
+                      out="$out $INCS -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS" ;;
+    --ldflags)        out="$out -L$BUILD/lib" ;;
+    --libs|--libnames|--libfiles)
+                      out="$out" ;;                 # no native link
+    --system-libs)    out="$out" ;;
+    --targets-built)  out="$out X86" ;;
+    --host-target)    out="$out x86_64-unknown-linux-gnu" ;;
+    --build-mode)     out="$out static" ;;
+    --shared-mode)    out="$out static" ;;
+    --has-rtti)       out="$out NO" ;;
+    --assertion-mode) out="$out OFF" ;;
+    --components)
+      out="$out core support mc mcparser mcdisassembler bitreader bitwriter \
+        analysis target transformutils scalaropts instcombine ipo vectorize \
+        codegen selectiondag asmprinter executionengine engine mcjit runtimedyld \
+        orcjit jitlink object binaryformat targetparser demangle irreader \
+        x86 x86codegen x86asmparser x86desc x86info x86disassembler \
+        native nativecodegen coroutines profiledata remarks bitstreamreader \
+        aggressiveinstcombine frontendoffloading" ;;
+    *) : ;;                                          # ignore unknown flags
+  esac
+done
+echo $out

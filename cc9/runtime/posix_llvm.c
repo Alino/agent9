@@ -19,32 +19,45 @@ extern long  n9_pread(int, void *, long, long long);
 extern void  n9_exits(const char *);
 
 /* ---- executable memory: an anonymous PROT_EXEC request (a JIT asking for W^X
- * memory, e.g. Mesa's rtasm vertex-fetch codegen) can't come from malloc — the
- * kernel NX-enforces the heap. Route it to segattach(SG_EXEC), which the wxallow
- * kernel patch makes writable+executable. These blocks must NOT be free()d in
- * munmap (they aren't heap), so record them in a tiny table.
- * ponytail: fixed 64-slot table + global (Mesa allocs ONE 10MB exec heap, never
- * frees it); grow to a real allocator / add segdetach if a JIT churns exec maps. */
+ * memory: Mesa's rtasm vertex-fetch codegen, llvmpipe's shader JIT, ORC/MCJIT)
+ * can't come from malloc — the kernel NX-enforces the heap. It must come from
+ * segattach(SG_EXEC), which the wxallow kernel patch makes writable+executable.
+ *
+ * ONE pool, sub-allocated — NOT a segattach per call. Plan 9 gives a process a
+ * small fixed segment table (NSEG), and text/data/bss/stack already use several;
+ * a segment per JIT allocation exhausts it within a few shaders and segattach
+ * starts failing ("LLVM ERROR: Unable to allocate section memory!"). Mesa's own
+ * rtasm_execmem takes exactly this approach (one 10MB exec heap + a sub-allocator).
+ * A range check against the pool also tells munmap to keep its hands off (this
+ * memory is not heap and must never reach free()).
+ * ponytail: bump allocator, no reuse — a long-running JIT that churns shaders can
+ * exhaust the pool; add a free list (or segdetach the pool) if that shows up. */
 extern void *n9_segattach(unsigned long attr, const char *cls, void *va, unsigned long len);
 enum { SG_EXEC = 04000 };
-#define EXEC_PGSZ 0x1000ul
-static void *exec_tab[64];
-static int   exec_n;
+#define EXEC_PGSZ  0x1000ul
+#define EXEC_POOL_BYTES (64ul * 1024 * 1024)
+static char *exec_pool, *exec_brk, *exec_end;
 static int is_exec_map(void *p) {
-	for (int i = 0; i < exec_n; i++) if (exec_tab[i] == p) return 1;
-	return 0;
+	return exec_pool && (char *)p >= exec_pool && (char *)p < exec_end;
+}
+static void *exec_alloc(n9size_t len) {
+	if (!exec_pool) {
+		void *p = n9_segattach(SG_EXEC, "memory", 0, EXEC_POOL_BYTES);
+		if (p == (void *)-1) return (void *)-1;
+		exec_pool = exec_brk = (char *)p;
+		exec_end = exec_pool + EXEC_POOL_BYTES;
+	}
+	n9size_t sz = (len + EXEC_PGSZ - 1) & ~(EXEC_PGSZ - 1);
+	if (!sz) sz = EXEC_PGSZ;
+	if (exec_brk + sz > exec_end) return (void *)-1;   /* pool exhausted */
+	char *r = exec_brk; exec_brk += sz;
+	return r;
 }
 
 void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
 	(void)addr;
-	if ((prot & 4) && (flags & 0x20)) {   /* PROT_EXEC + MAP_ANON: JIT memory */
-		n9size_t sz = (len + EXEC_PGSZ - 1) & ~(EXEC_PGSZ - 1);
-		void *p = n9_segattach(SG_EXEC, "memory", 0, sz ? sz : EXEC_PGSZ);
-		if (p == (void *)-1) return (void *)-1;
-		if (exec_n < (int)(sizeof exec_tab / sizeof exec_tab[0]))
-			exec_tab[exec_n++] = p;
-		return p;
-	}
+	if ((prot & 4) && (flags & 0x20))     /* PROT_EXEC + MAP_ANON: JIT memory */
+		return exec_alloc(len);
 	(void)prot;
 	/* Allocate len+1 and zero the trailing byte. Real mmap zero-pads the file's
 	 * last page past EOF; clang's MemoryBuffer maps exactly FileSize bytes and then

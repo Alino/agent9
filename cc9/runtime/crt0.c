@@ -18,12 +18,29 @@ void cc9_exit_common(const char *status);
  * is a (fn, arg) pair: __cxa_atexit MUST pass the object pointer back as arg, or
  * a global/static object's destructor runs with a garbage `this` and faults. A
  * plain atexit fn takes no arg, so we store arg=0 and the extra (ignored) SysV
- * register is harmless. */
-#define CC9_ATEXIT_MAX 256
-static struct { void (*fn)(void *); void *arg; } atexit_tab[CC9_ATEXIT_MAX];
-static int atexit_n = 0;
-int atexit(cc9_fn f) { if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = (void (*)(void *))f; atexit_tab[atexit_n].arg = 0; atexit_n++; return 0; } return -1; }
-int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { (void)dso; if (atexit_n < CC9_ATEXIT_MAX) { atexit_tab[atexit_n].fn = f; atexit_tab[atexit_n].arg = arg; atexit_n++; return 0; } return -1; }
+ * register is harmless.
+ *
+ * The table GROWS — it must not have a fixed cap. A cap silently turns atexit
+ * into a failure for every later caller, and callers legitimately treat that as
+ * fatal: Mesa's OSMesa does `if (atexit(destroy_st_manager) != 0) return;` and
+ * then never allocates its screen -> NULL deref. Linking LLVM (ManagedStatic +
+ * cl::opt register hundreds of handlers) blew past the old 256 cap and broke
+ * exactly that way. Any LLVM-scale C++ program would hit it again. */
+static struct atexit_ent { void (*fn)(void *); void *arg; } *atexit_tab;
+static int atexit_n = 0, atexit_cap = 0;
+extern void *realloc(void *, unsigned long);
+static int atexit_push(void (*f)(void *), void *arg) {
+	if (atexit_n == atexit_cap) {
+		int ncap = atexit_cap ? atexit_cap * 2 : 64;
+		void *p = realloc(atexit_tab, (unsigned long)ncap * sizeof *atexit_tab);
+		if (!p) return -1;                  /* genuine OOM: report it honestly */
+		atexit_tab = p; atexit_cap = ncap;
+	}
+	atexit_tab[atexit_n].fn = f; atexit_tab[atexit_n].arg = arg; atexit_n++;
+	return 0;
+}
+int atexit(cc9_fn f) { return atexit_push((void (*)(void *))f, 0); }
+int __cxa_atexit(void (*f)(void *), void *arg, void *dso) { (void)dso; return atexit_push(f, arg); }
 /* __cxa_thread_atexit / _impl now live in pthread.c: they run per-thread on
  * THREAD exit (not process exit), so thread_local dtors and
  * promise::set_value_at_thread_exit fire correctly. */

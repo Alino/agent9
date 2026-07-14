@@ -1,0 +1,21 @@
+diff --git a/llvm/lib/Support/Unix/Memory.inc b/llvm/lib/Support/Unix/Memory.inc
+index bac208a7d..ec25e8940 100644
+--- a/llvm/lib/Support/Unix/Memory.inc
++++ b/llvm/lib/Support/Unix/Memory.inc
+@@ -101,6 +101,16 @@ MemoryBlock Memory::allocateMappedMemory(size_t NumBytes,
+   Protect |= PROT_MPROTECT(PROT_READ | PROT_WRITE | PROT_EXEC);
+ #endif
+ 
++#if defined(CC9_JIT_RWX)
++  // Plan 9 (9front) cannot upgrade memory to executable after the fact: there is
++  // no mprotect, and executable pages must come from segattach(SG_EXEC) at
++  // allocation time (gated by the wxallow kernel patch). Ask for PROT_EXEC up
++  // front so cc9's mmap routes this to an exec segment; the later
++  // protectMappedMemory(MF_READ|MF_EXEC) is then a harmless no-op. Without this
++  // every JIT (llvmpipe's shaders, ORC/MCJIT) faults NX on its first call.
++  Protect |= PROT_EXEC;
++#endif
++
+   // Use any near hint and the page size to set a page-aligned starting address
+   uintptr_t Start = NearBlock ? reinterpret_cast<uintptr_t>(NearBlock->base()) +
+                                     NearBlock->allocatedSize()

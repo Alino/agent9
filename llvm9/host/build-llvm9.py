@@ -31,9 +31,15 @@ DROP_D = {"_GNU_SOURCE", "_GLIBCXX_USE_CXX11_ABI", "_FORTIFY_SOURCE",
           "HAVE_MALLINFO2", "HAVE_MALLINFO", "HAVE_MALLCTL"}
 # shared target flags; the C++ ones (libc++, rtti/exceptions) are added only for C++ TUs
 BASE_FLAGS = ["--target=x86_64-unknown-none", "-nostdlib", "-DNDEBUG",
-              "-femulated-tls", "-funwind-tables", "-fno-pic", "-isystem", INC,
+              "-femulated-tls", "-funwind-tables", "-fno-pic",
+              # 9front cannot mprotect-upgrade to exec: LLVM must mmap JIT memory
+              # PROT_EXEC up front (-> cc9 segattach SG_EXEC). See Memory.inc patch.
+              "-DCC9_JIT_RWX",
               # BLAKE3 dispatch: no hand-written x86 SIMD .S in our build -> portable only
               "-DBLAKE3_NO_AVX512", "-DBLAKE3_NO_AVX2", "-DBLAKE3_NO_SSE41", "-DBLAKE3_NO_SSE2"]
+# cc9's C headers, added LAST: libc++'s -isystem must precede them, or <cerrno>
+# picks up cc9's <errno.h> instead of libc++'s wrapper and hard-errors.
+C_INC = ["-isystem", INC]
 CXX_FLAGS = ["-D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE", "-D_LIBCPP_HAS_CLOCK_GETTIME",
              "-fno-exceptions", "-fno-rtti", "-fvisibility-inlines-hidden",
              "-nostdinc++", "-isystem", LIBCXX]
@@ -58,7 +64,7 @@ def cc9_cmd(entry, obj):
         elif t.startswith("-std="): std = t
         i += 1
     cc = CLANG if is_c else CLANGXX
-    flags = BASE_FLAGS if is_c else BASE_FLAGS + CXX_FLAGS
+    flags = (BASE_FLAGS + C_INC) if is_c else (BASE_FLAGS + CXX_FLAGS + C_INC)
     return [cc, *flags, std, *keep, "-O1", "-c", src, "-o", obj], src
 
 def load(filt=None):
