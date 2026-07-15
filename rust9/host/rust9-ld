@@ -52,11 +52,29 @@ done
 # so nothing else that uses rust9-ld pays for it. Anything calling egl*/gl* —
 # servo9's surfman backend, for one — needs these in the link; they are static,
 # because Plan 9 has no dynamic linker.
+#
+# Rasterizer choice, set RUST9_GL9_LLVM=1 for the JIT one:
+#  * default: libgl9mesa.a — softpipe only, the scalar reference rasterizer that
+#    runs on ANY 9front kernel.
+#  * RUST9_GL9_LLVM=1: libgl9mesa-llvm.a (softpipe AND llvmpipe) + libllvm9.a
+#    (LLVM's X86 codegen/MCJIT — what actually JITs the shaders). Much faster
+#    (SIMD, multi-core), but +~165MB of LLVM and it only runs on a wxallow=1
+#    (W^X/JIT) kernel; on a stock kernel llvmpipe faults on its first shader, so
+#    the caller must still pass GALLIUM_DRIVER=softpipe there. Pick llvmpipe at
+#    RUN time with GALLIUM_DRIVER=llvmpipe.
 GL9_OBJS=()
 if [ -n "${RUST9_GL9:-}" ]; then
-  for f in "${RUST9_GL9}/gl9egl.app.o" "${RUST9_GL9}/libgl9mesa.a"; do
+  GL9_OBJS+=("${RUST9_GL9}/gl9egl.app.o")
+  if [ -n "${RUST9_GL9_LLVM:-}" ]; then
+    GL9_OBJS+=("${RUST9_GL9}/libgl9mesa-llvm.a")
+    llvm9a="${RUST9_LLVM9:-$(cd "$(dirname "$0")/../.." && pwd)/llvm9/_out/libllvm9.a}"
+    [ -f "$llvm9a" ] || { echo "rust9-ld: RUST9_GL9_LLVM set but $llvm9a missing (build llvm9 first)" >&2; exit 2; }
+    GL9_OBJS+=("$llvm9a")
+  else
+    GL9_OBJS+=("${RUST9_GL9}/libgl9mesa.a")
+  fi
+  for f in "${GL9_OBJS[@]}"; do
     [ -f "$f" ] || { echo "rust9-ld: RUST9_GL9 set but $f missing" >&2; exit 2; }
-    GL9_OBJS+=("$f")
   done
 fi
 
