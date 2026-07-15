@@ -40,6 +40,51 @@ Plus: **Broadwell is the best-case target.** Intel publishes the Gen8 PRMs (AMD/
 NVIDIA would mean reverse-engineering), and Gen8's GuC/HuC firmware is *optional*
 — no signed blobs, unlike later gens and all discrete cards.
 
+## It is mostly a USERSPACE package, not a kernel driver
+
+The instinct is "GPU driver = kernel". On Plan 9 that is wrong, and 9front already
+has the mechanism — `aux/vga` is a **userspace** program that maps GPU MMIO and
+pokes registers. Verified in the tree:
+
+    kernel    vgaigfx.c:51  addvgaseg("igfxmmio", p->mem[0].bar&~0x0F, p->mem[0].size);
+              vgaigfx.c:55  addvgaseg("igfxscreen", scr->paddr, scr->apsize);
+              (generic: vga.c:251 addvgaseg -> port/segment.c:706 addphysseg)
+    userspace igfx.c:432    igfx->mmio = segattach(0, "igfxmmio", 0, size);
+              igfx.c:207    igfx->mmio[a/4] = v;      /* GPU registers, from userspace */
+
+The kernel exposes a physical range as a NAMED SEGMENT; userspace segattaches it
+and drives the hardware directly. On cirno: **BAR0 = 16MB** (Gen8: registers AND
+the GTT) and **BAR2 = 256MB** (aperture) — both already exposable this way.
+
+So userspace can do: forcewake, all register access, **GTT programming** (it lives
+in BAR0), ring setup, command submission. That is nearly the whole driver.
+
+**What genuinely needs kernel** (small, and wxallow-shaped — gated + opt-in):
+1. Expose the BARs *without* taking over the display. `addvgaseg("igfxmmio")`
+   currently only fires when the igfx DISPLAY driver attaches — which blanks an
+   HDMI panel (we proved this the hard way). A few lines, gated.
+2. Physical pages for buffers: the GTT needs real physical addresses. Either a
+   small contiguous DMA heap, or — cheaper for the spike — reuse the BIOS
+   **stolen memory** (GSM) that already backs the framebuffer.
+3. Interrupts: NOT needed. We poll.
+
+**Shape: `pac9 install gpu9` (userspace) + a small optional kernel patch.**
+Exactly the gl9/llvmpipe model (package + wxallow gate).
+
+**This kills the project's biggest risk.** The "reboot per iteration, kernel bug =
+panic" fear below is largely void: in userspace a bug is a dead process. aux/vga
+machine-checked during the igfx experiment and killed only itself; the box never
+blinked. That is a normal edit-run-debug loop, and it materially lowers the cost
+estimate.
+
+**The tradeoff, stated plainly — SECURITY.** A userspace process holding GPU MMIO
++ GTT can program the engine to DMA anywhere in physical memory: read or write
+all of RAM, kernel included. Full privilege escalation for anyone who can open
+that segment. This is a real reason Linux keeps DRM in the kernel. aux/vga already
+has this property but is display-only and far less dangerous than a 3D engine.
+Same shape as the wxallow call: a gated, opt-in, genuinely-lower-security mode —
+fine on a box you own, not a default.
+
 ## The architecture (the one good idea here)
 
 Plan 9 has no `ioctl`. That looks like a wall and is actually the seam:
@@ -126,11 +171,12 @@ engine (blitter/media), PPGTT, interrupts, GPU scheduling, multi-process.
 - **Execlists.** If Gen8 legacy ring submission is dead in silicon, M3 means
   implementing execlist context images (a complex, poorly-loved format). Biggest
   single unknown. M0 exists to answer it.
-- **Debugging blind.** GPU hangs on a *headless* box. We just proved you cannot
-  even restore a video mode remotely (no `/dev/realmode` on amd64 — VESA is
-  bootloader-only, recovery = reboot). A wedged GPU likely means a reboot per
-  iteration. **This is the risk I'd most underestimate.** Budget a serial console
-  or physical access, or accept a brutal loop.
+- **Debugging blind — MOSTLY DEFUSED** by the userspace design above (a bug is a
+  dead process, not a panic). What remains: a *wedged GPU* (bad batch -> hung
+  engine) may still need a reboot to recover, and you cannot restore a video mode
+  remotely (no `/dev/realmode` on amd64 — VESA is bootloader-only). So: reboots
+  per *hang*, not per *bug*. Tolerable. Keep the render engine off the display
+  path during bring-up and the screen never has to be at risk at all.
 - **Broadwell-specific.** ~None of the kernel half transfers to another GPU. If
   cirno dies, the work dies.
 - **Machine checks are real here.** `display=7` in the igfx experiment produced
