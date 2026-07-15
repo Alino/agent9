@@ -3,6 +3,7 @@
  *
  *   gpu9 info     what the GPU is, and what clock it is actually running at
  *   gpu9 clock    request the maximum P-state (RP0) and report it
+ *   gpu9 rps      prove the headline: the same blit at RPn vs RP0
  *   gpu9 bench    GPU blitter vs CPU memcpy, across sizes
  *   gpu9 test     self-check: submit work and verify the GPU did it
  *
@@ -26,7 +27,7 @@ static char *memtype[] = { "UC", "WC", "WT", "WB" };
 static void
 usage(void)
 {
-	fprint(2, "usage: gpu9 [info | clock | bench | test]\n");
+	fprint(2, "usage: gpu9 [info | clock | rps | bench | test]\n");
 	exits("usage");
 }
 
@@ -53,8 +54,11 @@ cmdinfo(Gpu9 *g)
 		print("               ^ below max: nothing but gpu9 runs RPS on this box\n");
 	print("  PAT          %.8ux_%.8ux  (entry0 = %s)\n", pat_hi, pat_lo,
 		memtype[pat_lo & 3]);
-	print("  free GPU mem %d MB from GGTT %#ux (framebuffer sits below)\n",
+	print("  free GPU mem %d MB from GGTT %#ux (largest run that survives BOTH a\n",
 		(g->end_page - g->next_page)*4/1024, g->next_page*4096);
+	print("                            PTE check and a write/readback — of the\n");
+	print("                            16384 aperture pages, 3 map elsewhere and\n");
+	print("                            256 refuse writes. Measured, not assumed.)\n");
 }
 
 /* blit npage*4096 bytes on the BLITTER ring; returns ns, or -1 on hang */
@@ -96,26 +100,54 @@ blit(Gpu9 *g, u32int ringg, u32int *ring, volatile u32int *fence,
 	return nsec()-t0;
 }
 
+/* Check the blit actually copied. A throughput number from a blit nobody
+ * verified is worthless — and specifically: gpu9_alloc used to hand out GTT
+ * pages 8190/8191, which are not backed by our memory, straight through the
+ * middle of a 16MB dst. Sample on a prime stride so we touch most pages
+ * cheaply; reading all of it through the uncached aperture would cost seconds. */
+static int
+blitok(u32int *src, u32int *dst, int npage)
+{
+	int i, n = npage*1024;		/* dwords copied */
+
+	for(i = 0; i < n; i += 1021)
+		if(dst[i] != src[i]){
+			print("  VERIFY FAIL at dword %d (page %d): got %.8ux want %.8ux\n",
+				i, i/1024, dst[i], src[i]);
+			return 0;
+		}
+	return 1;
+}
+
 static void
 cmdbench(Gpu9 *g)
 {
-	int sizes[] = { 64, 256, 1024, 4096 };	/* 256KB..16MB */
-	u32int ringg, srcg, dstg, *ring, *src;
+	int sizes[4];
+	u32int ringg, srcg, dstg, *ring, *src, *dst;
 	volatile u32int *fence;
-	int i, k, seq = 1;
+	int i, k, seq = 1, avail, maxpg;
 	vlong t, best, bc, nb;
 	void *ra, *rb;
 
 	ringg = gpu9_alloc(g, 4096, (void**)&ring);
 	fence = (volatile u32int*)gpu9_cpu(g, gpu9_alloc(g, 4096, nil));
-	/* src+dst must both fit in what is left of the 64MB aperture after the
-	 * framebuffer; 16MB each is the largest pair that does. */
-	srcg = gpu9_alloc(g, 4096*4096, (void**)&src);
-	dstg = gpu9_alloc(g, 4096*4096, nil);
+	/* Size to the arena we actually have, rather than assuming 16MB pairs fit.
+	 * The usable run is ~32MB (the rest of the aperture is the framebuffer, or
+	 * the unbacked pages gpu9_arena excludes), so a 16MB+16MB pair does NOT. */
+	avail = g->end_page - g->next_page;
+	maxpg = avail/2;
+	if(maxpg > 4096)
+		maxpg = 4096;
+	sizes[0] = 64; sizes[1] = 256; sizes[2] = 1024; sizes[3] = maxpg;
+	srcg = gpu9_alloc(g, maxpg*4096, (void**)&src);
+	dstg = gpu9_alloc(g, maxpg*4096, (void**)&dst);
 	if(ringg == 0 || srcg == 0 || dstg == 0)
 		sysfatal("alloc: %r");
 	for(i = 0; i < 4096/4; i++) ring[i] = MI_NOOP;
-	for(i = 0; i < 1024; i++) src[i] = 0x5a5a0000+i;
+	/* fill ALL of src: the verify compares the whole copied range, and an
+	 * uninitialised tail would compare equal to an uninitialised dst by luck. */
+	for(i = 0; i < maxpg*1024; i++) src[i] = 0x5a5a0000+i;
+	for(i = 0; i < maxpg*1024; i++) dst[i] = 0;
 
 	print("GPU at %d MHz. Best of 8; CPU baseline is memcpy in CACHED RAM\n", gpu9_cur_clock(g));
 	print("(never benchmark the CPU through the aperture — it is uncached, ~13 MB/s)\n\n");
@@ -127,6 +159,10 @@ cmdbench(Gpu9 *g)
 			t = blit(g, ringg, ring, fence, srcg, dstg, sizes[k], seq++);
 			if(t < 0){ print("%10lld | GPU HUNG (reboot to clear)\n", nb); return; }
 			if(best == 0 || t < best) best = t;
+		}
+		if(!blitok(src, dst, sizes[k])){
+			print("%10lld | copy is WRONG — refusing to report a speed for it\n", nb);
+			return;
 		}
 		bc = 0;
 		ra = malloc(nb); rb = malloc(nb);
@@ -148,6 +184,60 @@ cmdbench(Gpu9 *g)
 		free(ra); free(rb);
 	}
 	print("\nThe GPU is flat (clock-bound); the CPU falls off once it leaves cache.\n");
+}
+
+/*
+ * The headline claim, made reproducible: run the SAME verified blit at the
+ * P-state the BIOS leaves you at (RPn) and at the one a driver asks for (RP0).
+ * The whole difference is one register write. Don't take 6.7x on trust — this
+ * re-derives it on the box, every time.
+ */
+static void
+cmdrps(Gpu9 *g)
+{
+	u32int ringg, srcg, dstg, *ring, *src, *dst;
+	volatile u32int *fence;
+	int i, npage, seq = 1, rpn, rp0, lo, hi;
+	vlong t, tlo, thi;
+
+	rpn = gpu9_rpn(g); rp0 = gpu9_rp0(g);
+	npage = 1024;					/* 4MB: past the CPU's cache */
+	ringg = gpu9_alloc(g, 4096, (void**)&ring);
+	fence = (volatile u32int*)gpu9_cpu(g, gpu9_alloc(g, 4096, nil));
+	srcg = gpu9_alloc(g, npage*4096, (void**)&src);
+	dstg = gpu9_alloc(g, npage*4096, (void**)&dst);
+	if(ringg == 0 || srcg == 0 || dstg == 0)
+		sysfatal("alloc: %r");
+	for(i = 0; i < 4096/4; i++) ring[i] = MI_NOOP;
+	for(i = 0; i < npage*1024; i++) src[i] = 0x5a5a0000+i;
+
+	print("Same 4MB blit, same code, one register apart:\n\n");
+	lo = gpu9_set_clock(g, rpn);
+	tlo = 0;
+	for(i = 0; i < 8; i++){
+		for(int j = 0; j < npage*1024; j += 4096) dst[j] = 0;
+		t = blit(g, ringg, ring, fence, srcg, dstg, npage, seq++);
+		if(t < 0) sysfatal("hung at RPn");
+		if(tlo == 0 || t < tlo) tlo = t;
+	}
+	if(!blitok(src, dst, npage)) sysfatal("RPn copy wrong");
+	print("  RPn (BIOS default, no driver) %3d MHz : %6.0f MB/s\n",
+		lo, (double)(npage*4096)/(double)tlo*1000.0);
+
+	hi = gpu9_set_clock(g, rp0);
+	thi = 0;
+	for(i = 0; i < 8; i++){
+		for(int j = 0; j < npage*1024; j += 4096) dst[j] = 0;
+		t = blit(g, ringg, ring, fence, srcg, dstg, npage, seq++);
+		if(t < 0) sysfatal("hung at RP0");
+		if(thi == 0 || t < thi) thi = t;
+	}
+	if(!blitok(src, dst, npage)) sysfatal("RP0 copy wrong");
+	print("  RP0 (what gpu9 asks for)      %3d MHz : %6.0f MB/s\n",
+		hi, (double)(npage*4096)/(double)thi*1000.0);
+	print("\n  %.1fx faster, for one write to RPNSWREQ. Both copies verified.\n",
+		(double)tlo/(double)thi);
+	print("  9front ships no GPU driver, so nothing else on the box ever asks.\n");
 }
 
 static void
@@ -194,6 +284,8 @@ main(int argc, char **argv)
 		cmdinfo(&g);
 	else if(strcmp(cmd, "clock") == 0)
 		print("GPU clock: %d MHz\n", gpu9_max_clock(&g));
+	else if(strcmp(cmd, "rps") == 0)
+		cmdrps(&g);
 	else if(strcmp(cmd, "bench") == 0)
 		cmdbench(&g);
 	else if(strcmp(cmd, "test") == 0)

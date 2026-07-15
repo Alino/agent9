@@ -13,6 +13,78 @@
 #define FIRST_FREE_PAGE	2048
 #define RING_DWORDS	(4096/4)
 
+static u64int
+gtt_pte(Gpu9 *g, g9u32 i)
+{
+	g9u32 lo = g->mmio[(GPU9_GTT_OFFSET + i*8)/4];
+	g9u32 hi = g->mmio[(GPU9_GTT_OFFSET + i*8)/4 + 1];
+	return (u64int)hi<<32 | lo;
+}
+
+/*
+ * Find the memory we may actually use, by TESTING it — not by assuming the
+ * aperture is ours, and not by trusting the page tables either.
+ *
+ * Two separate lies had to be caught here:
+ *
+ *  1. The whole 64MB aperture is NOT ours. The old code set end_page =
+ *     apsz/4096 and handed out anything past the framebuffer. probe/m13 found
+ *     3 of the 16384 PTEs are not the BIOS's linear stolen mapping: 8190/8191
+ *     (holding 0309400103093001 / 0309600103095001) and the last one. Those
+ *     point somewhere we do not own — letting the GPU DMA there is how you
+ *     corrupt something you cannot even name.
+ *
+ *  2. A linear-looking PTE is not proof the page is ours. probe/m15 wrote and
+ *     read back every page: the last 1MB (16128..16383, GGTT 0x3f00000+) does
+ *     NOT hold writes, despite PTEs that look exactly like every other. Some
+ *     firmware structure lives there. probe/m14 caught the consequence — a
+ *     16MB blit "succeeded" at 4555 MB/s while silently not copying past 63MB,
+ *     because nothing verified the copy.
+ *
+ * So: PTE check first (never write through a PTE pointing who-knows-where),
+ * then a write/readback that restores what it found. Take the largest run that
+ * survives both. On cirno: pages 8192..16127 = 31MB.
+ *
+ * ponytail: one contiguous run, so the 24MB below the 8190/8191 hole goes
+ * unused. A free list over both runs would reclaim it; not worth it until
+ * something actually runs out.
+ */
+static int
+usable(Gpu9 *g, g9u32 i)
+{
+	volatile g9u32 *p;
+	g9u32 s0, s1;
+	int ok;
+
+	/* must be the BIOS's linear mapping of stolen memory, or it is not ours */
+	if((gtt_pte(g, i) & ~0xfffULL) != GPU9_STOLEN_BASE + (u64int)i*4096)
+		return 0;
+	/* ...and it must actually hold a write. Restore whatever was there: this
+	 * runs on a live box, over memory we have just decided is not ours to keep. */
+	p = (volatile g9u32*)(g->aper + (u64int)i*4096);
+	s0 = p[0]; s1 = p[1023];
+	p[0] = 0xa5a5c3c3; p[1023] = 0x5a5a3c3c;
+	ok = p[0] == 0xa5a5c3c3 && p[1023] == 0x5a5a3c3c;
+	p[0] = s0; p[1023] = s1;
+	return ok;
+}
+
+static void
+gpu9_arena(Gpu9 *g)
+{
+	g9u32 i, start, best, bestat;
+
+	best = 0; bestat = 0; start = FIRST_FREE_PAGE;
+	for(i = FIRST_FREE_PAGE; i <= GPU9_GTT_ENTRIES; i++){
+		if(i == GPU9_GTT_ENTRIES || !usable(g, i)){
+			if(i - start > best){ best = i - start; bestat = start; }
+			start = i + 1;
+		}
+	}
+	g->next_page = bestat;
+	g->end_page = bestat + best;
+}
+
 int
 gpu9_open(Gpu9 *g)
 {
@@ -29,8 +101,12 @@ gpu9_open(Gpu9 *g)
 		return -1;
 	}
 	g->apsz = GPU9_APERTURE_SZ;
-	g->next_page = FIRST_FREE_PAGE;
-	g->end_page = GPU9_APERTURE_SZ/4096;
+	gpu9_arena(g);			/* ask the GTT; do not assume the aperture is ours */
+	if(g->end_page - g->next_page < 64){
+		werrstr("gpu9: only %ud usable GPU pages — GTT not mapped as expected",
+			g->end_page - g->next_page);
+		return -1;
+	}
 
 	if(gpu9_forcewake_get(g) < 0){
 		werrstr("forcewake: GT never acked");
@@ -102,19 +178,39 @@ gpu9_cur_clock(Gpu9 *g)
 	return ((gpu9_rd(g, GPU9_RPSTAT1) & GPU9_HSW_CAGF_MASK) >> GPU9_HSW_CAGF_SHIFT) * 50;
 }
 
+/* Request a P-state, in the hardware's 50MHz units, and wait for it to take
+ * effect. This one register write is the whole RPS story: with no driver on the
+ * box nothing ever asks, so Broadwell parks at RPn (100MHz) forever. */
+int
+gpu9_set_clock(Gpu9 *g, int rp)
+{
+	int i;
+
+	if(rp == 0)
+		return gpu9_cur_clock(g);
+	gpu9_wr(g, GPU9_RPNSWREQ, GPU9_HSW_FREQUENCY(rp));
+	gpu9_rd(g, GPU9_RPNSWREQ);
+	for(i = 0; i < 400 && gpu9_cur_clock(g) != rp*50; i++)
+		sleep(1);
+	return gpu9_cur_clock(g);
+}
+
+int
+gpu9_rp0(Gpu9 *g)	/* byte 0 of RP_STATE_CAP = max P-state */
+{
+	return gpu9_rd(g, GPU9_RP_STATE_CAP) & 0xff;
+}
+
+int
+gpu9_rpn(Gpu9 *g)	/* byte 2 = minimum = where the BIOS leaves us */
+{
+	return (gpu9_rd(g, GPU9_RP_STATE_CAP) >> 16) & 0xff;
+}
+
 int
 gpu9_max_clock(Gpu9 *g)
 {
-	int rp0, i;
-
-	rp0 = gpu9_rd(g, GPU9_RP_STATE_CAP) & 0xff;	/* byte 0 = RP0 = max */
-	if(rp0 == 0)
-		return gpu9_cur_clock(g);
-	gpu9_wr(g, GPU9_RPNSWREQ, GPU9_HSW_FREQUENCY(rp0));
-	gpu9_rd(g, GPU9_RPNSWREQ);
-	for(i = 0; i < 400 && gpu9_cur_clock(g) < rp0*50; i++)
-		sleep(1);
-	return gpu9_cur_clock(g);
+	return gpu9_set_clock(g, gpu9_rp0(g));
 }
 
 g9u32

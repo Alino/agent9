@@ -32,7 +32,15 @@ typedef uchar  g9u8;
 /* ---- MMIO map (Gen8 / Broadwell) ---- */
 #define GPU9_BAR0SZ		(16u*1024*1024)
 #define GPU9_GTT_OFFSET		(8u*1024*1024)	/* GTT lives at BAR0 + 8MB */
-#define GPU9_APERTURE_SZ	0x4000000u	/* 64MB, per /dev/vgactl */
+/* 64MB. MEASURED, not assumed (probe/m11 bisects segattach): this is the size
+ * the kernel registers for "igfxscreen", and the GGTT is exactly the same
+ * 16384 PTEs — GTT[16384] already reads uninitialised junk. NB PCI reports
+ * BAR2 = 256MB; that is the decode window, not what we get. */
+#define GPU9_APERTURE_SZ	0x4000000u
+#define GPU9_GTT_ENTRIES	(GPU9_APERTURE_SZ/4096)		/* 16384 */
+/* The BIOS maps stolen memory linearly from here — but NOT every page; see
+ * gpu9_arena(). Never assume: probe/m13 found 3 entries that are not this. */
+#define GPU9_STOLEN_BASE	0xa4000000ULL
 
 /* forcewake: HSW/BDW use the MT request + the HSW ack. Render regs (0x2000+)
  * read 0 until the GT is woken — verified in probe/m0.c. */
@@ -135,6 +143,9 @@ void  gpu9_forcewake_put(Gpu9 *g);
  * ever runs in the background. */
 int   gpu9_cur_clock(Gpu9 *g);		/* MHz */
 int   gpu9_max_clock(Gpu9 *g);		/* request RP0, return MHz reached */
+int   gpu9_set_clock(Gpu9 *g, int rp);	/* request a P-state (50MHz units) */
+int   gpu9_rp0(Gpu9 *g);		/* max P-state */
+int   gpu9_rpn(Gpu9 *g);		/* min P-state — where the BIOS leaves it */
 
 /* allocate GPU-visible memory. Returns the GGTT address; *cpu gets the CPU
  * pointer (the same bytes, through the aperture). */
