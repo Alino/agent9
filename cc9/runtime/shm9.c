@@ -262,6 +262,27 @@ int cc9_shm_unmap(void *p, unsigned long len) {
 	return 0;
 }
 
+/* ---- /srv fd passing (TransportPlan9's Srv attachments) ----
+ * srv(3): create /srv/<name>, write the decimal fd number into it; the entry
+ * holds a reference to the open file itself. Any process that opens the
+ * entry acquires the same channel (shared offset) — SCM_RIGHTS semantics. */
+long cc9_srv_post(const char *name, int fd) {
+	char path[64], num[16];
+	snprintf(path, sizeof path, "/srv/%s", name);
+	long sfd = n9_create(path, 1 /*OWRITE*/, 0600);
+	if (sfd < 0) { errno = cc9_errno_from_errstr(); return -1; }
+	int n = snprintf(num, sizeof num, "%d", fd);
+	long w = n9_pwrite((int)sfd, num, n, -1);
+	n9_close((int)sfd);
+	if (w != n) { errno = cc9_errno_from_errstr(); n9_remove(path); return -1; }
+	return 0;
+}
+long cc9_srv_remove(const char *name) {
+	char path[64];
+	snprintf(path, sizeof path, "/srv/%s", name);
+	return n9_remove(path);
+}
+
 /* Called by execve just before n9_exec — userspace SG_CEXEC (see there).
  * After fork the child owns a copy of the attach table describing exactly the
  * inherited attaches, so detaching every entry leaves the exec image clean. */

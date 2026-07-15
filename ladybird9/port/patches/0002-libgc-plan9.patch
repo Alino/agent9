@@ -29,3 +29,23 @@ index cb8f11cff6..832e81a3cb 100644
  }
  #endif
  
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index 396bb55bae..a95dd1688b 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -36,7 +36,15 @@ public:
+         Yes,
+     };
+ 
++#if defined(AK_OS_PLAN9)
++    // Plan 9's segattach length argument is a 32-bit ulong, so a single
++    // demand-paged segment (how reserve_address_space is realized there)
++    // caps just under 4 GiB; 2 GiB is the largest power of two that fits
++    // with the trailing guard page. Same semantics, smaller ceiling.
++    static constexpr size_t default_cage_size = 2ull * GiB;
++#else
+     static constexpr size_t default_cage_size = 64ull * GiB;
++#endif
+     static_assert(is_power_of_two(default_cage_size));
+     static constexpr size_t cage_offset_mask = default_cage_size - 1;
+     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();

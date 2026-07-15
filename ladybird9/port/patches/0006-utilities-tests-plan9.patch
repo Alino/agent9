@@ -1,16 +1,25 @@
-diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
-index caa5dadebd..0bc6ca3616 100644
---- a/Utilities/CMakeLists.txt
-+++ b/Utilities/CMakeLists.txt
-@@ -1,7 +1,7 @@
- ladybird_utility(js SOURCES js.cpp LIBS LibCrypto LibJS LibMain LibTextCodec LibGC)
- ladybird_utility(wasm SOURCES wasm.cpp LIBS LibFileSystem LibWasm LibMain LibJS LibCrypto LibGC)
+diff --git a/Tests/LibIPC/TestConnection.cpp b/Tests/LibIPC/TestConnection.cpp
+index 8f05adaf32..865dfb9376 100644
+--- a/Tests/LibIPC/TestConnection.cpp
++++ b/Tests/LibIPC/TestConnection.cpp
+@@ -13,7 +13,7 @@
+ #include <LibIPC/Connection.h>
+ #include <LibIPC/Message.h>
+ #include <LibIPC/Stub.h>
+-#include <LibIPC/TransportSocket.h>
++#include <LibIPC/Transport.h>
+ #include <LibTest/TestCase.h>
  
--if (NOT WIN32 AND NOT ANDROID)
-+if (NOT WIN32 AND NOT ANDROID AND NOT PLAN9)
-     target_link_libraries(js PRIVATE PkgConfig::LIBEDIT)
- endif()
+ namespace {
+@@ -106,7 +106,7 @@ TEST_CASE(sync_wait_failure_does_not_dispatch_queued_messages)
+     MUST(local_socket->set_blocking(false));
+     MUST(peer_socket->set_blocking(false));
  
+-    auto transport = make<IPC::TransportSocket>(move(local_socket));
++    auto transport = make<IPC::Transport>(move(local_socket));
+ 
+     CountingStub stub;
+     auto connection = TestConnection::construct(stub, move(transport));
 diff --git a/Utilities/js.cpp b/Utilities/js.cpp
 index 716225f959..da2fe2e1e6 100644
 --- a/Utilities/js.cpp

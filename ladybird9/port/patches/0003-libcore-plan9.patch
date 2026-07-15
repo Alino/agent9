@@ -1,8 +1,42 @@
+diff --git a/Libraries/LibCore/Resource.h b/Libraries/LibCore/Resource.h
+index 7ab853c488..404657e7c2 100644
+--- a/Libraries/LibCore/Resource.h
++++ b/Libraries/LibCore/Resource.h
+@@ -12,6 +12,7 @@
+ #include <AK/NonnullRefPtr.h>
+ #include <AK/Span.h>
+ #include <AK/String.h>
++#include <time.h>
+ #include <AK/StringView.h>
+ #include <AK/Variant.h>
+ #include <LibCore/Export.h>
+diff --git a/Libraries/LibCore/Socket.cpp b/Libraries/LibCore/Socket.cpp
+index 7aecfb1597..0a777bbed8 100644
+--- a/Libraries/LibCore/Socket.cpp
++++ b/Libraries/LibCore/Socket.cpp
+@@ -508,7 +508,7 @@ ErrorOr<pid_t> LocalSocket::peer_pid() const
+ #elif defined(AK_OS_SOLARIS)
+     ucred_t* creds = NULL;
+     socklen_t creds_size = sizeof(creds);
+-#elif defined(AK_OS_GNU_HURD)
++#elif defined(AK_OS_GNU_HURD) || defined(AK_OS_PLAN9)
+     return Error::from_errno(ENOTSUP);
+ #else
+     struct ucred creds = {};
+@@ -527,7 +527,7 @@ ErrorOr<pid_t> LocalSocket::peer_pid() const
+ #elif defined(AK_OS_SOLARIS)
+     TRY(System::getsockopt(m_helper.fd(), SOL_SOCKET, SO_RECVUCRED, &creds, &creds_size));
+     return ucred_getpid(creds);
+-#elif !defined(AK_OS_GNU_HURD)
++#elif !defined(AK_OS_GNU_HURD) && !defined(AK_OS_PLAN9)
+     TRY(System::getsockopt(m_helper.fd(), SOL_SOCKET, SO_PEERCRED, &creds, &creds_size));
+     return creds.pid;
+ #endif
 diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
-index fadcfc933d..b2dbcdb077 100644
+index fadcfc933d..fc0f3d3563 100644
 --- a/Libraries/LibCore/System.cpp
 +++ b/Libraries/LibCore/System.cpp
-@@ -23,6 +23,16 @@
+@@ -23,6 +23,17 @@
  #include <termios.h>
  #include <unistd.h>
  
@@ -14,12 +48,13 @@ index fadcfc933d..b2dbcdb077 100644
 +extern "C" void* cc9_reserve_va_segment(unsigned long);
 +extern "C" long cc9_segfree_pages(void*, unsigned long);
 +extern "C" long cc9_segdetach_va(void*);
++extern "C" int cc9_shm_create(unsigned long);
 +#endif
 +
  #if defined(AK_OS_LINUX) && !defined(MFD_CLOEXEC)
  #    include <linux/memfd.h>
  #    include <sys/syscall.h>
-@@ -144,22 +154,42 @@ ErrorOr<void> munmap(void* address, size_t size)
+@@ -144,22 +155,42 @@ ErrorOr<void> munmap(void* address, size_t size)
  
  ErrorOr<void*> reserve_address_space(size_t size)
  {
@@ -64,7 +99,7 @@ index fadcfc933d..b2dbcdb077 100644
  }
  
  ErrorOr<void> decommit_memory(void* address, size_t size)
-@@ -167,6 +197,12 @@ ErrorOr<void> decommit_memory(void* address, size_t size)
+@@ -167,6 +198,12 @@ ErrorOr<void> decommit_memory(void* address, size_t size)
      if (size == 0)
          return {};
  
@@ -77,7 +112,7 @@ index fadcfc933d..b2dbcdb077 100644
      int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
  #ifdef MAP_NORESERVE
      flags |= MAP_NORESERVE;
-@@ -176,13 +212,21 @@ ErrorOr<void> decommit_memory(void* address, size_t size)
+@@ -176,19 +213,42 @@ ErrorOr<void> decommit_memory(void* address, size_t size)
          return Error::from_syscall("mmap"sv, errno);
      VERIFY(ptr == address);
      return {};
@@ -99,7 +134,29 @@ index fadcfc933d..b2dbcdb077 100644
  }
  
  ErrorOr<int> anon_create([[maybe_unused]] size_t size, [[maybe_unused]] int options)
-@@ -799,6 +843,20 @@ ErrorOr<ByteString> current_executable_path()
+ {
+     int fd = -1;
+-#if defined(AK_OS_LINUX) || defined(AK_OS_FREEBSD)
++#if defined(AK_OS_PLAN9)
++    // A named global segment (#g); the fd is its data file, already sized —
++    // no ftruncate (and none is possible), so return directly. mmap
++    // MAP_SHARED of this fd attaches the segment (real cross-process pages).
++    fd = cc9_shm_create(size);
++    if (fd < 0)
++        return Error::from_errno(errno);
++    if ((options & O_CLOEXEC) == 0) {
++        if (::fcntl(fd, F_SETFD, 0) == -1) {
++            auto saved_errno = errno;
++            TRY(close(fd));
++            return Error::from_errno(saved_errno);
++        }
++    }
++    return fd;
++#elif defined(AK_OS_LINUX) || defined(AK_OS_FREEBSD)
+     // FIXME: Support more options on Linux.
+     auto linux_options = ((options & O_CLOEXEC) > 0) ? MFD_CLOEXEC : 0;
+     fd = memfd_create("", linux_options);
+@@ -799,6 +859,20 @@ ErrorOr<ByteString> current_executable_path()
      if (sizeof(info.name) > sizeof(path))
          return Error::from_errno(ENAMETOOLONG);
      strlcpy(path, info.name, sizeof(path) - 1);
@@ -120,23 +177,33 @@ index fadcfc933d..b2dbcdb077 100644
  #else
  #    warning "Not sure how to get current_executable_path on this platform!"
      // GetModuleFileName on Windows, unsure about OpenBSD.
-diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
-index 396bb55bae..a95dd1688b 100644
---- a/Libraries/LibGC/PrimitiveStorage.h
-+++ b/Libraries/LibGC/PrimitiveStorage.h
-@@ -36,7 +36,15 @@ public:
-         Yes,
-     };
+diff --git a/Libraries/LibCore/System.h b/Libraries/LibCore/System.h
+index 3b2de6a921..e4576c227e 100644
+--- a/Libraries/LibCore/System.h
++++ b/Libraries/LibCore/System.h
+@@ -46,7 +46,7 @@ struct addrinfo;
+ struct sockaddr;
+ #endif
  
-+#if defined(AK_OS_PLAN9)
-+    // Plan 9's segattach length argument is a 32-bit ulong, so a single
-+    // demand-paged segment (how reserve_address_space is realized there)
-+    // caps just under 4 GiB; 2 GiB is the largest power of two that fits
-+    // with the trailing guard page. Same semantics, smaller ceiling.
-+    static constexpr size_t default_cage_size = 2ull * GiB;
-+#else
-     static constexpr size_t default_cage_size = 64ull * GiB;
+-#if !defined(AK_OS_BSD_GENERIC) && !defined(AK_OS_ANDROID) && !defined(AK_OS_WINDOWS)
++#if !defined(AK_OS_BSD_GENERIC) && !defined(AK_OS_ANDROID) && !defined(AK_OS_WINDOWS) && !defined(AK_OS_PLAN9)
+ #    include <shadow.h>
+ #endif
+ 
+diff --git a/Libraries/LibCore/SystemServerTakeover.cpp b/Libraries/LibCore/SystemServerTakeover.cpp
+index 09047f66ff..fe41c4292a 100644
+--- a/Libraries/LibCore/SystemServerTakeover.cpp
++++ b/Libraries/LibCore/SystemServerTakeover.cpp
+@@ -62,8 +62,12 @@ ErrorOr<NonnullOwnPtr<Core::LocalSocket>> take_over_socket_from_system_server(By
+     }
+ 
+     // Sanity check: it has to be a socket.
++    // (Plan 9: socketpairs ARE full-duplex pipes; there is no S_IFSOCK to
++    // check for, so accept the fd as-is.)
++#if !defined(AK_OS_PLAN9)
+     if (!System::is_socket(fd))
+         return Error::from_string_literal("The fd or handle we got from SystemServer is not a socket");
 +#endif
-     static_assert(is_power_of_two(default_cage_size));
-     static constexpr size_t cage_offset_mask = default_cage_size - 1;
-     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();
+ 
+     auto socket = TRY(Core::LocalSocket::adopt_fd(fd));
+     // It had to be !CLOEXEC for obvious reasons, but we
