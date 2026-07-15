@@ -689,13 +689,41 @@ double tgamma(double x){
 extern long n9_open(const char*, int);
 extern long n9_pread(int, void*, long, long long);
 extern long n9_close(int);
-static unsigned long long n9_nsec(void){
+/* The fd is CACHED. open+read+close per call looks harmless until something
+ * asks the time in a hot loop — DOSBox calls SDL_GetTicks() every emulated
+ * tick, and three syscalls plus a namespace walk each time made it spend more
+ * wall-clock in open(2) than in the emulator (DOOM's startup: minutes).
+ *
+ * pread at an EXPLICIT offset 0 is what makes a cached fd work: the old code
+ * passed -1 ("use the file offset"), which on a reused fd would walk the
+ * offset forward and read EOF/zeroes from the second call on. */
+static int n9_bintime_fd = -1;
+/* Install a cached fd. Threads share the fd table (rfork without RFFDG), so
+ * two can open concurrently; the loser closes its own rather than leak it. */
+static int n9_bintime_open(void){
 	int fd = (int)n9_open("/dev/bintime", 0 /*OREAD*/);
-	if(fd < 0) return 0;
+	if(fd < 0) return -1;
+	if(__sync_val_compare_and_swap(&n9_bintime_fd, -1, fd) != -1){
+		n9_close(fd);
+		return n9_bintime_fd;
+	}
+	return fd;
+}
+static unsigned long long n9_nsec(void){
 	unsigned char b[8];
-	long n = n9_pread(fd, b, 8, -1);
-	n9_close(fd);
-	if(n < 8) return 0;
+	int fd = n9_bintime_fd;
+
+	if(fd < 0 && (fd = n9_bintime_open()) < 0)
+		return 0;
+	if(n9_pread(fd, b, 8, 0) < 8){
+		/* fd went stale (a program that closes every fd, or a namespace
+		 * change). Drop it and retry once. */
+		__sync_val_compare_and_swap(&n9_bintime_fd, fd, -1);
+		if((fd = n9_bintime_open()) < 0)
+			return 0;
+		if(n9_pread(fd, b, 8, 0) < 8)
+			return 0;
+	}
 	unsigned long long ns = 0; int i;
 	for(i=0;i<8;i++) ns = (ns<<8) | b[i];   /* big-endian */
 	return ns;
@@ -715,6 +743,12 @@ int clock_gettime(int clk, void *tsp){
 	unsigned long long ns = n9_nsec();
 	ts->tv_sec = (long)(ns / 1000000000ULL);
 	ts->tv_nsec = (long)(ns % 1000000000ULL);
+	return 0;
+}
+int clock_getres(int clk, void *tsp){
+	(void)clk;
+	struct n9_timespec *ts = tsp;
+	if(ts){ ts->tv_sec = 0; ts->tv_nsec = 1; }   /* /dev/bintime is ns-grained */
 	return 0;
 }
 long time(long *t){ long s = (long)(n9_nsec()/1000000000ULL); if(t)*t=s; return s; }

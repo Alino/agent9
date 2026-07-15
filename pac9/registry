@@ -69,3 +69,12 @@ launcher	https://github.com/Alino/agent9	src/launcher	-
 # jiter built in) + stdlib come from the python9 package (5th-column dep).
 # After install: set $MINIMAX_KEY or write /usr/glenda/hermes9/minimax.key, then `hermes`.
 hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9/hermes9-amd64.tar.gz	python9
+
+# dosbox9 — DOSBox 0.74-3 on 9front (SDL 1.2 with a Plan 9 backend over
+# gl9win2; cc9 can't link libdraw, so a native window server hosts it).
+# 12 shareware/freeware DOS games verified rendering on bare metal.
+# Run from a rio window: `dosbox9` boots to Z:\>, `dosbox9 <dir>` mounts it as
+# C:. Games are NOT bundled — dosbox9/host/fetch-games.py pulls them from
+# archive.org. Presents FULL FRAMES (correct but slow): the GL9D delta path has
+# an open bug, see dosbox9/PORT-NOTES.md.
+dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9/dosbox9-amd64.tar.gz

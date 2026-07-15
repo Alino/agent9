@@ -267,6 +267,10 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	n9_semacquire(&handoff_sem, 1);   /* wait until the child registered + copied the handoff */
 	n9_semrelease(&create_lock, 1);
 	*th = (pthread_t)tid;
+	/* Honor PTHREAD_CREATE_DETACHED. Must come after the handoff above: the
+	 * thread has to be registered before pthread_detach can find it. */
+	if(attr && attr->detachstate == PTHREAD_CREATE_DETACHED)
+		pthread_detach((pthread_t)tid);
 	return 0;
 }
 
@@ -276,6 +280,35 @@ int pthread_join(pthread_t pid, void **ret){
 	n9_semacquire(&t->joinsem, 1);
 	if(ret) *ret = t->ret;
 	if(reap_slot(pid)){ free(t->stack); free(t); }
+	return 0;
+}
+
+/* pthread_kill: on Plan 9 the only thing we can actually deliver to another
+ * thread is a "kill" note (threads are rfork(RFPROC) procs). So:
+ *   sig == 0        -> POSIX existence check, the common real use
+ *   sig == SIGKILL  -> post "kill" to /proc/realpid/note
+ *   anything else   -> EINVAL, rather than pretend we delivered a signal
+ * The t->done guard is not optional: Plan 9 reuses pids, so a note aimed at a
+ * finished thread can land on an unrelated proc (see cc9_kill_threads). */
+int pthread_kill(pthread_t pid, int sig){
+	n9_thread *t = find_thread(pid);
+	if(!t) return 3;               /* ESRCH */
+	if(sig == 0) return 0;
+	if(sig != 9) return 22;        /* EINVAL: SIGKILL is all Plan 9 gives us */
+	if(t->done || t->realpid == 0) return 3;   /* never note a possibly-reused pid */
+	{
+		char path[40]; int k=0;
+		for(const char *p="/proc/"; *p; p++) path[k++]=*p;
+		char num[20]; int n=0; unsigned long v=t->realpid;
+		do { num[n++]='0'+(v%10); v/=10; } while(v);
+		while(n>0) path[k++]=num[--n];
+		for(const char *p="/note"; *p; p++) path[k++]=*p;
+		path[k]=0;
+		long fd = n9_open(path, 1 /*OWRITE*/);
+		if(fd<0) return 3;
+		n9_pwrite((int)fd, "kill", 4, -1);
+		n9_close((int)fd);
+	}
 	return 0;
 }
 
@@ -548,8 +581,19 @@ int pthread_atfork(void (*prep)(void), void (*parent)(void), void (*child)(void)
 
 /* attr/condattr are accepted-and-ignored (thread stacks are fixed-size heap
  * blocks; the only clock is /dev/bintime). rwlock is a mutex, so try = trylock. */
-int pthread_attr_init(pthread_attr_t *a){ (void)a; return 0; }
+int pthread_attr_init(pthread_attr_t *a){ if(a) a->detachstate = PTHREAD_CREATE_JOINABLE; return 0; }
 int pthread_attr_destroy(pthread_attr_t *a){ (void)a; return 0; }
+/* detachstate is the one attr we actually honor — pthread_create applies it.
+ * stacksize below is still a no-op (cc9_thread_stack is the real knob). */
+int pthread_attr_setdetachstate(pthread_attr_t *a, int s){
+	if(!a) return 22;   /* EINVAL */
+	if(s != PTHREAD_CREATE_JOINABLE && s != PTHREAD_CREATE_DETACHED) return 22;
+	a->detachstate = s; return 0;
+}
+int pthread_attr_getdetachstate(const pthread_attr_t *a, int *s){
+	if(!a || !s) return 22;
+	*s = a->detachstate; return 0;
+}
 int pthread_attr_setstacksize(pthread_attr_t *a, size_t s){ (void)a; (void)s; return 0; }
 int pthread_attr_getstacksize(const pthread_attr_t *a, size_t *s){ (void)a; *s = 1<<20; return 0; }
 int pthread_condattr_init(pthread_condattr_t *a){ (void)a; return 0; }

@@ -1,0 +1,24 @@
+#!/bin/rc
+# shot.rc OUT.png — screenshot the whole 9front screen.
+#
+# rio serves /dev/screen (an image of the entire screen) inside each window's
+# namespace, and a listen1 session owns no window — so there is no /dev/screen
+# to read directly. Re-enter the game window's namespace by mounting its id
+# (rungame.rc left it in /tmp/d9/winid) and read /dev/screen from there.
+# Mounting rio's srv with an EMPTY aname fails; only a window id or 'new ...'
+# work.
+if(~ $#RIOSRV 0){
+	RIOSRV=`{ls /srv/rio.* >[2]/dev/null}
+	RIOSRV=$RIOSRV($#RIOSRV)
+}
+id=`{cat /tmp/d9/winid}
+mount $RIOSRV /n/sw $id
+bind -b /n/sw /dev
+
+# Raise the game window first: the listener's own rio terminal keeps printing
+# ("incoming call for tcp!...") and ends up on top of it, so an unraised
+# screendump captures the terminal. /dev here IS window $id, so its wctl is
+# ours to write.
+echo current >/dev/wctl >[2]/dev/null
+sleep 1
+topng < /dev/screen > $1

@@ -1,0 +1,11 @@
+# Build artifacts — regenerate with host/build-sdl.sh + host/build-dosbox.sh.
+_out/
+lib/
+
+# Release tarball — shipped via GitHub Releases, not git.
+release/*.tar.gz
+
+# Games are NOT vendored: host/fetch-games.py pulls them from archive.org.
+c/
+conf/
+*.zip

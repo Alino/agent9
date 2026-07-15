@@ -42,6 +42,7 @@ unsigned int alarm(unsigned int); unsigned int sleep(unsigned int); int usleep(u
 int pipe(int[2]); int pipe2(int[2], int); pid_t fork(void); void _exit(int);
 int execv(const char *, char *const[]); int execve(const char *, char *const[], char *const[]);
 int execvp(const char *, char *const[]);
+int execlp(const char *, const char *, ...);
 int gethostname(char *, unsigned long); int setsid(void); pid_t getsid(pid_t);
 int chown(const char *, uid_t, gid_t); int fchown(int, uid_t, gid_t); int lchown(const char *, uid_t, gid_t);
 int dup3(int, int, int);

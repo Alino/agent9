@@ -1,0 +1,30 @@
+#!/bin/rc
+# rungame.rc GAME — launch one game in a fresh rio window.
+#   rc /tmp/d9/rungame.rc doom
+# The mount/bind/exec must share one process, hence a script (listen1 drops
+# multi-line and ';'-chained input). The rio srv name is per-boot; RIOSRV
+# overrides it.
+# The rio srv name carries a per-boot pid (/srv/rio.$user.$pid), so find it
+# rather than hardcode it — it differs on every boot and every box.
+if(~ $#RIOSRV 0){
+	RIOSRV=`{ls /srv/rio.* >[2]/dev/null}
+	RIOSRV=$RIOSRV($#RIOSRV)
+}
+if(~ $#RIOSRV 0){
+	echo 'rungame: no /srv/rio.* — is rio running?' >[1=2]
+	exit norio
+}
+mount $RIOSRV /n/aw 'new -dx 720 -dy 560'
+bind -b /n/aw /dev
+cd /tmp/d9
+
+# Record our window id so shot.rc can re-enter this namespace later: rio serves
+# /dev/screen (the WHOLE screen) per-window, and a listen1 session has no
+# window of its own, so there's no /dev/screen to read from outside.
+cat /dev/winid > /tmp/d9/winid
+
+# NB: do NOT fork a background helper here. Anything still alive in this
+# namespace keeps the rio mount — and therefore the WINDOW — open after
+# gl9win2 exits, so every run leaks an orphaned window that stacks over the
+# next one. Raising is shot.rc's job (it re-enters this window by id anyway).
+exec ./gl9win2 /tmp/d9/dosbox -conf /tmp/d9/conf/$1.conf >[2]/tmp/d9/$1.log

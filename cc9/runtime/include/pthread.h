@@ -15,7 +15,7 @@ typedef int pthread_once_t;
 typedef int pthread_key_t;
 typedef struct { int kind; } pthread_mutexattr_t;
 typedef struct { int unused; } pthread_condattr_t;
-typedef struct { int unused; } pthread_attr_t;
+typedef struct { int detachstate; } pthread_attr_t;
 typedef pthread_mutex_t pthread_rwlock_t;   /* a plain mutex (readers serialize) */
 #define PTHREAD_RWLOCK_INITIALIZER {1,0,0,0}
 #define PTHREAD_MUTEX_INITIALIZER {1,0,0,0}
@@ -25,12 +25,19 @@ typedef pthread_mutex_t pthread_rwlock_t;   /* a plain mutex (readers serialize)
 #define PTHREAD_MUTEX_RECURSIVE 1
 #define PTHREAD_MUTEX_ERRORCHECK 2
 #define PTHREAD_MUTEX_DEFAULT 0
+/* JOINABLE must be 0: a zeroed/uninitialized attr then means "joinable",
+ * matching both POSIX's default and what pthread_create does with no attr. */
+#define PTHREAD_CREATE_JOINABLE 0
+#define PTHREAD_CREATE_DETACHED 1
 #ifdef __cplusplus
 extern "C" {
 #endif
 int pthread_create(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
 int pthread_join(pthread_t, void **);
 int pthread_detach(pthread_t);
+int pthread_kill(pthread_t, int);   /* sig 0 = exists?, 9 = kill; else EINVAL */
+int pthread_attr_setdetachstate(pthread_attr_t *, int);
+int pthread_attr_getdetachstate(const pthread_attr_t *, int *);
 pthread_t pthread_self(void);
 int pthread_equal(pthread_t, pthread_t);
 void pthread_exit(void *);

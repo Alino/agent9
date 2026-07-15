@@ -1,0 +1,17 @@
+#!/bin/rc
+# cleanup.rc — kill every dosbox9 process and drop its rio window.
+#
+# Scoping: `/n/aw` is rungame.rc's own rio mountpoint and nothing else on the
+# box uses it, so `grep -l /n/aw /proc/*/ns` names exactly our processes and
+# nothing else. (`kill rc` / `kill sleep` would be a shotgun — the former takes
+# out the listen1 session's own shell.)
+#
+# Why any of this matters: while ANY proc in that namespace lives, rio keeps
+# the window. Older rungame.rc forked a raiser loop, so windows outlived their
+# gl9win2 and kept re-raising themselves over the live game.
+kill dosbox | rc >[2]/dev/null
+kill gl9win2 | rc >[2]/dev/null
+for(f in `{grep -l /n/aw /proc/*/ns >[2]/dev/null}){
+	p=`{basename `{basename -d $f}}
+	echo kill > /proc/$p/ctl >[2]/dev/null
+}

@@ -7,6 +7,7 @@
  *           record locks, signals, rlimits, sockets, mmap-of-files, passwd db.
  * None of the STUBs are reached when clang merely parses + emits an object. */
 #include <stdint.h>
+#include <stdarg.h>
 #include <malloc.h>
 
 typedef unsigned long n9size_t;
@@ -320,6 +321,56 @@ int    execvp(const char *p, char *const a[]) {
 	const char *s = p; while (*s && d < b + sizeof b - 1) *d++ = *s++;
 	*d = 0;
 	return execve(b, a, 0);
+}
+/* --- libgen.h: POSIX path splitting ---------------------------------------
+ * Both may modify the argument and return a pointer into it. The edge cases
+ * (trailing slashes, all-slashes, no-slash) are the whole job; see
+ * cc9/test/libgen_test.c for the table these were written against. */
+char *dirname(char *s) {
+	static char dot[] = ".", root[] = "/";
+	char *e, *p;
+	if (!s || !*s) return dot;
+	e = s; while (*e) e++; e--;                  /* last char */
+	while (e > s && *e == '/') e--;              /* strip trailing slashes */
+	p = e;
+	while (p > s && *p != '/') p--;              /* last slash at or before e */
+	if (*p != '/') return dot;                   /* no slash: "usr" -> "." */
+	while (p > s && *p == '/') p--;              /* collapse the run of slashes */
+	if (p == s && *p == '/') return root;        /* "/usr" -> "/" */
+	p[1] = 0;
+	return s;
+}
+char *basename(char *s) {
+	static char dot[] = ".", root[] = "/";
+	char *e, *p;
+	if (!s || !*s) return dot;
+	e = s; while (*e) e++; e--;
+	while (e > s && *e == '/') e--;
+	if (e == s && *e == '/') return root;        /* "/" or "//" -> "/" */
+	e[1] = 0;                                    /* chop trailing slashes */
+	p = e;
+	while (p > s && p[-1] != '/') p--;
+	return p;
+}
+
+/* execlp: the varargs spelling of execvp. Collect argv off the stack (NULL
+ * terminated) and hand it over. EXECL_MAXARG is a cap, not a POSIX limit —
+ * overflowing it is a caller bug, so fail loudly rather than truncate. */
+#define EXECL_MAXARG 64
+int    execlp(const char *p, const char *a0, ...) {
+	char *argv[EXECL_MAXARG];
+	int n = 0;
+	va_list ap;
+	argv[n++] = (char *)a0;
+	va_start(ap, a0);
+	while (n < EXECL_MAXARG) {
+		char *x = va_arg(ap, char *);
+		argv[n++] = x;
+		if (x == 0) break;
+	}
+	va_end(ap);
+	if (n >= EXECL_MAXARG && argv[n-1] != 0) { errno = 7 /*E2BIG*/; return -1; }
+	return execvp(p, argv);
 }
 /* waitpid over Plan 9 await(2): wait for child `pid` (or any if pid<=0), decode
  * the exit-status string into *s for the WIFEXITED/WEXITSTATUS macros. Plan 9

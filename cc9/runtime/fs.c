@@ -395,6 +395,23 @@ int unsetenv(const char *n){
 	n9_remove(path);   /* removing an absent var is not an error */
 	return 0;
 }
+/* putenv("K=V"). NB: POSIX says the caller's string BECOMES the environment
+ * (so later edits to it show through, and it must not be freed). That is
+ * unimplementable here — the environment is /env files, not an in-process
+ * environ[] that could alias the string — so we split and setenv (i.e. copy).
+ * Every program that isn't deliberately mutating the string afterward can't
+ * tell the difference. A missing '=' is EINVAL (POSIX allows treating
+ * "NAME" as an unset; the split form is the common reading). */
+int putenv(char *s){
+	if(!s){ errno=EINVAL; return -1; }
+	const char *eq=s; while(*eq && *eq!='=') eq++;
+	if(*eq!='='){ errno=EINVAL; return -1; }
+	char name[256]; long n=eq-s;
+	if(n<=0 || n>=(long)sizeof name){ errno=EINVAL; return -1; }
+	for(long i=0;i<n;i++) name[i]=s[i];
+	name[n]=0;
+	return setenv(name, eq+1, 1);
+}
 
 /* POSIX `environ`. Plan 9 keeps the environment as files under /env (no env
  * array on the entry stack), so crt0 calls this once at startup to materialize

@@ -1,0 +1,15 @@
+#!/bin/rc
+# dosbox9 — launch DOSBox on 9front. Run from a rio window.
+#
+# gl9win2 owns the window and feeds dosbox events; dosbox renders through our
+# SDL 1.2 Plan 9 backend (cc9 can't link libdraw, hence the two-process seam).
+#
+#   dosbox9                     # boot to Z:\>
+#   dosbox9 /usr/glenda/games   # mount that dir as C: and boot to it
+#   dosbox9 -conf my.conf       # your own config
+#
+# Ships a default config (cycles=max, output=surface — the only output we have)
+# unless you pass your own -conf.
+if(~ $* -conf)
+	exec gl9win2 /usr/glenda/dosbox9/dosbox $*
+exec gl9win2 /usr/glenda/dosbox9/dosbox -conf /usr/glenda/dosbox9/dosbox.conf $*
