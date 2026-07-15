@@ -11,29 +11,23 @@
 #                               with the prebuilt 0.14.1 host toolchain (no rebuild).
 #   04,06,08,10,12,13,14  src/ (backend) -> require REBUILDING the compiler (see linux-build.sh);
 #                           the prebuilt host binary will not have it.
-#   15-18  the NATIVE (compiler-on-9front) build via CBE+cc9 (see native/). 15 lib
+#   15-17  the NATIVE (compiler-on-9front) build via CBE+cc9 (see native/). 15 lib
 #          (start.zig/x86_64.zig, ofmt==c-guarded), 16 lib (plan9 fs/process arms +
-#          getrandom + rename), 17 src (single-threaded gpa in main.zig), 18 src
-#          (Compilation.zig cross-dir cache move). Enough for `build-exe`/`run`/
-#          `test` natively — the released `pac9 install zig9` binary.
-#
-# NOT YET EXTRACTED TO PATCHES (live in the working vendor/zig tree; see NOTES.md
-# "zig build natively — LANDED" for the complete accounting): the full native
-# `zig build` set — lib: Child.zig spawnPlan9, io.zig pollPlan9, Progress .plan9,
-# Watch.init void-Os, plan9.zig (sbrk→cc9_sbrk under stage2_c, CLOCK, symlinkat,
-# futimens, pwritev), Build.zig Step/Options+Run plan9 moves, Target.zig vector
-# workarounds ×3, compiler_rt.zig float-family gate + common.zig (plan9 strong
-# linkage, want_f16_helpers) + 4 f16 files, build_runner.zig fuzz gate; src:
-# main.zig (Cc9Allocator retain-forever gpa, cmdBuild runner defaults),
-# Compilation.zig (plan9 .zcu compiler-rt strat), Package/Fetch.zig cross-dir
-# move, link/Plan9.zig (globals/named-symbol resolution, bases init in
-# createEmpty, entry from _start atom, emit-fd self-heal, errstr diags, seeNav
-# got_index), arch/x86_64/CodeGen.zig (getOffset .memory/.indirect,
-# genExternSymbolRef + Select .symbol plan9 GOT arms), arch/x86_64/Lower.zig
-# (call/jmp memory-operand promotion). Also cc9/runtime/n9libc.c gained the
-# exported cc9_sbrk (the one-break-owner fix) — that one IS tracked in git.
-# These built the released binary; extraction to numbered patches is the
-# remaining hygiene task.
+#          getrandom + rename), 17 src (single-threaded gpa in main.zig).
+#   18-22  the native `zig build` set (see NOTES.md "zig build natively — LANDED"):
+#          18 cross-dir cache moves (Compilation + Package/Fetch), 19 compiler-rt
+#          compiled into the zcu (strong linkage, float families excluded on
+#          plan9-stage2), 20 named-symbol GOT resolution + linker robustness
+#          (bases init, entry from _start atom, emit-fd self-heal, Lower call/jmp
+#          mem promotion, getOffset .memory), 21 ONE break owner (plan9.sbrk →
+#          n9libc's exported cc9_sbrk under the C backend — the root cause of the
+#          latent heap corruption) + std.os.plan9 gaps, 22 the zig-build runtime
+#          (Child spawnPlan9, io pollPlan9, Progress/Watch/build_runner gates,
+#          Options/Run moves, Target vector workarounds, Cc9Allocator +
+#          cmdBuild runner defaults in main.zig).
+#          The companion cc9_sbrk export lives in cc9/runtime/n9libc.c (git-
+#          tracked, not a zig patch). Whole stack verified: pristine 0.14.1 +
+#          01..22 reproduces the shipping vendor tree byte-for-byte.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)              # zig9/port/plan9
 ZIG_SRC="${ZIG_SRC:-$HERE/../../vendor/zig}"

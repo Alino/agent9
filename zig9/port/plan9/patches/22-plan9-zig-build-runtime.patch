@@ -1,0 +1,492 @@
+Everything `zig build` needs at runtime on plan9: std.process.Child
+spawnPlan9 (rfork+exec+pipes, no CLOEXEC/errpipe), std.io pollPlan9
+(blocking-read poller — no poll(2)), Progress have_ipc=false, Watch.init
+runtime-fails on void-Os OSes, the build runner's fuzz/std.net block
+comptime-gated, Options/Run cross-directory moves, Target.zig's
+stage2_x86_64 vector workarounds extended to plan9, and main.zig: the
+Cc9Allocator (cc9-malloc-backed gpa, retain-forever free — a still-unpinned
+stale write corrupts a real free-list; a compile is a one-shot process) and
+cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
+
+--- a/lib/std/process/Child.zig
++++ b/lib/std/process/Child.zig
+@@ -243,11 +243,110 @@
+ 
+     if (native_os == .windows) {
+         return self.spawnWindows();
++    } else if (native_os == .plan9) {
++        return self.spawnPlan9();
+     } else {
+         return self.spawnPosix();
+     }
+ }
+ 
++// zig9: Plan 9 has no fork/CLOEXEC/execvpe; spawn over rfork(RFPROC|RFFDG|RFREND)
++// + exec, wiring .Pipe stdio through plan9 pipe()s and dup2. Spawn errors (a bad
++// exec) surface at wait() as a nonzero term rather than via an errpipe — Plan 9
++// has no atomic close-on-exec to build one. env_map is ignored: children inherit
++// the /env namespace group (zig build passes lib/cache dirs as args, not env).
++fn spawnPlan9(self: *ChildProcess) SpawnError!void {
++    const p9 = std.os.plan9;
++    const Pipe = struct {
++        fds: [2]i32 = .{ -1, -1 },
++        active: bool = false,
++        fn open(behavior: StdIo) !@This() {
++            if (behavior != .Pipe) return .{};
++            var self_: @This() = .{ .active = true };
++            if (@as(isize, @bitCast(p9.pipe(&self_.fds))) < 0) return error.SystemResources;
++            return self_;
++        }
++        fn closeBoth(self_: @This()) void {
++            if (self_.active) {
++                _ = p9.close(self_.fds[0]);
++                _ = p9.close(self_.fds[1]);
++            }
++        }
++    };
++
++    const stdin_pipe = try Pipe.open(self.stdin_behavior);
++    errdefer stdin_pipe.closeBoth();
++    const stdout_pipe = try Pipe.open(self.stdout_behavior);
++    errdefer stdout_pipe.closeBoth();
++    const stderr_pipe = try Pipe.open(self.stderr_behavior);
++    errdefer stderr_pipe.closeBoth();
++
++    var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
++    defer arena_allocator.deinit();
++    const arena = arena_allocator.allocator();
++    const argv_buf = try arena.allocSentinel(?[*:0]const u8, self.argv.len, null);
++    for (self.argv, 0..) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
++
++    const pid_result = p9.rfork(p9.RFPROC | p9.RFFDG | p9.RFREND);
++    const spid: isize = @bitCast(pid_result);
++    if (spid < 0) return error.SystemResources;
++    if (spid == 0) {
++        // Child: the RFFDG copy of the fd table has both ends of every pipe.
++        // dup the child-side end onto 0/1/2, then close ALL pipe fds so the
++        // parent's read ends see EOF when the child exits.
++        setUpChildIoPlan9(self.stdin_behavior, stdin_pipe.fds[0], 0);
++        setUpChildIoPlan9(self.stdout_behavior, stdout_pipe.fds[1], 1);
++        setUpChildIoPlan9(self.stderr_behavior, stderr_pipe.fds[1], 2);
++        stdin_pipe.closeBoth();
++        stdout_pipe.closeBoth();
++        stderr_pipe.closeBoth();
++        if (self.cwd) |cwd| {
++            var buf: [std.fs.max_path_bytes]u8 = undefined;
++            const cwd_z = std.fmt.bufPrintZ(&buf, "{s}", .{cwd}) catch p9.exits("cwd");
++            if (@as(isize, @bitCast(p9.chdir(cwd_z.ptr))) < 0) p9.exits("chdir");
++        } else if (self.cwd_dir) |cwd_dir| {
++            if (@as(isize, @bitCast(p9.fchdir(cwd_dir.fd))) < 0) p9.exits("fchdir");
++        }
++        // Plan 9 exec needs a resolvable path; retry via /bin for a bare name.
++        const arg0 = argv_buf[0].?;
++        _ = p9.exec(arg0, @ptrCast(argv_buf.ptr));
++        if (std.mem.indexOfScalar(u8, std.mem.span(arg0), '/') == null) {
++            var pb: [std.fs.max_path_bytes]u8 = undefined;
++            const p = std.fmt.bufPrintZ(&pb, "/bin/{s}", .{std.mem.span(arg0)}) catch p9.exits("exec");
++            _ = p9.exec(p.ptr, @ptrCast(argv_buf.ptr));
++        }
++        p9.exits("exec failed");
++    }
++
++    // Parent: keep our ends, close the child's ends.
++    errdefer comptime unreachable;
++    const pid: i32 = @intCast(spid);
++    self.stdin = if (self.stdin_behavior == .Pipe) .{ .handle = stdin_pipe.fds[1] } else null;
++    self.stdout = if (self.stdout_behavior == .Pipe) .{ .handle = stdout_pipe.fds[0] } else null;
++    self.stderr = if (self.stderr_behavior == .Pipe) .{ .handle = stderr_pipe.fds[0] } else null;
++    if (self.stdin_behavior == .Pipe) _ = p9.close(stdin_pipe.fds[0]);
++    if (self.stdout_behavior == .Pipe) _ = p9.close(stdout_pipe.fds[1]);
++    if (self.stderr_behavior == .Pipe) _ = p9.close(stderr_pipe.fds[1]);
++    self.id = pid;
++    self.term = null;
++}
++
++fn setUpChildIoPlan9(behavior: StdIo, pipe_fd: i32, target: i32) void {
++    const p9 = std.os.plan9;
++    switch (behavior) {
++        .Pipe => _ = p9.dup2(pipe_fd, target),
++        .Close => _ = p9.close(target),
++        .Ignore => {
++            const nf = p9.openMode("/dev/null", 2, 0); // ORDWR
++            if (@as(isize, @bitCast(nf)) >= 0) {
++                _ = p9.dup2(@intCast(nf), target);
++                _ = p9.close(@intCast(nf));
++            }
++        },
++        .Inherit => {}, // already inherited via RFFDG
++    }
++}
++
+ pub fn spawnAndWait(self: *ChildProcess) SpawnError!Term {
+     try self.spawn();
+     return self.wait();
+--- a/lib/std/io.zig
++++ b/lib/std/io.zig
+@@ -503,11 +503,40 @@
+         pub fn poll(self: *Self) !bool {
+             if (is_windows) {
+                 return pollWindows(self, null);
++            } else if (builtin.os.tag == .plan9) {
++                return pollPlan9(self, null);
+             } else {
+                 return pollPosix(self, null);
+             }
+         }
+ 
++        // zig9: Plan 9 has no poll(2). Blocking-read the first non-EOF fd in enum
++        // order into its fifo. Callers (e.g. std.Build's evalZigProcess) poll a
++        // child's {stdout, stderr}; the protocol stream is stdout, so draining it
++        // first, then stderr on EOF, matches how the data actually arrives.
++        // ponytail: single-fd blocking read — deadlocks only if a child floods a
++        // full stderr pipe while silent on stdout. Upgrade to rfork reader procs
++        // (cf. cc9/runtime/poll.c) if that ever bites.
++        fn pollPlan9(self: *Self, nanoseconds: ?u64) !bool {
++            _ = nanoseconds;
++            const bump_amt = 512;
++            for (&self.poll_fds, &self.fifos) |*poll_fd, *q| {
++                if (poll_fd.fd == -1) continue;
++                const buf = try q.writableWithSize(bump_amt);
++                const amt = posix.read(poll_fd.fd, buf) catch |err| switch (err) {
++                    error.BrokenPipe => 0,
++                    else => |e| return e,
++                };
++                q.update(amt);
++                if (amt == 0) {
++                    poll_fd.fd = -1;
++                    continue; // EOF on this fd; try the next
++                }
++                return true; // got data; more may follow
++            }
++            return false; // all fds at EOF
++        }
++
+         pub fn pollTimeout(self: *Self, nanoseconds: u64) !bool {
+             if (is_windows) {
+                 return pollWindows(self, nanoseconds);
+--- a/lib/std/Progress.zig
++++ b/lib/std/Progress.zig
+@@ -378,7 +378,9 @@
+ var debug_start_trace = std.debug.Trace.init;
+ 
+ pub const have_ipc = switch (builtin.os.tag) {
+-    .wasi, .freestanding, .windows => false,
++    // zig9: Plan 9 has no inheritable ZIG_PROGRESS fd (exec passes no envp and
++    // there's no fd-number env plumbing), so disable progress IPC.
++    .wasi, .freestanding, .windows, .plan9 => false,
+     else => true,
+ };
+ 
+--- a/lib/std/Build/Watch.zig
++++ b/lib/std/Build/Watch.zig
+@@ -811,6 +811,9 @@
+ };
+ 
+ pub fn init() !Watch {
++    // On OSes without a watch implementation `Os` is void; fail at runtime
++    // (`--watch` is opt-in) instead of failing to compile the build runner.
++    if (Os == void) return error.UnsupportedOperatingSystem;
+     return Os.init();
+ }
+ 
+--- a/lib/compiler/build_runner.zig
++++ b/lib/compiler/build_runner.zig
+@@ -423,34 +423,40 @@
+             else => return err,
+         };
+         if (fuzz) {
+-            switch (builtin.os.tag) {
+-                // Current implementation depends on two things that need to be ported to Windows:
+-                // * Memory-mapping to share data between the fuzzer and build runner.
+-                // * COFF/PE support added to `std.debug.Info` (it needs a batching API for resolving
+-                //   many addresses to source locations).
+-                .windows => fatal("--fuzz not yet implemented for {s}", .{@tagName(builtin.os.tag)}),
+-                else => {},
+-            }
+-            if (@bitSizeOf(usize) != 64) {
+-                // Current implementation depends on posix.mmap()'s second parameter, `length: usize`,
+-                // being compatible with `std.fs.getEndPos() u64`'s return value. This is not the case
+-                // on 32-bit platforms.
+-                // Affects or affected by issues #5185, #22523, and #22464.
+-                fatal("--fuzz not yet implemented on {d}-bit platforms", .{@bitSizeOf(usize)});
++            // Plan 9 has no sockets in std.net and no mmap; the comptime-known
++            // `if` excludes the fuzz/web-ui machinery so the runner compiles.
++            if (builtin.os.tag == .plan9) {
++                fatal("--fuzz not supported on {s}", .{@tagName(builtin.os.tag)});
++            } else {
++                switch (builtin.os.tag) {
++                    // Current implementation depends on two things that need to be ported to Windows:
++                    // * Memory-mapping to share data between the fuzzer and build runner.
++                    // * COFF/PE support added to `std.debug.Info` (it needs a batching API for resolving
++                    //   many addresses to source locations).
++                    .windows => fatal("--fuzz not yet implemented for {s}", .{@tagName(builtin.os.tag)}),
++                    else => {},
++                }
++                if (@bitSizeOf(usize) != 64) {
++                    // Current implementation depends on posix.mmap()'s second parameter, `length: usize`,
++                    // being compatible with `std.fs.getEndPos() u64`'s return value. This is not the case
++                    // on 32-bit platforms.
++                    // Affects or affected by issues #5185, #22523, and #22464.
++                    fatal("--fuzz not yet implemented on {d}-bit platforms", .{@bitSizeOf(usize)});
++                }
++                const listen_address = std.net.Address.parseIp("127.0.0.1", listen_port) catch unreachable;
++                try Fuzz.start(
++                    gpa,
++                    arena,
++                    global_cache_directory,
++                    zig_lib_directory,
++                    zig_exe,
++                    &run.thread_pool,
++                    run.step_stack.keys(),
++                    run.ttyconf,
++                    listen_address,
++                    main_progress_node,
++                );
+             }
+-            const listen_address = std.net.Address.parseIp("127.0.0.1", listen_port) catch unreachable;
+-            try Fuzz.start(
+-                gpa,
+-                arena,
+-                global_cache_directory,
+-                zig_lib_directory,
+-                zig_exe,
+-                &run.thread_pool,
+-                run.step_stack.keys(),
+-                run.ttyconf,
+-                listen_address,
+-                main_progress_node,
+-            );
+         }
+ 
+         if (!watch) return cleanExit();
+--- a/lib/std/Build/Step/Options.zig
++++ b/lib/std/Build/Step/Options.zig
+@@ -463,6 +463,19 @@
+                 });
+             };
+ 
++            if (builtin.os.tag == .plan9) {
++                // Plan 9 cannot rename across directories (tmp/ -> o/); this is
++                // a single generated file, so copy + delete.
++                b.cache_root.handle.copyFile(tmp_sub_path, b.cache_root.handle, sub_path, .{}) catch |err| {
++                    return step.fail("unable to copy options from '{}{s}' to '{}{s}': {s}", .{
++                        b.cache_root, tmp_sub_path,
++                        b.cache_root, sub_path,
++                        @errorName(err),
++                    });
++                };
++                b.cache_root.handle.deleteFile(tmp_sub_path) catch {};
++                return;
++            }
+             b.cache_root.handle.rename(tmp_sub_path, sub_path) catch |err| switch (err) {
+                 error.PathAlreadyExists => {
+                     // Other process beat us to it. Clean up the temp file.
+--- a/lib/std/Build/Step/Run.zig
++++ b/lib/std/Build/Step/Run.zig
+@@ -825,7 +825,18 @@
+     if (any_output) {
+         const o_sub_path = "o" ++ fs.path.sep_str ++ &digest;
+ 
+-        b.cache_root.handle.rename(tmp_dir_path, o_sub_path) catch |err| {
++        if (builtin.os.tag == .plan9) {
++            // Plan 9 cannot rename across directories (tmp/ -> o/): recursive
++            // copy + delete instead (names snapshotted before deleting — a
++            // Plan 9 dir read shifts while its entries are removed).
++            plan9MoveTree(b.allocator, b.cache_root.handle, tmp_dir_path, o_sub_path) catch |err| {
++                return step.fail("unable to move dir '{}{s}' to '{}{s}': {s}", .{
++                    b.cache_root,     tmp_dir_path,
++                    b.cache_root,     o_sub_path,
++                    @errorName(err),
++                });
++            };
++        } else b.cache_root.handle.rename(tmp_dir_path, o_sub_path) catch |err| {
+             if (err == error.PathAlreadyExists) {
+                 b.cache_root.handle.deleteTree(o_sub_path) catch |del_err| {
+                     return step.fail("unable to remove dir '{}'{s}: {s}", .{
+@@ -1810,3 +1821,61 @@
+         },
+     }
+ }
++
++// Plan 9 has no cross-directory rename (wstat renames a leaf in place), and its
++// std.fs.Dir.walk/deleteTree misbehave over 9P (entries shift while deleting),
++// so move a tree by recursive copy + delete with names snapshotted up front.
++// Mirrors the helpers in src/Compilation.zig / src/Package/Fetch.zig.
++fn plan9DirNames(gpa: std.mem.Allocator, d: fs.Dir) std.ArrayListUnmanaged([]u8) {
++    var names: std.ArrayListUnmanaged([]u8) = .{};
++    var it = d.iterate();
++    while (it.next() catch null) |e| {
++        const dup = gpa.dupe(u8, e.name) catch continue;
++        names.append(gpa, dup) catch gpa.free(dup);
++    }
++    return names;
++}
++fn plan9RmTree(gpa: std.mem.Allocator, parent: fs.Dir, name: []const u8) void {
++    const st = parent.statFile(name) catch {
++        parent.deleteFile(name) catch {};
++        return;
++    };
++    if (st.kind != .directory) {
++        parent.deleteFile(name) catch {};
++        return;
++    }
++    var d = parent.openDir(name, .{ .iterate = true }) catch return;
++    var names = plan9DirNames(gpa, d);
++    for (names.items) |nm| plan9RmTree(gpa, d, nm);
++    for (names.items) |nm| gpa.free(nm);
++    names.deinit(gpa);
++    d.close();
++    parent.deleteDir(name) catch {};
++}
++fn plan9CopyTree(gpa: std.mem.Allocator, sdir: fs.Dir, spath: []const u8, ddir: fs.Dir, dpath: []const u8) !void {
++    try ddir.makePath(dpath);
++    var s = try sdir.openDir(spath, .{ .iterate = true });
++    var names = plan9DirNames(gpa, s);
++    s.close();
++    defer {
++        for (names.items) |nm| gpa.free(nm);
++        names.deinit(gpa);
++    }
++    for (names.items) |nm| {
++        var b1: [fs.max_path_bytes]u8 = undefined;
++        var b2: [fs.max_path_bytes]u8 = undefined;
++        const sp = try std.fmt.bufPrint(&b1, "{s}/{s}", .{ spath, nm });
++        const dp = try std.fmt.bufPrint(&b2, "{s}/{s}", .{ dpath, nm });
++        const cst = sdir.statFile(sp) catch continue;
++        switch (cst.kind) {
++            .directory => try plan9CopyTree(gpa, sdir, sp, ddir, dp),
++            else => try sdir.copyFile(sp, ddir, dp, .{}),
++        }
++    }
++}
++fn plan9MoveTree(gpa: std.mem.Allocator, dir: fs.Dir, src: []const u8, dst: []const u8) !void {
++    plan9RmTree(gpa, dir, dst);
++    errdefer plan9RmTree(gpa, dir, dst);
++    try plan9CopyTree(gpa, dir, src, dir, dst);
++    plan9RmTree(gpa, dir, src);
++}
+--- a/lib/std/Target.zig
++++ b/lib/std/Target.zig
+@@ -1219,7 +1219,7 @@
+ 
+             /// Adds the specified feature set but not its dependencies.
+             pub fn addFeatureSet(set: *Set, other_set: Set) void {
+-                if (builtin.zig_backend == .stage2_x86_64 and builtin.object_format == .coff) {
++                if (builtin.zig_backend == .stage2_x86_64 and (builtin.object_format == .coff or builtin.object_format == .plan9)) {
+                     for (&set.ints, other_set.ints) |*set_int, other_set_int| set_int.* |= other_set_int;
+                 } else {
+                     set.ints = @as(@Vector(usize_count, usize), set.ints) | @as(@Vector(usize_count, usize), other_set.ints);
+@@ -1235,7 +1235,7 @@
+ 
+             /// Removes the specified feature but not its dependents.
+             pub fn removeFeatureSet(set: *Set, other_set: Set) void {
+-                if (builtin.zig_backend == .stage2_x86_64 and builtin.object_format == .coff) {
++                if (builtin.zig_backend == .stage2_x86_64 and (builtin.object_format == .coff or builtin.object_format == .plan9)) {
+                     for (&set.ints, other_set.ints) |*set_int, other_set_int| set_int.* &= ~other_set_int;
+                 } else {
+                     set.ints = @as(@Vector(usize_count, usize), set.ints) & ~@as(@Vector(usize_count, usize), other_set.ints);
+@@ -1268,7 +1268,7 @@
+             }
+ 
+             pub fn isSuperSetOf(set: Set, other_set: Set) bool {
+-                if (builtin.zig_backend == .stage2_x86_64 and builtin.object_format == .coff) {
++                if (builtin.zig_backend == .stage2_x86_64 and (builtin.object_format == .coff or builtin.object_format == .plan9)) {
+                     var result = true;
+                     for (&set.ints, other_set.ints) |*set_int, other_set_int|
+                         result = result and (set_int.* & other_set_int) == other_set_int;
+--- a/src/main.zig
++++ b/src/main.zig
+@@ -216,6 +216,52 @@
+ };
+ var zero_allocator: ZeroAllocator = undefined;
+ 
++// zig9: back the plan9 single-threaded compiler heap with cc9's malloc/free
++// (n9libc — the same heap that runs rustc and CPython on 9front) instead of the
++// std sbrk page allocator, whose free-list corrupts under the heavy allocation
++// load of compiling the build runner in-process (a GP fault in SbrkAllocator.free).
++// cc9 malloc only guarantees 16-byte alignment, so over-allocate and stash the
++// raw pointer just below the aligned one. resize never grows in place (returns
++// false -> the caller reallocs via alloc+copy+free, so ZeroAllocator zeroes the
++// new block); this keeps it simple and correct at a small perf cost.
++const Cc9Allocator = struct {
++    extern fn malloc(n: usize) ?*anyopaque;
++    extern fn free(p: ?*anyopaque) void;
++    const hdr = @sizeOf(usize);
++    fn allocator() std.mem.Allocator {
++        return .{ .ptr = undefined, .vtable = &.{
++            .alloc = alloc,
++            .resize = resize,
++            .remap = remap,
++            .free = freeFn,
++        } };
++    }
++    fn alloc(_: *anyopaque, len: usize, a: std.mem.Alignment, _: usize) ?[*]u8 {
++        const alignb = a.toByteUnits();
++        const raw = malloc(len + alignb + hdr) orelse return null;
++        const base = @intFromPtr(raw) + hdr;
++        const aligned = std.mem.alignForward(usize, base, alignb);
++        const store: *usize = @ptrFromInt(aligned - hdr);
++        store.* = @intFromPtr(raw);
++        return @ptrFromInt(aligned);
++    }
++    fn resize(_: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
++        return new_len <= buf.len;
++    }
++    fn remap(_: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
++        return if (new_len <= buf.len) buf.ptr else null;
++    }
++    fn freeFn(_: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
++        // ponytail: deliberately a no-op — retain-forever. The compiler has a
++        // latent stale-pointer write (masked for years by DebugAllocator's
++        // retained buckets; with real free it corrupts the K&R heap and GP-
++        // faults at build_runner scale). A one-shot compiler process can leak;
++        // the kernel reclaims at exit. Real fix needs a tracking allocator to
++        // pin the UAF, then restore: free(@ptrFromInt(store.*)).
++        _ = buf;
++    }
++};
++
+ pub fn main() anyerror!void {
+     crash_report.initialize();
+ 
+@@ -235,7 +281,7 @@
+         // the sbrk page_allocator is the proven plan9 heap (behavior suite);
+         // skip its leak-check deinit (is_debug=false) — the process is exiting.
+         if (builtin.single_threaded) {
+-            zero_allocator = .{ .backing = debug_allocator.allocator() };
++            zero_allocator = .{ .backing = Cc9Allocator.allocator() };
+             break :gpa .{ zero_allocator.allocator(), false };
+         }
+         break :gpa switch (builtin.mode) {
+@@ -5209,6 +5255,13 @@
+                 },
+                 .root_src_path = "build_runner.zig",
+             };
++
++            // zig9: the build runner runs on the host (native target). On Plan 9
++            // the self-hosted x86_64 backend panics in safety modes and
++            // Thread.spawn is a compile-error, so force the runner to
++            // ReleaseSmall + single-threaded + strip (matches the rule for every
++            // natively-compiled plan9 program).
++            const runner_is_plan9 = resolved_target.result.os.tag == .plan9;
+ 
+             const config = try Compilation.Config.resolve(.{
+                 .output_mode = .Exe,
+@@ -5216,6 +5269,8 @@
+                 .have_zcu = true,
+                 .emit_bin = true,
+                 .is_test = false,
++                .root_optimize_mode = if (runner_is_plan9) .ReleaseSmall else null,
++                .root_strip = if (runner_is_plan9) true else null,
+             });
+ 
+             const root_mod = try Package.Module.create(arena, .{
+@@ -5225,6 +5280,8 @@
+                 .cc_argv = &.{},
+                 .inherited = .{
+                     .resolved_target = resolved_target,
++                    .optimize_mode = if (runner_is_plan9) .ReleaseSmall else null,
++                    .single_threaded = if (runner_is_plan9) true else null,
+                 },
+                 .global = config,
+                 .parent = null,

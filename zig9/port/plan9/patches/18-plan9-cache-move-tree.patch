@@ -1,6 +1,12 @@
---- a/src/Compilation.zig	2026-07-15 05:05:15
-+++ b/src/Compilation.zig	2026-07-15 05:01:20
-@@ -2417,7 +2417,7 @@
+Plan 9 cannot rename across directories (wstat renames a leaf in place), and
+std.fs.Dir.walk/deleteTree misbehave over 9P — move cache trees by recursive
+copy+delete with entry names snapshotted before any delete. Covers both
+Compilation.renameTmpIntoCache and Package.Fetch.renameTmpIntoCache (the
+dependencies.zig move that zig build hits). Regenerated 2026-07-15.
+
+--- a/src/Compilation.zig
++++ b/src/Compilation.zig
+@@ -2417,7 +2421,7 @@
                  break :w .no;
              };
  
@@ -9,10 +15,15 @@
                  return comp.setMiscFailure(
                      .rename_results,
                      "failed to rename compilation results ('{}{s}') into local cache ('{}{s}'): {s}",
-@@ -2544,11 +2544,80 @@
- // then delete the source, using only primitives proven to work on plan9
- // (openDir/iterate/makePath/copyFile/deleteFile/deleteDir). std.fs.Dir.walk and
- // deleteTree misbehave on plan9's 9P fs, so recursion is hand-rolled.
+@@ -2539,11 +2543,85 @@
+ /// Linker backends which do not have this requirement can fall back to the simple
+ /// implementation at the bottom of this function.
+ /// This function is only called when CacheMode is `whole`.
++// zig9: Plan 9 has no cross-directory rename (wstat only changes a leaf name in
++// place), so moving tmp/<rand> -> o/<hex> can't be a rename. Recursively copy
++// then delete the source, using only primitives proven to work on plan9
++// (openDir/iterate/makePath/copyFile/deleteFile/deleteDir). std.fs.Dir.walk and
++// deleteTree misbehave on plan9's 9P fs, so recursion is hand-rolled.
 +// Collect an iterable dir's entry names up front. Plan 9 directory reads return
 +// entries in ~8 KB batches and re-reading after a modification (delete) skips or
 +// repeats entries, so a delete/recurse pass MUST snapshot names before touching
@@ -90,3 +101,90 @@
      var seen_eaccess = false;
      while (true) {
          std.fs.rename(
+--- a/src/Package/Fetch.zig
++++ b/src/Package/Fetch.zig
+@@ -1421,6 +1421,20 @@
+ 
+ pub fn renameTmpIntoCache(cache_dir: fs.Dir, tmp_dir_sub_path: []const u8, dest_dir_sub_path: []const u8) !void {
+     assert(dest_dir_sub_path[1] == fs.path.sep);
++    if (builtin.os.tag == .plan9) {
++        // Plan 9 wstat can only rename a leaf in place; it cannot move a tree
++        // across directories (tmp/<rand> -> o/<hex>). Copy+delete instead.
++        // ponytail: mirrors Compilation.plan9MoveTree — can't share it (Compilation
++        // imports this file, not the reverse). Same proven logic, kept in sync by hand.
++        cache_dir.makeDir(dest_dir_sub_path[0..1]) catch |e| switch (e) {
++            error.PathAlreadyExists => {},
++            else => return e,
++        };
++        var gpa_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
++        defer gpa_state.deinit();
++        const gpa = gpa_state.allocator();
++        return plan9MoveTree(gpa, cache_dir, tmp_dir_sub_path, dest_dir_sub_path);
++    }
+     var handled_missing_dir = false;
+     while (true) {
+         cache_dir.rename(tmp_dir_sub_path, dest_dir_sub_path) catch |err| switch (err) {
+@@ -1445,6 +1459,63 @@
+     }
+ }
+ 
++// Plan 9 cache-tree move helpers (see renameTmpIntoCache). Kept in sync with the
++// identical set in Compilation.zig by hand; the circular import forbids sharing.
++fn plan9DirNames(gpa: std.mem.Allocator, d: fs.Dir) std.ArrayListUnmanaged([]u8) {
++    var names: std.ArrayListUnmanaged([]u8) = .{};
++    var it = d.iterate();
++    while (it.next() catch null) |e| {
++        const dup = gpa.dupe(u8, e.name) catch continue;
++        names.append(gpa, dup) catch gpa.free(dup);
++    }
++    return names;
++}
++fn plan9RmTree(gpa: std.mem.Allocator, parent: fs.Dir, name: []const u8) void {
++    // Plan 9 openDir succeeds even on a regular file; decide kind by stat.
++    const st = parent.statFile(name) catch {
++        parent.deleteFile(name) catch {};
++        return;
++    };
++    if (st.kind != .directory) {
++        parent.deleteFile(name) catch {};
++        return;
++    }
++    var d = parent.openDir(name, .{ .iterate = true }) catch return;
++    var names = plan9DirNames(gpa, d);
++    for (names.items) |nm| plan9RmTree(gpa, d, nm);
++    for (names.items) |nm| gpa.free(nm);
++    names.deinit(gpa);
++    d.close();
++    parent.deleteDir(name) catch {};
++}
++fn plan9CopyTree(gpa: std.mem.Allocator, sdir: fs.Dir, spath: []const u8, ddir: fs.Dir, dpath: []const u8) !void {
++    try ddir.makePath(dpath);
++    var s = try sdir.openDir(spath, .{ .iterate = true });
++    var names = plan9DirNames(gpa, s);
++    s.close();
++    defer {
++        for (names.items) |nm| gpa.free(nm);
++        names.deinit(gpa);
++    }
++    for (names.items) |nm| {
++        var b1: [fs.max_path_bytes]u8 = undefined;
++        var b2: [fs.max_path_bytes]u8 = undefined;
++        const sp = try std.fmt.bufPrint(&b1, "{s}/{s}", .{ spath, nm });
++        const dp = try std.fmt.bufPrint(&b2, "{s}/{s}", .{ dpath, nm });
++        const cst = sdir.statFile(sp) catch continue;
++        switch (cst.kind) {
++            .directory => try plan9CopyTree(gpa, sdir, sp, ddir, dp),
++            else => try sdir.copyFile(sp, ddir, dp, .{}),
++        }
++    }
++}
++fn plan9MoveTree(gpa: std.mem.Allocator, dir: fs.Dir, src: []const u8, dst: []const u8) !void {
++    plan9RmTree(gpa, dir, dst);
++    errdefer plan9RmTree(gpa, dir, dst);
++    try plan9CopyTree(gpa, dir, src, dir, dst);
++    plan9RmTree(gpa, dir, src);
++}
++
+ const ComputedHash = struct {
+     digest: Package.Hash.Digest,
+     total_size: u64,

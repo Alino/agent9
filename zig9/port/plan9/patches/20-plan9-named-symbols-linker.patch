@@ -1,0 +1,297 @@
+Named externs (compiler-rt libcalls) on plan9: each name gets a phantom atom
+with a GOT slot, resolved at flush against the same-named zcu export
+(fail-by-name if missing). CodeGen's genExternSymbolRef and the Select
+.symbol operand emit ds-relative GOT loads/calls; Lower promotes call/jmp
+memory operands to 64-bit (call m32 has no encoding). Robustness: bases
+initialized in createEmpty (the in-process cmdBuild flow never calls open(),
+which was the only place setting them — atoms all landed at offset ~0 and
+the header entry was 0); entry derived from the _start export's atom offset
+after layout (writeSyms's name scan read a garbage sym value on this path);
+flushModule validates/reopens a dead emit fd and reports kernel errstr on
+write failures; seeNav allocates got_index on the found-existing path;
+getOffset handles .memory/.indirect operands.
+
+--- a/src/link/Plan9.zig
++++ b/src/link/Plan9.zig
+@@ -62,6 +62,12 @@
+ /// during flush.
+ nav_exports: std.AutoArrayHashMapUnmanaged(InternPool.Nav.Index, []Zcu.Export.Index) = .empty,
+ 
++/// Named external symbols (compiler-rt libcalls like __divti3, memcpy). Each
++/// gets a phantom atom with a GOT slot; flush points the slot at the export of
++/// the same name (compiler_rt is compiled into the zcu on plan9, so the callee
++/// is always in-module). Keys are owned by gpa.
++globals: std.StringArrayHashMapUnmanaged(Atom.Index) = .empty,
++
+ lazy_syms: LazySymbolTable = .{},
+ 
+ uavs: std.AutoHashMapUnmanaged(InternPool.Index, Atom.Index) = .empty,
+@@ -335,7 +341,12 @@
+             .build_id = options.build_id,
+         },
+         .sixtyfour_bit = sixtyfour_bit,
+-        .bases = undefined,
++        // zig9: was `undefined`, set only by open(). The build system's
++        // in-process compilation (cmdBuild + whole-cache mode) constructs the
++        // linker via createEmpty and opens the emit file through makeWritable,
++        // which never sets bases — every atom then gets offset ~0 and the
++        // binary's entry point is 0 ("exec header invalid"). Always initialize.
++        .bases = defaultBaseAddrs(target.cpu.arch),
+         .magic = try aout.magicFromArch(target.cpu.arch),
+     };
+     // a / will always be in a file path
+@@ -598,8 +609,25 @@
+     for (self.etext_edata_end_atom_indices) |idx| {
+         if (idx != null) extern_atom_count += 1;
+     }
++    // named globals are phantom atoms too: a GOT slot, no content, no iovec
++    extern_atom_count += self.globals.count();
+     return extern_atom_count;
+ }
++
++/// Get (or create) the phantom atom for a named external symbol. The returned
++/// atom has a GOT slot; its value is resolved against the zcu's exports at
++/// flush time. `lib_name` is meaningless on Plan 9 (fully static).
++pub fn getGlobalSymbol(self: *Plan9, name: []const u8, lib_name: ?[]const u8) !Atom.Index {
++    _ = lib_name;
++    if (self.globals.get(name)) |index| return index;
++    const gpa = self.base.comp.gpa;
++    const owned = try gpa.dupe(u8, name);
++    errdefer gpa.free(owned);
++    const index = try self.createAtom();
++    self.getAtomPtr(index).got_index = self.allocateGotIndex();
++    try self.globals.putNoClobber(gpa, owned, index);
++    return index;
++}
+ // counts decls, and lazy syms
+ fn atomCount(self: *Plan9) usize {
+     var fn_nav_count: usize = 0;
+@@ -696,6 +724,27 @@
+     @memset(pad_buf, 0);
+     var n_pad: usize = 0;
+ 
++    // zig9: when the compiler itself runs on plan9 (--listen builds under the
++    // build runner), the emit fd is sometimes already dead at flush ("fd out of
++    // range or not open") — root cause unpinned (suspected stray close in the
++    // CBE runtime under the child-process fd layout). Validate and reopen from
++    // the emit path rather than writing into a dead fd.
++    if (builtin.os.tag == .plan9) {
++        const stale = if (self.base.file) |f| blk: {
++            _ = f.stat() catch break :blk true;
++            break :blk false;
++        } else true;
++        if (stale) {
++            log.warn("emit fd stale at flush; reopening {s}", .{self.base.emit.sub_path});
++            self.base.file = self.base.emit.root_dir.handle.createFile(self.base.emit.sub_path, .{
++                .truncate = false,
++                .read = true,
++                .mode = link.File.determineMode(false, comp.config.output_mode, comp.config.link_mode),
++            }) catch |err| return diags.fail("plan9: cannot reopen emit file '{s}': {s} (kernel: {s})", .{
++                self.base.emit.sub_path, @errorName(err), std.os.plan9.errstr(),
++            });
++        }
++    }
+     const file = self.base.file.?;
+ 
+     var hdr_buf: [40]u8 = undefined;
+@@ -891,8 +940,63 @@
+             }
+         }
+     }
++    // Resolve named globals (compiler-rt libcalls): every atom now has its final
++    // offset, so point each global's GOT slot at the same-named zcu export.
++    if (self.globals.count() != 0) {
++        const ip = &pt.zcu.intern_pool;
++        var git = self.globals.iterator();
++        while (git.next()) |g| {
++            const name = g.key_ptr.*;
++            const global_atom = self.getAtom(g.value_ptr.*);
++            const target_off: u64 = off: {
++                var nit = self.nav_exports.iterator();
++                while (nit.next()) |ne| {
++                    for (ne.value_ptr.*) |export_idx| {
++                        const exp = export_idx.ptr(pt.zcu);
++                        if (exp.opts.name.eqlSlice(name, ip)) {
++                            const target_atom = self.getAtom(self.navs.get(ne.key_ptr.*).?.index);
++                            break :off target_atom.offset orelse
++                                return diags.fail("plan9: export '{s}' has no address at flush", .{name});
++                        }
++                    }
++                }
++                return diags.fail("plan9: undefined symbol: '{s}' (no zcu export with that name)", .{name});
++            };
++            log.debug("resolve global '{s}' (got_table[0x{x}] = 0x{x})", .{ name, global_atom.got_index.? * 8, target_off });
++            if (!self.sixtyfour_bit) {
++                mem.writeInt(u32, got_table[global_atom.got_index.? * 4 ..][0..4], @as(u32, @intCast(target_off)), target.cpu.arch.endian());
++            } else {
++                mem.writeInt(u64, got_table[global_atom.got_index.? * 8 ..][0..8], target_off, target.cpu.arch.endian());
++            }
++        }
++    }
+     var sym_buf = std.ArrayList(u8).init(gpa);
+     try self.writeSyms(&sym_buf);
++    // zig9: derive the entry point directly from the `_start` export's atom,
++    // AFTER writeSyms — whose name scan also assigns entry_val, from the export
++    // sym's `.value`, which is 0/undefined on the compiler-on-plan9 path (the
++    // silent source of "exec header invalid" runners). The atom offset is
++    // authoritative; the scan is only a fallback for a missing export.
++    {
++        const ip = &pt.zcu.intern_pool;
++        var found_export = false;
++        var nit = self.nav_exports.iterator();
++        outer: while (nit.next()) |ne| {
++            for (ne.value_ptr.*) |export_idx| {
++                const exp = export_idx.ptr(pt.zcu);
++                if (exp.opts.name.eqlSlice("_start", ip)) {
++                    found_export = true;
++                    if (self.navs.get(ne.key_ptr.*)) |meta| {
++                        if (self.getAtom(meta.index).offset) |o| self.entry_val = o;
++                    }
++                    break :outer;
++                }
++            }
++        }
++        log.debug("entry: found_export={} entry_val={?x}", .{ found_export, self.entry_val });
++    }
++    if (self.entry_val == null or self.entry_val.? == 0)
++        return diags.fail("plan9: no usable '_start' entry (export missing or unplaced)", .{});
+     const syms = try sym_buf.toOwnedSlice();
+     defer gpa.free(syms);
+     assert(2 + self.atomCount() - self.externCount() + n_pad == iovecs_i); // real content + alignment padding
+@@ -969,7 +1073,17 @@
+             }
+         }
+     }
+-    file.pwritevAll(iovecs, 0) catch |err| return diags.fail("failed to write file: {s}", .{@errorName(err)});
++    file.pwritevAll(iovecs, 0) catch |err| {
++        // zig9: when the compiler itself runs on plan9, surface the kernel's
++        // actual error string — the coarse errno mapping hides it (a bare
++        // "Unexpected" cost a debugging session).
++        if (builtin.os.tag == .plan9) {
++            return diags.fail("failed to write file: {s} (kernel: {s})", .{
++                @errorName(err), std.os.plan9.errstr(),
++            });
++        }
++        return diags.fail("failed to write file: {s}", .{@errorName(err)});
++    };
+ }
+ fn addNavExports(
+     self: *Plan9,
+@@ -1041,6 +1155,13 @@
+         };
+     }
+     const atom_idx = gop.value_ptr.index;
++    // seeNav is the point a reference is generated (genNavRef -> getOffsetTableAddress,
++    // which asserts got_index != null). If this nav's atom was created by another path
++    // (e.g. a lazy symbol) it may still be null; with self-hosted-backend safety off a
++    // null unwrap is UB, not a panic. Ensure it here. (LLVM elides the dead debug-log
++    // call at line ~1058, so the cross path never surfaced this.)
++    if (self.getAtomPtr(atom_idx).got_index == null)
++        self.getAtomPtr(atom_idx).got_index = self.allocateGotIndex();
+     // handle externs here because they might not get updateDecl called on them
+     const nav = ip.getNav(nav_index);
+     if (nav.getExtern(ip) != null) {
+@@ -1206,6 +1327,8 @@
+         gpa.free(export_indices);
+     }
+     self.nav_exports.deinit(gpa);
++    for (self.globals.keys()) |key| gpa.free(key);
++    self.globals.deinit(gpa);
+     self.syms.deinit(gpa);
+     self.got_index_free_list.deinit(gpa);
+     self.syms_index_free_list.deinit(gpa);
+--- a/src/arch/x86_64/CodeGen.zig
++++ b/src/arch/x86_64/CodeGen.zig
+@@ -96261,6 +96261,28 @@
+             .call => try self.asmRegister(.{ ._, .call }, scratch_reg),
+             else => unreachable,
+         }
++    } else if (self.bin_file.cast(.plan9)) |p9_file| {
++        // zig9: named externs (compiler-rt libcalls) resolve through a phantom
++        // GOT slot the linker points at the same-named zcu export at flush.
++        // Same ds-relative GOT idiom as genLazySymbolRef's plan9 arm.
++        const atom_index = p9_file.getGlobalSymbol(callee, lib) catch |err|
++            return self.fail("{s} creating global symbol '{s}'", .{ @errorName(err), callee });
++        const got_addr = p9_file.getAtom(atom_index).getOffsetTableAddress(p9_file);
++        const got_mem: Memory = .{
++            .base = .{ .reg = .ds },
++            .mod = .{ .rm = .{
++                .size = .qword,
++                .disp = @intCast(got_addr),
++            } },
++        };
++        switch (tag) {
++            .mov => {
++                const scratch_reg = abi.getCAbiLinkerScratchReg(self.target.cCallingConvention().?);
++                try self.asmRegisterMemory(.{ ._, .mov }, scratch_reg.to64(), got_mem);
++            },
++            .call => try self.asmMemory(.{ ._, .call }, got_mem),
++            else => unreachable,
++        }
+     } else return self.fail("TODO implement calling extern functions", .{});
+ }
+ 
+@@ -100905,7 +100927,13 @@
+                     .mod = .{ .rm = .{ .disp = reg_off.off + off } },
+                 });
+             },
+-            .load_symbol, .load_frame => {
++            // .memory/.indirect are in-memory pointer values just like
++            // .load_symbol/.load_frame (they group together elsewhere in this
++            // backend): materialize the pointer into a register, then offset.
++            // The self-hosted backend hits these compiling large programs (the
++            // build runner); the corpus/behavior suite never did, so the `else`
++            // panic here shipped latent.
++            .load_symbol, .load_frame, .memory, .indirect => {
+                 const new_reg = try cg.register_manager.allocReg(new_temp_index.toIndex(), abi.RegisterClass.gp);
+                 new_temp_index.tracking(cg).* = .init(.{ .register_offset = .{ .reg = new_reg, .off = off } });
+                 try cg.genSetReg(new_reg, .usize, mcv, .{});
+@@ -107090,7 +107118,16 @@
+                             return cg.fail("external symbols unimplemented for {s}", .{@tagName(cg.bin_file.tag)}),
+                     } }), true };
+                 },
+-                .symbol => |symbol_spec| .{ try cg.tempInit(spec.type, .{ .lea_symbol = .{
++                .symbol => |symbol_spec| if (cg.bin_file.cast(.plan9)) |p9_file| plan9: {
++                    // zig9: the symbol's address lives in its phantom GOT slot
++                    // (resolved at flush against the same-named zcu export), so
++                    // "address of symbol" = load from the slot. Mirrors the
++                    // .lazy_symbol plan9 arm above.
++                    const atom_index = p9_file.getGlobalSymbol(symbol_spec.name, symbol_spec.lib) catch |err|
++                        return cg.fail("{s} creating global symbol '{s}'", .{ @errorName(err), symbol_spec.name });
++                    const got_addr = p9_file.getAtom(atom_index).getOffsetTableAddress(p9_file);
++                    break :plan9 .{ try cg.tempInit(spec.type, .{ .memory = got_addr }), true };
++                } else .{ try cg.tempInit(spec.type, .{ .lea_symbol = .{
+                     .sym_index = if (cg.bin_file.cast(.elf)) |elf_file|
+                         try elf_file.getGlobalSymbol(symbol_spec.name, symbol_spec.lib)
+                     else if (cg.bin_file.cast(.macho)) |macho_file|
+--- a/src/arch/x86_64/Lower.zig
++++ b/src/arch/x86_64/Lower.zig
+@@ -561,14 +561,23 @@
+             },
+         };
+     }
+-    // zig9: a near call/jmp target register is always 64-bit in long mode. The
+-    // Select patterns reference the (symbol) target temp at dword size — harmless
+-    // for elf/macho (the target lowers to a rel32 immediate), but on plan9 the
+-    // lazy symbol is materialized into a register, yielding `call r32`, which has
+-    // no encoding. Promote a register call/jmp target to 64-bit here.
++    // zig9: a near call/jmp target is always 64-bit in long mode. The Select
++    // patterns reference the (symbol) target temp at dword size — harmless for
++    // elf/macho (the target lowers to a rel32 immediate), but on plan9 the
++    // symbol is materialized as a register or a ds-relative GOT load, yielding
++    // `call r32`/`call m32`, which have no encoding. Promote to 64-bit here.
+     switch (emit_mnemonic) {
+         .call, .jmp => if (emit_ops.len > 0) switch (emit_ops[0]) {
+             .reg => |r| emit_ops[0] = .{ .reg = r.to64() },
++            .mem => |m| {
++                var m64 = m;
++                switch (m64) {
++                    .sib => |*s| s.ptr_size = .qword,
++                    .rip => |*r| r.ptr_size = .qword,
++                    .moffs => {},
++                }
++                emit_ops[0] = .{ .mem = m64 };
++            },
+             else => {},
+         },
+         else => {},

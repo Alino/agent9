@@ -728,9 +728,12 @@ CBE rebuild + on-box probe per theory.
    flush against same-named zcu exports (fail-by-name if missing);
    `genExternSymbolRef` + the Select `.symbol` operand emit ds-relative GOT
    loads/calls on plan9; Lower's call/jmp promotion extended to memory operands
-   (`call m32` has no encoding). This closed the historical "only 2 unrunnable
-   behavior files" gap — the suite now builds 116/119 files, 1792 pass / 0 fail
-   (baseline was 115 files, 1773 pass).
+   (`call m32` has no encoding). With the FULL compiler-rt this briefly closed
+   the historical "only 2 unrunnable behavior files" gap (116/119 files, 1792
+   pass / 0 fail) — the float-family trim in step 7 then gave the extra file
+   back, so the SHIPPED state is exactly the committed baseline: 115/119 files,
+   1773 pass / 0 fail (the 4 non-building files are the same platform-N/A set
+   as before; `zon` now fails on a cleanly-named missing float libcall).
 4. **The heap-corruption root cause — TWO ALLOCATORS, ONE BREAK:** Zig's
    `plan9.sbrk` kept its own break cursor rooted at `end`; cc9's `n9_sbrk`
    keeps another, also rooted at `end`. In the CBE compiler both run in one

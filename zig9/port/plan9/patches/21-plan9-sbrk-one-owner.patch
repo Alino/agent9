@@ -1,0 +1,66 @@
+THE root cause of the CBE compiler's latent heap corruption: two independent
+sbrk cursors, both rooted at `end` — Zig std's plan9.sbrk and cc9 n9libc's
+n9_sbrk — handing out overlapping memory in one process. Under the C backend
+plan9.sbrk now delegates to n9libc's exported, locked cc9_sbrk (one break
+owner); native-backend target programs keep the local cursor. Also the
+std.os.plan9 gaps the build runner needs: CLOCK, symlinkat (EOPNOTSUPP),
+futimens (no-op success; the Cache content-hashes when mtime is unreliable).
+
+--- a/lib/std/os/plan9.zig
++++ b/lib/std/os/plan9.zig
+@@ -480,6 +480,23 @@
+         return create_errno;
+     }
+     _ = close(@intCast(fd));
++    return 0;
++}
++
++pub fn symlinkat(target_path: [*:0]const u8, newdirfd: fd_t, sym_link_path: [*:0]const u8) usize {
++    // Plan 9 has no symlinks.
++    _ = target_path;
++    _ = newdirfd;
++    _ = sym_link_path;
++    return @bitCast(-@as(isize, @intFromEnum(E.OPNOTSUPP)));
++}
++
++pub fn futimens(fd: fd_t, times: ?*const [2]timespec) usize {
++    // ponytail: mtime copies are best-effort on Plan 9 (the Cache content-hashes
++    // when mtime is unreliable). Report success without touching the file; wire
++    // a Twstat mtime update here if a build step ever needs exact mtimes.
++    _ = fd;
++    _ = times;
+     return 0;
+ }
+ 
+@@ -673,6 +690,7 @@
+ }
+ 
+ pub const clockid_t = enum(i32) { REALTIME = 0, MONOTONIC = 1, _ };
++pub const CLOCK = clockid_t;
+ 
+ // Decoded stat. Field names match what std.fs.File.Stat.fromPosix reads
+ // (ino/size/mode + atime()/mtime()/ctime()).
+@@ -1080,7 +1098,23 @@
+ var bloc: usize = 0;
+ var bloc_max: usize = 0;
+ 
++// zig9: under the CBE (the compiler-on-9front build) this code shares the
++// process with cc9's n9libc, whose malloc keeps its own break cursor — ALSO
++// rooted at `end`. Two independent cursors hand out overlapping memory and
++// corrupt both heaps (the source of the "latent heap corruption" family). The
++// break must have exactly one owner: delegate to cc9's locked sbrk. Native-
++// backend programs (no libc underneath) keep the local cursor below.
++extern fn cc9_sbrk(incr: isize) ?*anyopaque;
++
+ pub fn sbrk(n: usize) usize {
++    if (builtin.zig_backend == .stage2_c) {
++        // Exact sbrk semantics: grant n bytes, return the region's start (the
++        // old break). SbrkAllocator does its own alignment burning, so no
++        // rounding here — a rounded return would misstate where the grant is.
++        const r = cc9_sbrk(@bitCast(n));
++        if (@intFromPtr(r) == std.math.maxInt(usize)) return 0; // (void*)-1
++        return @intFromPtr(r);
++    }
+     if (bloc == 0) {
+         // we are at the start
+         bloc = @intFromPtr(&ExecData.end);
