@@ -77,4 +77,4 @@ hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9/he
 # C:. Games are NOT bundled — dosbox9/host/fetch-games.py pulls them from
 # archive.org. Presents FULL FRAMES (correct but slow): the GL9D delta path has
 # an open bug, see dosbox9/PORT-NOTES.md.
-dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9/dosbox9-amd64.tar.gz
+dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9-v0.1.0/dosbox9-amd64.tar.gz	-	0.1.0
