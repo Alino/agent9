@@ -8,8 +8,9 @@
 
 SHIM="$LB9/port/mimalloc-shim"
 
-"$CC9CC" -O2 -c "$SHIM/mimalloc-shim.c" -o "$SHIM/mimalloc-shim.o"
-"$AR" rcs "$PREFIX/lib/libmimalloc.a" "$SHIM/mimalloc-shim.o"
+# object goes to gitignored vendor/, keeping the committed shim dir clean
+"$CC9CC" -O2 -c "$SHIM/mimalloc-shim.c" -o "$VENDOR/mimalloc-shim.o"
+"$AR" rcs "$PREFIX/lib/libmimalloc.a" "$VENDOR/mimalloc-shim.o"
 cp "$SHIM/mimalloc.h" "$PREFIX/include/"
 mkdir -p "$PREFIX/lib/cmake/mimalloc"
 cp "$SHIM/mimalloc-config.cmake" "$PREFIX/lib/cmake/mimalloc/"

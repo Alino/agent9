@@ -23,5 +23,7 @@ cmake -G Ninja -S "$SRC" -B "$B" \
   -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
   -DCMAKE_INSTALL_PREFIX="$SYS" \
   -DWITH_SIMD=OFF -DENABLE_SHARED=OFF -DENABLE_STATIC=ON \
-  -DWITH_TURBOJPEG=OFF -DWITH_TOOLS=OFF -DWITH_TESTS=OFF -DWITH_FUZZ=OFF
+  -DWITH_TURBOJPEG=OFF -DWITH_FUZZ=OFF
+# (3.1.1 has no WITH_TOOLS/WITH_TESTS toggles; cjpeg/djpeg/jpegtran build and
+#  install to bin/ as plan9 a.outs via cc9-link — harmless.)
 ninja -C "$B" install
