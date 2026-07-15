@@ -51,6 +51,7 @@ int stat(const char *, struct stat *);
 int fstat(int, struct stat *);
 int lstat(const char *, struct stat *);
 int fstatat(int, const char *, struct stat *, int);
+int mkfifoat(int, const char *, mode_t);  /* stub; intel_measure debug tooling */
 int mkdir(const char *, mode_t);
 int mkfifo(const char *, mode_t);
 int chmod(const char *, mode_t);

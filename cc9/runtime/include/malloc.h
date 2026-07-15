@@ -12,6 +12,10 @@ extern "C" {
 #endif
 struct mallinfo  mallinfo(void);
 struct mallinfo2 mallinfo2(void);
+/* Real allocated size of a block (>= the requested size: requests round up to
+ * whole allocator units). Unlike mallinfo above this is NOT informational —
+ * SpiderMonkey uses it for GC pressure accounting — so it answers exactly. */
+size_t malloc_usable_size(void *);
 #ifdef __cplusplus
 }
 #endif

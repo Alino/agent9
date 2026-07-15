@@ -245,6 +245,10 @@ void __cc9_run(void)
 {
 	STAGE('a');
 	cc9_fpmask();
+	/* Seed the -fstack-protector canary before ANY protected frame runs (this
+	 * is ahead of .init_array and main; the cc9 runtime itself is built without
+	 * -fstack-protector, so this frame is not itself protected). */
+	{ extern void __cc9_ssp_init(void); __cc9_ssp_init(); }
 	STAGE('b');
 #ifndef CC9_NO_NOTE
 	n9_notify((void *)cc9_notetramp);   /* report faults instead of dying silently */

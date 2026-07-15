@@ -11,7 +11,9 @@ int *__n9_errno(void);
 /* Linux/glibc errno values (what libc++'s generic_category expects). */
 #define EPERM 1
 #define ENOENT 2
+#define ESRCH 3
 #define EINTR 4
+#define ENXIO 6
 #define EIO 5
 #define EBADF 9
 #define E2BIG 7
@@ -50,6 +52,10 @@ int *__n9_errno(void);
 #define EPROTO 71
 #define EBADFD 77
 #define EDESTADDRREQ 89
+#define ENOTSOCK 88
+#define EADDRNOTAVAIL 99
+#define ENETRESET 102
+#define EHOSTDOWN 112
 #define EMSGSIZE 90
 #define EPROTOTYPE 91
 #define ENOPROTOOPT 92
@@ -80,6 +86,7 @@ int *__n9_errno(void);
 #define EOWNERDEAD 130
 #define ENOTSUP 95
 #define EOPNOTSUPP 95
+#define ETIME 62   /* timer expired; iris_gem waits check for it */
 #define ETIMEDOUT 110
 /* Largest errno + 1, so libc++'s config_elast.h sets _LIBCPP_ELAST and
  * std::system_category()::default_error_condition works on this target. */

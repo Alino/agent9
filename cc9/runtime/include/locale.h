@@ -12,6 +12,7 @@ struct lconv {
 #define LC_ALL 6
 #define LC_COLLATE 3
 #define LC_CTYPE 0
+#define LC_MESSAGES 2   /* the free slot; ICU's putil.cpp wants the category */
 #define LC_MONETARY 4
 #define LC_NUMERIC 1
 #define LC_TIME 5
@@ -21,7 +22,10 @@ struct lconv {
 #define LC_MONETARY_MASK (1<<LC_MONETARY)
 #define LC_NUMERIC_MASK  (1<<LC_NUMERIC)
 #define LC_TIME_MASK     (1<<LC_TIME)
-#define LC_MESSAGES_MASK (1<<6)
+/* Was hardcoded (1<<6) back when LC_MESSAGES had no category number; now it
+ * follows the LC_x_MASK == 1<<LC_x rule the others obey. Bit 6 is simply unused
+ * and LC_ALL_MASK stays a superset. */
+#define LC_MESSAGES_MASK (1<<LC_MESSAGES)
 #define LC_ALL_MASK      0x7f
 #define LC_GLOBAL_LOCALE ((locale_t)-1)
 /* cc9 is C-locale only: locale_t is an opaque handle; the *_l paths ignore it. */

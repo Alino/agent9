@@ -16,6 +16,7 @@
 #define AT_FDCWD (-100)
 #define AT_SYMLINK_NOFOLLOW 0x100
 #define AT_REMOVEDIR 0x200
+#define AT_SYMLINK_FOLLOW 0x400
 /* fcntl commands + flags (LLVM Unix .inc sets FD_CLOEXEC / O_NONBLOCK). */
 #define F_DUPFD  0
 #define F_GETFD  1

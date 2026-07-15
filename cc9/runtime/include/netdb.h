@@ -46,6 +46,16 @@ int getnameinfo(const struct sockaddr *, socklen_t, char *, socklen_t, char *, s
 const char *gai_strerror(int);
 struct protoent *getprotobyname(const char *);
 struct protoent *getprotobynumber(int);
+extern int h_errno;
+#define HOST_NOT_FOUND 1
+#define TRY_AGAIN      2
+#define NO_RECOVERY    3
+#define NO_DATA        4
+const char *hstrerror(int);
+struct hostent *gethostbyname(const char *);
+struct hostent *gethostbyaddr(const void *, socklen_t, int);
+struct servent *getservbyname(const char *, const char *);
+struct servent *getservbyport(int, const char *);
 #ifdef __cplusplus
 }
 #endif

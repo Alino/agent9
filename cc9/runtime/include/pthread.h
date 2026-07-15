@@ -79,6 +79,12 @@ int pthread_attr_init(pthread_attr_t *);
 int pthread_attr_destroy(pthread_attr_t *);
 int pthread_attr_setstacksize(pthread_attr_t *, size_t);
 int pthread_attr_getstacksize(const pthread_attr_t *, size_t *);
+/* Stack bounds of the CALLING thread (hi = base, stacks grow down). Wanted by
+ * conservative GCs to know the root-scan range. cc9_stack_bounds is the native
+ * spelling; pthread_get_stackaddr_np is the Darwin one and ignores its argument
+ * (self only). Both answer for the main thread too. */
+int cc9_stack_bounds(void **lo, void **hi);
+void *pthread_get_stackaddr_np(pthread_t);
 int pthread_condattr_init(pthread_condattr_t *);
 int pthread_condattr_destroy(pthread_condattr_t *);
 int pthread_condattr_setclock(pthread_condattr_t *, int);

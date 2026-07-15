@@ -24,6 +24,8 @@ BIN = os.environ.get("CC9_LLVM", "/opt/homebrew/opt/llvm/bin")
 LIBCXX = os.environ.get("CC9_LIBCXX", "/tmp/libcxx-thr/include/c++/v1")
 INC = f"{REPO}/cc9/runtime/include"
 SHIM_INC = f"{GL9}/port/plan9/shim/include"
+# gpu9's libdrm shim (iris includes libdrm's own xf86drm.h; 8 fns, drmIoctl==ioctl)
+DRM_SHIM_INC = f"{REPO}/gpu9/shim/include"
 PRE = f"{GL9}/port/plan9/shim/gl9_pre.h"
 OUT = f"{GL9}/_out"
 OBJ = f"{OUT}/obj-" + BUILDGEN.replace("build-gen-","")
@@ -45,7 +47,7 @@ def basedir(entry): return remap(entry["directory"])
 # gl9's Linux/glibc -D scrub (harvest.py SCRUB) — force Mesa's portable paths.
 SCRUB = {
   "HAVE_ENDIAN_H","HAVE_DLFCN_H","HAVE_SYS_SHM_H","HAVE_SYS_INOTIFY_H",
-  "HAVE_LINUX_FUTEX_H","HAVE_CET_H","MAJOR_IN_SYSMACROS","HAVE_MEMFD_CREATE",
+  "HAVE_LINUX_FUTEX_H","HAVE_CET_H","HAVE_MEMFD_CREATE",
   "HAS_SCHED_H","HAS_SCHED_GETAFFINITY","HAVE_PTHREAD_SETAFFINITY","ALLOW_KCMP",
   "HAVE_FLOCK","HAVE_POSIX_FALLOCATE","HAVE_MKOSTEMP","HAVE_GETRANDOM",
   "HAVE_RANDOM_R","HAVE_SECURE_GETENV","HAVE_GNU_QSORT_R","HAVE_STRTOD_L",
@@ -62,7 +64,12 @@ EXCLUDE = ["/src/gtest/","/src/loader/","/gallium/auxiliary/pipe-loader/",
   "/glsl/glcpp/glcpp.c","/glsl/main.cpp","/glsl/standalone.cpp",
   "/glsl/test_optpass.cpp","/glsl/shader_cache.cpp","/compiler/spirv/spirv2nir.c",
   "/mesa/program/dummy_errors.c",  # stub _mesa_*; real errors.c wins
-  "standalone"]  # glsl standalone scaffolding stubs (dup _mesa_*)
+  "standalone",  # glsl standalone scaffolding stubs (dup _mesa_*)
+  # iris extras that are not on any render path:
+  "/intel/common/intel_decoder.c",   # batch DECODER (debug); wants expat
+  "/intel/common/intel_measure.c",   # debug timing harness; wants mkfifoat
+  "/gallium/auxiliary/renderonly/",  # split render/display SoCs; not this GPU
+  "/intel/compiler/brw_eu_validate.c"]  # shader-asm validator (debug only)
 
 # Key the object on meson's unique output path, NOT the source: some sources
 # (mapi entry.c) are compiled several times with different -D (glapi/es2api/...),
@@ -109,7 +116,8 @@ def cc9_cmd(entry, obj):
     if not std: std = "-std=c++17" if is_cpp else "-std=c11"
     cc = BIN+"/clang++" if is_cpp else BIN+"/clang"
     base = [cc, "--target=x86_64-unknown-none", "-femulated-tls", "-funwind-tables",
-            "-fno-pic", "-O2", "-w", "-include", PRE, "-isystem", SHIM_INC]
+            "-fno-pic", "-O2", "-w", "-include", PRE, "-isystem", SHIM_INC,
+            "-isystem", DRM_SHIM_INC]
     if is_cpp:
         base += ["-nostdinc++", "-isystem", LIBCXX,
                  "-D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE", "-D_LIBCPP_HAS_CLOCK_GETTIME"]

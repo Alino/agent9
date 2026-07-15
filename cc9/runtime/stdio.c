@@ -113,7 +113,12 @@ FILE *fopen(const char *path, const char *mode){
 	 * create() always truncates, so guard with a stat (matches fs.c open O_EXCL). */
 	if(excl){ unsigned char sb[512]; if(n9_stat(path, sb, sizeof sb) >= 0) return 0; }
 	long fd = creat ? n9_create(path, omode|(trunc?16:0), 0666) : n9_open(path, omode);
-	if(fd<0) return 0;
+	if(fd<0){   /* propagate a real errno (getpath.py's readlines needs ENOENT) */
+		extern int cc9_errno_from_errstr(void);
+		extern int *__n9_errno(void);
+		*__n9_errno() = cc9_errno_from_errstr();
+		return 0;
+	}
 	FILE *f=malloc(sizeof *f); if(!f){ n9_close((int)fd); return 0; }
 	f->fd=(int)fd; f->ungot=-1; f->eof=0; f->err=0; f->mem=0; f->mpos=0; f->msize=0;
 	if(append){ long long r; n9_seek(&r,(int)fd,0,2); }

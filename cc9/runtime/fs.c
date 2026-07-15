@@ -97,7 +97,8 @@ int openat(int dfd, const char *path, int flags, ...){ char b[1024]; return open
 extern int cc9_poll_owned(int);
 extern long cc9_poll_read(int, void *, long);
 extern void cc9_poll_onclose(int);
-int close(int fd){ cc9_poll_onclose(fd); return n9_close(fd) < 0 ? -1 : 0; }
+extern void cc9_net_onclose(int);
+int close(int fd){ cc9_poll_onclose(fd); cc9_net_onclose(fd); return n9_close(fd) < 0 ? -1 : 0; }
 long read(int fd, void *buf, size_t n){
 	if(cc9_poll_owned(fd)) return cc9_poll_read(fd, buf, (long)n);
 	long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
@@ -142,6 +143,12 @@ int cc9_errno_from_errstr(void){
 	else if(cc9_contains(e, "not a directory") || cc9_contains(e, "not a dir")) r = ENOTDIR;
 	else if(cc9_contains(e, "is a directory")) r = EISDIR;
 	else if(cc9_contains(e, "i/o error"))  r = EIO;
+	else if(cc9_contains(e, "refused"))    r = ECONNREFUSED;
+	else if(cc9_contains(e, "connection reset") || cc9_contains(e, "hungup")) r = ECONNRESET;
+	else if(cc9_contains(e, "timed out"))  r = ETIMEDOUT;
+	else if(cc9_contains(e, "unreachable")) r = EHOSTUNREACH;
+	else if(cc9_contains(e, "address in use") || cc9_contains(e, "announce"))  r = EADDRINUSE;
+	else if(cc9_contains(e, "interrupted")) r = EINTR;
 	cc9_last_errstr_errno = r;
 	return r;
 }

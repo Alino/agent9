@@ -326,3 +326,38 @@ int pipe2(int fds[2], int flags){
 	}
 	return 0;
 }
+
+/* ---- select(2) over poll() — fd_set surface for code written against the
+ * BSD API (CPython's selectmodule, etc.). sys/select.h has the macros. */
+struct cc9_timeval_sel { long tv_sec, tv_usec; };
+
+int select(int nfds, unsigned long *rfds, unsigned long *wfds,
+           unsigned long *efds, void *tvp){
+	struct pollfd pfds[PFD_MAX];
+	struct cc9_timeval_sel *tv = tvp;
+	int n = 0, i, r, timeout = -1;
+
+	if(nfds > PFD_MAX*8) nfds = PFD_MAX*8;   /* honest cap; PFD_MAX fds live here anyway */
+	for(i = 0; i < nfds && n < PFD_MAX; i++){
+		short ev = 0;
+		if(rfds && (rfds[i/64] & (1UL << (i%64)))) ev |= POLLIN;
+		if(wfds && (wfds[i/64] & (1UL << (i%64)))) ev |= POLLOUT;
+		if(efds && (efds[i/64] & (1UL << (i%64)))) ev |= POLLPRI;
+		if(ev){ pfds[n].fd = i; pfds[n].events = ev; pfds[n].revents = 0; n++; }
+	}
+	if(tv) timeout = (int)(tv->tv_sec*1000 + tv->tv_usec/1000);
+	r = poll(pfds, n, timeout);
+	if(r < 0) return -1;
+	if(rfds) for(i = 0; i < (nfds+63)/64; i++) rfds[i] = 0;
+	if(wfds) for(i = 0; i < (nfds+63)/64; i++) wfds[i] = 0;
+	if(efds) for(i = 0; i < (nfds+63)/64; i++) efds[i] = 0;
+	r = 0;
+	for(i = 0; i < n; i++){
+		int fd = pfds[i].fd, hit = 0;
+		if(rfds && (pfds[i].revents & (POLLIN|POLLHUP|POLLERR))){ rfds[fd/64] |= 1UL << (fd%64); hit = 1; }
+		if(wfds && (pfds[i].revents & (POLLOUT|POLLERR))){ wfds[fd/64] |= 1UL << (fd%64); hit = 1; }
+		if(efds && (pfds[i].revents & POLLPRI)){ efds[fd/64] |= 1UL << (fd%64); hit = 1; }
+		r += hit;
+	}
+	return r;
+}

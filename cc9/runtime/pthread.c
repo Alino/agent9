@@ -70,6 +70,45 @@ int *cc9_thread_errno_slot(void){
 	return 0;
 }
 
+/* Stack bounds of the CALLING thread, resolved by %rsp against the same table
+ * cc9_thread_errno_slot uses (same lock-free TSO discipline). Conservative
+ * garbage collectors need this to know what range to scan for roots —
+ * SpiderMonkey's GetNativeStackBase is the first caller.
+ *
+ * A thread not in the table is the main thread, whose stack is crt0's NOBITS
+ * .cc9stack arena rather than a malloc'd block, so it has no th_tab slot. */
+#ifndef CC9_STACK_BYTES
+#define CC9_STACK_BYTES 268435456
+#endif
+extern char __cc9_main_stack[];
+
+int cc9_stack_bounds(void **lo, void **hi){
+	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
+	for(int i=0;i<MAXTH;i++){
+		if(!th_tab[i].used) continue;
+		__asm__ volatile("":::"memory");
+		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi){
+			*lo = (void*)th_tab[i].stklo;
+			*hi = (void*)th_tab[i].stkhi;
+			return 0;
+		}
+	}
+	*lo = __cc9_main_stack;
+	*hi = __cc9_main_stack + (unsigned long)CC9_STACK_BYTES;
+	return 0;
+}
+
+/* Darwin spelling: the stack BASE, i.e. the highest address (stacks grow down).
+ * ponytail: self only — the argument is ignored. Every caller we have passes
+ * pthread_self(), and answering for another thread would need a table lookup by
+ * pid that can race with that thread exiting. Widen it when something needs it.
+ */
+void *pthread_get_stackaddr_np(pthread_t th){
+	void *lo, *hi; (void)th;
+	cc9_stack_bounds(&lo, &hi);
+	return hi;
+}
+
 static unsigned long cur_pid(void);   /* defined below; used by cc9_kill_threads */
 
 static n9_thread *find_thread(unsigned long pid){
@@ -236,7 +275,6 @@ void cc9_set_nproc_limit(long n){ cc9_nproc_limit = n > 0 ? n : 1; }
 long cc9_get_nproc_limit(void){ return cc9_nproc_limit; }
 
 int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(void *), void *arg){
-	(void)attr;
 	dead_reap();   /* reclaim any parked detached-thread stacks (they're long dead now) */
 	if(cc9_nproc_limit < 0x7fffffff){
 		int live = 1;   /* the main thread counts toward the limit */

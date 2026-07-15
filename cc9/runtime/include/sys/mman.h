@@ -36,6 +36,17 @@ int   shm_open(const char *, int, mode_t);
 int   shm_unlink(const char *);
 int   madvise(void *, size_t, int);
 int   msync(void *, size_t, int);
+/* Nonzero iff this kernel will hand out writable+executable memory: it carries
+ * the wxallow patch AND plan9.ini set wxallow=1. An anonymous PROT_EXEC mmap
+ * comes from segattach(SG_EXEC) and only executes when this is true, so a JIT
+ * should ask FIRST and fall back to an interpreter otherwise — that is what lets
+ * one binary run on both a patched and a stock kernel.
+ *
+ * Reads the /env gate rather than executing a probe: with wxallow=0 the kernel
+ * silently strips SG_EXEC and segattach still succeeds, so an execute-probe's
+ * "no" is a fault, not a return value. See posix_llvm.c for the one case this
+ * misreads (wxallow=1 asserted on an unpatched kernel). */
+int   cc9_have_wx(void);
 #ifdef __cplusplus
 }
 #endif

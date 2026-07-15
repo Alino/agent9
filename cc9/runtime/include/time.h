@@ -28,7 +28,15 @@ char *asctime_r(const struct tm *, char *); char *ctime_r(const time_t *, char *
 size_t strftime(char *, size_t, const char *, const struct tm *);
 int timespec_get(struct timespec *, int);
 int clock_gettime(clockid_t, struct timespec *);
+int clock_getres(clockid_t, struct timespec *);
 size_t strftime_l(char *, size_t, const char *, const struct tm *, locale_t);
+/* POSIX zone globals. Plan 9 keeps the zone in /env/timezone rather than a
+ * libc global; these are populated by tzset() from it, and are the names hosted
+ * code expects to read (SpiderMonkey's date code among them). */
+extern char *tzname[2];
+extern long timezone;
+extern int daylight;
+void tzset(void);
 #ifdef __cplusplus
 }
 #endif

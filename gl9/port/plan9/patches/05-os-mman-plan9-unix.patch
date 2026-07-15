@@ -1,0 +1,18 @@
+--- a/src/util/os_mman.h
++++ b/src/util/os_mman.h
+@@ -40,6 +40,15 @@
+ 
+ #include "util/detect_os.h"
+ 
++/* gl9/gpu9: plan9 sets neither DETECT_OS_UNIX nor DETECT_OS_WINDOWS, so this
++ * header #errors out — but cc9 DOES provide a real <sys/mman.h> (and its mmap
++ * routes anonymous PROT_EXEC to segattach(SG_EXEC), which is what a JIT needs).
++ * Take the unix path. Same fix as patch 04 for rtasm_execmem.c. */
++#if !DETECT_OS_UNIX && !DETECT_OS_WINDOWS
++#undef DETECT_OS_UNIX
++#define DETECT_OS_UNIX 1
++#endif
++
+ #if DETECT_OS_UNIX
+ #  include <sys/mman.h>
+ #else

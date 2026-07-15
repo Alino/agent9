@@ -112,6 +112,28 @@ void free(void *p){
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
 	if(!p) return; n9_semacquire(&malloc_lock,1); free_u(p); n9_semrelease(&malloc_lock,1); }
+/* malloc_usable_size(p) — the real allocated size of a block, which is >= what
+ * was asked for (the request is rounded up to whole Header units).
+ *
+ * Worth doing exactly rather than returning 0: SpiderMonkey feeds this into its
+ * GC pressure accounting (MallocSizeOf in mozjs's jsglue.cpp), so a stubbed
+ * answer would not fail loudly — it would just quietly mistime collections.
+ *
+ * Mirrors free_u's two cases: a plain block sits one Header below the pointer,
+ * and an aligned_alloc block stamps CC9_ALIGN_MAGIC at ap[-1] with the real
+ * malloc base at ap[-2]. For the aligned case we report the usable bytes from
+ * the RETURNED pointer to the end of the underlying block — not the whole
+ * block — since the alignment padding ahead of it is not the caller's to use. */
+size_t malloc_usable_size(void *ap){
+	if(!ap) return 0;
+	char *base = (char *)ap;
+	if(((unsigned long*)ap)[-1] == CC9_ALIGN_MAGIC) base = *(char **)((char *)ap - 16);
+	Header *bp = (Header*)base - 1;
+	size_t total = bp->s.size * sizeof(Header);        /* header + payload */
+	size_t used  = (size_t)((char *)ap - (char *)bp);  /* header + any align pad */
+	return total > used ? total - used : 0;
+}
+
 /* aligned_alloc(alignment, size) (C11). malloc is 16-byte aligned, so small
  * alignments are free; larger ones over-allocate and align, recording the base
  * + sentinel so plain free() reclaims it (see free above). */

@@ -29,6 +29,11 @@ typedef unsigned short sa_family_t;
 #define SO_TYPE      3
 #define SCM_RIGHTS   1
 #define MSG_NOSIGNAL 0x4000
+#define MSG_PEEK     0x02
+#define MSG_DONTWAIT 0x40
+#define MSG_WAITALL  0x100
+#define MSG_OOB      0x01
+#define MSG_EOR      0x80   /* Linux's value; referenced by socket2, unused by /net */
 #define MSG_TRUNC    0x20
 #define MSG_CMSG_CLOEXEC 0
 #define SHUT_RD   0
@@ -37,6 +42,7 @@ typedef unsigned short sa_family_t;
 struct sockaddr { sa_family_t sa_family; char sa_data[14]; };
 struct linger { int l_onoff; int l_linger; };
 struct sockaddr_storage { sa_family_t ss_family; char __pad[126]; };
+#define SOMAXCONN 128
 struct msghdr { void *msg_name; socklen_t msg_namelen; void *msg_iov; int msg_iovlen;
                 void *msg_control; socklen_t msg_controllen; int msg_flags; };
 struct cmsghdr { socklen_t cmsg_len; int cmsg_level; int cmsg_type; };
@@ -64,6 +70,8 @@ int accept(int, struct sockaddr *, socklen_t *);
 int connect(int, const struct sockaddr *, socklen_t);
 long send(int, const void *, unsigned long, int);
 long recv(int, void *, unsigned long, int);
+long sendto(int, const void *, unsigned long, int, const void *, socklen_t);
+long recvfrom(int, void *, unsigned long, int, void *, socklen_t *);
 int setsockopt(int, int, int, const void *, socklen_t);
 int getsockopt(int, int, int, void *, socklen_t *);
 int getsockname(int, struct sockaddr *, socklen_t *);

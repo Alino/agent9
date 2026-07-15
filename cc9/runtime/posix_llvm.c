@@ -34,25 +34,100 @@ extern void  n9_exits(const char *);
  * ponytail: bump allocator, no reuse — a long-running JIT that churns shaders can
  * exhaust the pool; add a free list (or segdetach the pool) if that shows up. */
 extern void *n9_segattach(unsigned long attr, const char *cls, void *va, unsigned long len);
+/* n9_open/n9_close are declared further down this file; cc9_have_wx below needs
+ * them here. Signatures must match those (both return long). */
+extern long n9_open(const char *, int);
+extern long n9_close(int);
 enum { SG_EXEC = 04000 };
 #define EXEC_PGSZ  0x1000ul
 #define EXEC_POOL_BYTES (64ul * 1024 * 1024)
+/* A request at or above this gets its own segment instead of coming out of the
+ * shared pool. SpiderMonkey's jit::ReserveProcessExecutableMemory asks for
+ * MaxCodeBytesPerProcess (2044MB on 64-bit) in ONE call and then sub-allocates
+ * it itself; that can't come from a 64MB pool, and it shouldn't — it wants to be
+ * its own arena. Verified on 9front: segattach(SG_EXEC) serves 2044MB and is
+ * demand-paged, so a reservation this big costs address space, not memory. */
+#define EXEC_BIG_BYTES (8ul * 1024 * 1024)
+/* Segments are a scarce, fixed-size per-process resource (NSEG), and text/data/
+ * bss/stack already use several — hence one shared pool rather than a segattach
+ * per call. Big requests are rare (SpiderMonkey makes exactly one), so a small
+ * table is enough; exec_alloc fails rather than exhausting the segment table. */
+#define EXEC_MAXBIG 4
 static char *exec_pool, *exec_brk, *exec_end;
+static struct { char *lo, *hi; } exec_big[EXEC_MAXBIG];
+static int exec_nbig;
+
 static int is_exec_map(void *p) {
-	return exec_pool && (char *)p >= exec_pool && (char *)p < exec_end;
+	if (exec_pool && (char *)p >= exec_pool && (char *)p < exec_end) return 1;
+	for (int i = 0; i < exec_nbig; i++)
+		if ((char *)p >= exec_big[i].lo && (char *)p < exec_big[i].hi) return 1;
+	return 0;
 }
+
 static void *exec_alloc(n9size_t len) {
+	n9size_t sz = (len + EXEC_PGSZ - 1) & ~(EXEC_PGSZ - 1);
+	if (!sz) sz = EXEC_PGSZ;
+
+	if (sz >= EXEC_BIG_BYTES) {          /* dedicated segment, own arena */
+		if (exec_nbig >= EXEC_MAXBIG) return (void *)-1;
+		void *p = n9_segattach(SG_EXEC, "memory", 0, sz);
+		if (p == (void *)-1) return (void *)-1;
+		exec_big[exec_nbig].lo = (char *)p;
+		exec_big[exec_nbig].hi = (char *)p + sz;
+		exec_nbig++;
+		return p;
+	}
+
 	if (!exec_pool) {
 		void *p = n9_segattach(SG_EXEC, "memory", 0, EXEC_POOL_BYTES);
 		if (p == (void *)-1) return (void *)-1;
 		exec_pool = exec_brk = (char *)p;
 		exec_end = exec_pool + EXEC_POOL_BYTES;
 	}
-	n9size_t sz = (len + EXEC_PGSZ - 1) & ~(EXEC_PGSZ - 1);
-	if (!sz) sz = EXEC_PGSZ;
 	if (exec_brk + sz > exec_end) return (void *)-1;   /* pool exhausted */
 	char *r = exec_brk; exec_brk += sz;
 	return r;
+}
+
+/* Is W^X available? Lets a caller choose a JIT at RUNTIME rather than at build
+ * time, so one binary runs on both a patched and a stock kernel.
+ *
+ * This reads the `wxallow` gate out of /env. It deliberately does NOT probe by
+ * executing: per the patch's truth table, with wxallow=0 segattach(SG_EXEC)
+ * still SUCCEEDS and the kernel merely strips SG_EXEC, so the only way to
+ * observe it is to call into the page — which faults. A detector whose negative
+ * answer is "process dies" is not a detector.
+ *
+ * plan9.ini variables are published in /env, so:
+ *   patched kernel + wxallow=1   -> 1  (JIT)
+ *   patched kernel + wxallow=0   -> 0  (interpreter — gate deliberately off)
+ *   stock kernel (no wxallow)    -> 0  (interpreter)
+ * The one case this gets wrong is wxallow=1 in plan9.ini on a kernel WITHOUT the
+ * patch: /env says yes, the kernel strips SG_EXEC anyway, and JIT code faults on
+ * first call. That is operator error (asserting a capability the kernel lacks)
+ * and it cannot be distinguished from the good case without executing.
+ *
+ * Cached: the answer cannot change within a process. */
+int cc9_have_wx(void) {
+	static int cached = -1;
+	if (cached >= 0) return cached;
+	cached = 0;
+	long fd = n9_open("/env/wxallow", 0);
+	if (fd >= 0) {
+		char b[8];
+		long n = n9_pread((int)fd, b, sizeof b - 1, 0);
+		n9_close((int)fd);
+		if (n > 0) {
+			b[n] = 0;
+			/* /env values are not NUL-terminated decimal strings by
+			 * convention; accept a leading '1' and reject '0'. */
+			for (long i = 0; i < n; i++) {
+				if (b[i] == '1') { cached = 1; break; }
+				if (b[i] == '0') break;
+			}
+		}
+	}
+	return cached;
 }
 
 void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
@@ -118,6 +193,21 @@ void _exit(int code) {
 	n9_exits(cc9_exitstr(code));
 	for (;;) {}
 }
+
+/* memmem — GNU extension (Mesa's brw_eu_validate uses it). Naive search: the
+ * needles here are tiny and it runs at shader-compile time, not per-draw. */
+void *memmem(const void *h, n9size_t hl, const void *n, n9size_t nl) {
+	const unsigned char *hp = h, *np = n;
+	if (nl == 0) return (void *)hp;
+	if (hl < nl) return 0;
+	for (n9size_t i = 0; i + nl <= hl; i++) {
+		n9size_t j = 0;
+		while (j < nl && hp[i+j] == np[j]) j++;
+		if (j == nl) return (void *)(hp + i);
+	}
+	return 0;
+}
+int mkfifoat(int fd, const char *p, unsigned m) { (void)fd; (void)p; (void)m; return -1; }
 
 n9size_t strnlen(const char *s, n9size_t max) {
 	n9size_t n = 0; while (n < max && s[n]) n++; return n;
@@ -748,7 +838,46 @@ void *getprotobynumber(int p) { (void)p; return 0; }
 int openpty(int *m, int *s, char *name, const void *t, const void *w) { (void)m;(void)s;(void)name;(void)t;(void)w; errno = 38; return -1; }
 int forkpty(int *m, char *name, const void *t, const void *w) { (void)m;(void)name;(void)t;(void)w; errno = 38; return -1; }
 int login_tty(int fd) { (void)fd; errno = 38; return -1; }
+/* -fstack-protector support. The compiler emits a read of __stack_chk_guard
+ * into each protected frame and compares on return, calling __stack_chk_fail on
+ * a mismatch. Both symbols are the SSP ABI and must exist for any TU built with
+ * -fstack-protector* to link (SpiderMonkey builds with -fstack-protector-strong
+ * by default).
+ *
+ * The guard is seeded from /dev/random by __cc9_ssp_init, called from __cc9_run
+ * before .init_array and before main — it must be set before any protected
+ * frame is entered, or the epilogue would compare against a value the prologue
+ * never saw. The initial value is a non-zero fallback for the window before
+ * that (and if /dev/random can't be read); it contains a NUL byte on purpose,
+ * to stop string-based overflows from writing the canary intact. */
+unsigned long __stack_chk_guard = 0x00000aff0d0a0000UL;
+
+/* n9_open/n9_pread/n9_pwrite/n9_close are already declared at file scope above. */
+void __cc9_ssp_init(void) {
+	unsigned long v;
+	long fd = n9_open("/dev/random", 0);
+	if (fd >= 0) {
+		if (n9_pread((int)fd, &v, (long)sizeof v, -1LL) == (long)sizeof v && v != 0)
+			__stack_chk_guard = v;
+		n9_close((int)fd);
+	}
+}
+
+void __stack_chk_fail(void) {
+	static const char m[] = "cc9: stack smashing detected\n";
+	extern void abort(void);
+	n9_pwrite(2, m, sizeof m - 1, -1LL);
+	abort();
+}
+
 void tzset(void) {}   /* no tz db: local == UTC */
+/* The POSIX zone globals that go with the no-op tzset above. Kept consistent
+ * with it: local == UTC, so no offset and no DST. Plan 9's real zone lives in
+ * /env/timezone; wiring these to it is a separate job. */
+static char tzname_utc[] = "UTC";
+char *tzname[2] = { tzname_utc, tzname_utc };
+long timezone = 0;
+int daylight = 0;
 int cfsetispeed(void *t, unsigned s) { (void)t; (void)s; return 0; }
 int cfsetospeed(void *t, unsigned s) { (void)t; (void)s; return 0; }
 int killpg(int pgrp, int sig) { extern int kill(int, int); return kill(pgrp, sig); }
