@@ -252,5 +252,10 @@ gpu9dev_bind(uint32_t va, uint32_t ggtt, uint32_t bytes)
 		gtt[(va/4096 + i)*2]     = (uint32_t)pte;
 		gtt[(va/4096 + i)*2 + 1] = (uint32_t)(pte>>32);
 	}
-	gpu9_rd(&g, GPU9_RCS_BASE+GPU9_RING_CTL);	/* posting read */
+	gtt[(va/4096 + pages - 1)*2];			/* posting read of the last PTE */
+	/* Invalidate the GGTT TLB so the GPU sees these fresh entries. Without this,
+	 * a batch that references a just-bound address reads a stale/absent TLB entry
+	 * and the engine wedges (HEAD frozen in the batch). GFX_FLSH_CNTL: write 1. */
+	gpu9_wr(&g, GPU9_GFX_FLSH_CNTL, 1);
+	gpu9_rd(&g, GPU9_GFX_FLSH_CNTL);
 }

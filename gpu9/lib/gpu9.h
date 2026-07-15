@@ -58,6 +58,7 @@ typedef uchar  g9u8;
 #define GPU9_RING_VALID		1
 
 #define GPU9_GFX_MODE_GEN7	0x229c		/* bit15 = execlist enable (we need it OFF) */
+#define GPU9_GFX_FLSH_CNTL	0x101008	/* write 1 = invalidate the GGTT TLB */
 
 /* RPS (Render P-State). THE single biggest performance factor on this box.
  * With no driver, nothing ever requests a frequency and Broadwell sits at its
