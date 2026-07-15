@@ -1,0 +1,31 @@
+diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
+index cb8f11cff6..832e81a3cb 100644
+--- a/Libraries/LibGC/BlockAllocator.cpp
++++ b/Libraries/LibGC/BlockAllocator.cpp
+@@ -57,6 +57,18 @@ static auto const s_page_size = [] {
+ 
+ static void* allocate_chunk_with_aligned_heap_blocks()
+ {
++#if defined(AK_OS_PLAN9)
++    // Plan 9 (cc9) mmap is malloc-backed: the munmap() alignment trim below
++    // would free() interior pointers and corrupt the heap. aligned_alloc
++    // yields the same BLOCK_SIZE-aligned chunk directly; chunks are never
++    // torn down (see ~BlockAllocator), so no free() pairing arises. memset
++    // matches the zeroed pages a fresh anonymous mapping guarantees.
++    VERIFY(CHUNK_SIZE % s_page_size == 0);
++    void* chunk = aligned_alloc(HeapBlock::BLOCK_SIZE, CHUNK_SIZE);
++    VERIFY(chunk);
++    __builtin_memset(chunk, 0, CHUNK_SIZE);
++    return chunk;
++#else
+     auto const page_size = s_page_size;
+     VERIFY((page_size & (page_size - 1)) == 0);
+     VERIFY(HeapBlock::BLOCK_SIZE % page_size == 0 || page_size % HeapBlock::BLOCK_SIZE == 0);
+@@ -93,6 +105,7 @@ static void* allocate_chunk_with_aligned_heap_blocks()
+     }
+ 
+     return reinterpret_cast<void*>(aligned_address);
++#endif
+ }
+ #endif
+ 

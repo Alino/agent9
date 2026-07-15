@@ -1,0 +1,32 @@
+diff --git a/AK/StackInfo.cpp b/AK/StackInfo.cpp
+index b4324cb7d6..be8bf2b9ad 100644
+--- a/AK/StackInfo.cpp
++++ b/AK/StackInfo.cpp
+@@ -22,6 +22,9 @@
+ #    include <Windows.h>
+ // NOTE: Prevent clang-format from re-ordering this header order
+ #    include <Processthreadsapi.h>
++#elif defined(AK_OS_PLAN9)
++// cc9 runtime: stack range of the calling thread (pthread table / main arena).
++extern "C" int cc9_stack_bounds(void**, void**);
+ #endif
+ 
+ namespace AK {
+@@ -94,6 +97,17 @@ StackInfo::StackInfo()
+ 
+     m_base = static_cast<FlatPtr>(low_limit);
+     m_size = static_cast<size_t>(high_limit - low_limit);
++#elif defined(AK_OS_PLAN9)
++    // cc9 tracks every pthread's stack range and answers for the calling
++    // thread; the main thread's range is its (large) static stack arena,
++    // which costs nothing extra since conservative scans only walk
++    // [stack pointer, top].
++    void* stack_lo = nullptr;
++    void* stack_hi = nullptr;
++    if (cc9_stack_bounds(&stack_lo, &stack_hi) != 0)
++        VERIFY_NOT_REACHED();
++    m_base = reinterpret_cast<FlatPtr>(stack_lo);
++    m_size = static_cast<size_t>(reinterpret_cast<FlatPtr>(stack_hi) - reinterpret_cast<FlatPtr>(stack_lo));
+ #else
+ #    pragma message "StackInfo not supported on this platform! Recursion checks and stack scans may not work properly"
+     m_size = (size_t)~0;
