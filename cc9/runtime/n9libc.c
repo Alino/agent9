@@ -102,6 +102,19 @@ static void cc9_dump_chain_malloc(void){
 	n9_exits("cc9-recurse");
 }
 #endif
+/* cc9_sbrk — the ONE program-break owner, exported for foreign runtimes living
+ * in the same process (the CBE-built zig9 compiler: Zig's std page_allocator
+ * used to keep its own break cursor rooted at `end`, exactly where cur_brk
+ * starts — two independent cursors handed out OVERLAPPING memory and corrupted
+ * both heaps). Anything that wants break memory must come through here (or
+ * through malloc), under the same lock. Returns (void*)-1 on failure. */
+void *cc9_sbrk(long incr){
+	n9_semacquire(&malloc_lock,1);
+	void *r = n9_sbrk(incr);
+	n9_semrelease(&malloc_lock,1);
+	return r;
+}
+
 void *malloc(size_t n){
 #ifdef CC9_RECURSE_PROBE
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }

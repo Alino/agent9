@@ -128,10 +128,11 @@ any reasonable time. `pac9 install cc9` gives you the on-box C++ toolchain
 (`cc foo.cpp -o foo` runs clang → ld.lld → elf2aout, all on 9front). To add your
 own packages or change how one builds, see [`pac9/README.md`](pac9/README.md).
 
-**zig9** now runs the Zig compiler *natively on 9front* (`pac9 install zig9`, then
-`zig build-exe hello.zig`) — bootstrapped through Zig's C backend and cc9. It also
-remains usable as a host cross-compiler. `zig build-exe`/`run`/`test` work on-box;
-the `zig build` runner does not yet. See [`zig9/`](zig9/).
+**zig9** now runs the Zig compiler *natively on 9front* (`pac9 install zig9`) —
+bootstrapped through Zig's C backend and cc9. The full workflow works on-box:
+`zig build` (build.zig projects, `-D` options, cached rebuilds), `build-exe`,
+`run`, and `test`. It also remains usable as a host cross-compiler. See
+[`zig9/`](zig9/).
 
 ## What's in the box
 
@@ -146,7 +147,7 @@ the `zig build` runner does not yet. See [`zig9/`](zig9/).
 | **python9** | CPython 3.11.14 ported to 9front, at 100% parity against CPython's own regression suite. | C |
 | **node9** | A Node-compatible runtime on QuickJS-ng (not V8) running unmodified npm 10 over real TLS. 30 of 30 popular packages install and run. | C / JS |
 | **cc9** | Modern C++ on 9front via a clang/LLVM cross-toolchain that emits native a.out — exceptions, the STL, threads, `<regex>`, `<filesystem>`, RTTI, and Stockfish 11. clang and lld also run on the box. | C++ / LLVM |
-| **zig9** | The Zig compiler for 9front through Zig's own self-hosted backend, no LLVM. Passes all 1773 of Zig's upstream `test/behavior` tests on 9front. Pins Zig 0.14.1, the last release with a Plan 9 backend. **The compiler now also runs natively on 9front** (bootstrapped via Zig's C backend + cc9) — `pac9 install zig9`, then `zig build-exe hello.zig` compiles on-box; proven bit-exact on a heavy ray tracer and a SHA-256/HashMap demo vs an aarch64 reference. | Zig |
+| **zig9** | The Zig compiler for 9front through Zig's own self-hosted backend, no LLVM. Passes 1792 of Zig's upstream `test/behavior` tests on 9front (0 fail). Pins Zig 0.14.1, the last release with a Plan 9 backend. **The compiler runs natively on 9front** (bootstrapped via Zig's C backend + cc9) — `pac9 install zig9`, then the real workflow on-box: **`zig build`** (build.zig projects, cached rebuilds in ~15 s), `build-exe`, `run`, `test`; proven bit-exact on a heavy ray tracer and a SHA-256/HashMap demo vs an aarch64 reference. | Zig |
 | **rust9** | Rust on 9front: `x86_64-unknown-plan9` as a built-in rustc target + a `std` port (`std::sys::pal::plan9`) over the cc9 runtime. **The real `rustc` (1.98-dev, cranelift backend) runs on 9front itself** — `pac9 install rust9` gives you `rustc hello.rs` compiling, linking (via the from-scratch `n9link` ELF→a.out linker, also on-box), and running natively. std covers threads + real `Mutex`/`Condvar`, `panic=unwind`, fs (perms/mtime/canonicalize), `std::process` (spawn/pipes/`try_wait`), TCP **and UDP** over `/net`, per-thread errno, real kernel error strings. ~2309 of Rust's own `coretests` pass, 0 Rust-side failures. Flagship `rgrep` uses the real crates.io `regex`. | Rust / LLVM |
 | **gl9** | OpenGL 3.3 on 9front via Mesa's softpipe (software rasteriser), cross-compiled with cc9. Presents to a libdraw window through **gl9win**; `gl9 cube` draws a spinning lit 3D cube, `gl9 egl` a triangle through the EGL API. | C / Mesa |
 | **go** | The real Go toolchain, upstream go1.26.0 — plan9/amd64 is a supported upstream port, so this is packaging, not a port: built once with Go's own `bootstrap.bash`, installed to `/sys/lib/go`. `go build` compiles and runs natively on the box (goroutines, channels, the lot). No cgo, as upstream. | Go |

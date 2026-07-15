@@ -53,13 +53,30 @@ aarch64-linux reference build** (`port/plan9/native/demos/`):
 | Recursive **ray tracer** (spheres, lambertian+metal, AA, gamma) | f64 FP, recursion, structs | 320×180 PPM, `checksum=0xca574372fbbe3537` ✓ |
 | **SHA-256 + `AutoHashMap`** word-count (120k words) | integer/bitwise, crypto, allocator, hashmap, sort | `sha256=42d64d8e…033140`, `acme:6150` ✓ |
 
-**Native limits.** ReleaseFast/ReleaseSmall only; no f16/f128 softfloat or
-`@cImport` in target programs (backend limits, same as cross). **`zig build` (the
-build runner) is not yet supported natively** — the plan9 process/poll/progress
-arms and cache-rename fixes are in, but compiling the large `build_runner.zig`
-in-process trips a latent heap-corruption bug in the CBE/cc9 build that only
-surfaces at that scale; `build-exe`/`run`/`test` are the supported workflow. See
-`port/plan9/NOTES.md`.
+**`zig build` works natively too.** The compiler compiles `build_runner.zig`
+in-process with the self-hosted backend, spawns the runner (rfork+exec+pipes),
+and the runner drives child `zig build-exe --listen` compiles over a
+blocking-read poller — the standard `build.zig` workflow, on the box:
+
+```
+cd myproject && zig build -Doptimize=ReleaseSmall && ./zig-out/bin/myprog
+```
+
+Fresh build of a hello project ≈ 5-8 min on real hardware (the runner compile
+dominates); cached rebuilds ≈ 15 s. Landing this meant fixing a chain of real
+bugs the corpus never reached — two allocators sharing one program break (the
+root cause of a years-latent heap-corruption family), an uninitialized linker
+`bases` on the in-process path, a GOT operand gap in the backend, in-module
+compiler-rt with named-symbol resolution in the Plan 9 linker, and cross-dir
+cache renames — see `port/plan9/NOTES.md` for the full accounting.
+
+**Native limits.** ReleaseFast/ReleaseSmall only (Debug/ReleaseSafe trip a
+backend panic + a `std.debug.SelfInfo` gap); no f16/f80/f128 soft-float or
+`@cImport` in target programs; compiler-rt floats are excluded on plan9 (a
+genuinely-missing float libcall fails the link by name). Program text is capped
+at ~2 MB by the fixed a.out data base (the runner fits after trimming; linker GC
+is the upgrade path). The compiler retains memory until exit (deliberate:
+sidesteps a still-unpinned stale-pointer write; a compile is a one-shot process).
 
 ## Why Zig 0.14.1 (and not 0.16)
 

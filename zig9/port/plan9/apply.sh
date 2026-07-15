@@ -18,14 +18,22 @@
 #          `test` natively — the released `pac9 install zig9` binary.
 #
 # NOT YET EXTRACTED TO PATCHES (live in the working vendor/zig tree; see NOTES.md
-# "zig build natively"): the Phase-6 `zig build` runtime — Child.zig spawnPlan9,
-# io.zig pollPlan9, Progress .plan9, main.zig cmdBuild runner-defaults +
-# Cc9Allocator, Package/Fetch.zig cross-dir rename, link/Plan9.zig seeNav
-# got_index, arch/x86_64/CodeGen.zig getOffset .memory. These build the released
-# binary but `zig build` is still blocked by a latent heap-OOB at build_runner
-# scale, so the set is WIP; it'll be patch-ified once that's pinned. The getOffset
-# / Cc9Allocator / seeNav pieces are additive robustness improvements validated
-# correct by the two bit-exact heavy demos.
+# "zig build natively — LANDED" for the complete accounting): the full native
+# `zig build` set — lib: Child.zig spawnPlan9, io.zig pollPlan9, Progress .plan9,
+# Watch.init void-Os, plan9.zig (sbrk→cc9_sbrk under stage2_c, CLOCK, symlinkat,
+# futimens, pwritev), Build.zig Step/Options+Run plan9 moves, Target.zig vector
+# workarounds ×3, compiler_rt.zig float-family gate + common.zig (plan9 strong
+# linkage, want_f16_helpers) + 4 f16 files, build_runner.zig fuzz gate; src:
+# main.zig (Cc9Allocator retain-forever gpa, cmdBuild runner defaults),
+# Compilation.zig (plan9 .zcu compiler-rt strat), Package/Fetch.zig cross-dir
+# move, link/Plan9.zig (globals/named-symbol resolution, bases init in
+# createEmpty, entry from _start atom, emit-fd self-heal, errstr diags, seeNav
+# got_index), arch/x86_64/CodeGen.zig (getOffset .memory/.indirect,
+# genExternSymbolRef + Select .symbol plan9 GOT arms), arch/x86_64/Lower.zig
+# (call/jmp memory-operand promotion). Also cc9/runtime/n9libc.c gained the
+# exported cc9_sbrk (the one-break-owner fix) — that one IS tracked in git.
+# These built the released binary; extraction to numbered patches is the
+# remaining hygiene task.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)              # zig9/port/plan9
 ZIG_SRC="${ZIG_SRC:-$HERE/../../vendor/zig}"

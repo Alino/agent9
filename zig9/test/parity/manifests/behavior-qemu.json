@@ -355,7 +355,7 @@
     {
       "file": "import_c_keywords",
       "status": "compile-fail",
-      "detail": "vendor/zig/test/behavior/import_c_keywords.zig:29:1: error: TODO implement calling extern functions"
+      "detail": "thread 18826 panic: reached unreachable code"
     },
     {
       "file": "incomplete_struct_param_tld",
@@ -827,12 +827,12 @@
     {
       "file": "x86_64",
       "status": "compile-fail",
-      "detail": "vendor/zig/test/behavior/x86_64/math.zig:133:10: error: external symbols unimplemented for plan9"
+      "detail": "vendor/zig/test/behavior/x86_64/math.zig:16205:18: error: ran out of registers (Zig compiler bug)"
     },
     {
       "file": "zon",
       "status": "compile-fail",
-      "detail": "vendor/zig/lib/std/fmt/format_float.zig:122:1: error: external symbols unimplemented for plan9"
+      "detail": "error: plan9: undefined symbol: '__cmphf2' (no zcu export with that name)"
     }
   ]
 }

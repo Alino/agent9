@@ -691,13 +691,91 @@ PC with `llvm-symbolizer --obj=_out/zig9big.elf 0x<pc>` — elf2aout preserves v
    not tractable to root-cause blind — no ASAN on the CBE/cc9 path, ~2 min/probe on
    cirno, and it triggers only on a compile far larger than any corpus program.
 
-**Verdict:** `build-exe`/`run`/`test` is the supported native workflow (proven,
-incl. the two bit-exact heavy demos). `zig build` is one latent-corruption bug
-away; pinning it needs a sanitizer-instrumented CBE build. The four fixes above are
-additive / plan9-guarded (Cc9Allocator + Fetch are plan9-only; getOffset/seeNav are
-additive backend improvements, validated correct by the two bit-exact demos which
-were compiled by the fixed binary) — re-run the 1773 cross regression before
-treating getOffset/seeNav as permanent.
+**RESOLVED (2026-07-15, later the same day): `zig build` WORKS natively.** The
+"latent heap-OOB" hunt concluded — see the next section for the full chain.
+
+## `zig build` natively — LANDED (2026-07-15)
+
+`zig build -Doptimize=ReleaseSmall` runs end-to-end on bare-metal cirno: the
+compiler builds `build_runner.zig` in-process (self-hosted backend + Plan 9
+linker), spawns the runner (spawnPlan9), the runner drives a child
+`zig build-exe --listen=-` over pipes (pollPlan9), and installs to
+`zig-out/bin`. Fresh build ≈ 5-8 min; cached rebuild ≈ 15 s (exit 0, silent).
+Verified with the canonical `standardOptimizeOption(.{})` + `-Doptimize`.
+The heavy-demo checksums stay bit-exact under the final binary.
+
+**The debugging method that worked:** rebuild the patched compiler in docker at
+Debug (safety on) and cross-compile a build_runner-equivalent to plan9
+(`--dep @build --dep @dependencies -Mroot=.../build_runner.zig` + stub modules).
+That surfaced every semantic gap as a clean compile error list instead of
+native-side corruption, at minutes per iteration instead of a 25-minute
+CBE rebuild + on-box probe per theory.
+
+**The full fix chain (in order discovered):**
+1. **Runner semantic gaps** (lib, found by the Debug cross-compile): Watch.init
+   runtime-fails on OSes with `Os == void` instead of failing to compile;
+   plan9.zig gained `CLOCK`, `symlinkat` (EOPNOTSUPP — no symlinks), `futimens`
+   (no-op success; Cache content-hashes when mtime is unreliable); the
+   build_runner's `--fuzz`/`std.net` block comptime-gated for plan9;
+   `Target.zig`'s 3 stage2_x86_64+coff vector workarounds extended to plan9.
+2. **compiler-rt in the zcu** (`Compilation.zig` RtStrat): Exe builds used
+   `.lib` strat — a static library the Plan 9 linker silently never linked (the
+   real reason named externs "didn't work"). Plan9 now uses `.zcu` like Obj
+   builds. `common.linkage` forced `.strong` on plan9 even in test builds (the
+   `.internal` test default produced zero exports to resolve against).
+3. **Named-symbol resolution in the linker** (`link/Plan9.zig` + CodeGen +
+   Lower): `globals` table of phantom atoms (name → GOT slot), resolved at
+   flush against same-named zcu exports (fail-by-name if missing);
+   `genExternSymbolRef` + the Select `.symbol` operand emit ds-relative GOT
+   loads/calls on plan9; Lower's call/jmp promotion extended to memory operands
+   (`call m32` has no encoding). This closed the historical "only 2 unrunnable
+   behavior files" gap — the suite now builds 116/119 files, 1792 pass / 0 fail
+   (baseline was 115 files, 1773 pass).
+4. **The heap-corruption root cause — TWO ALLOCATORS, ONE BREAK:** Zig's
+   `plan9.sbrk` kept its own break cursor rooted at `end`; cc9's `n9_sbrk`
+   keeps another, also rooted at `end`. In the CBE compiler both run in one
+   process → overlapping grants → the entire "latent corruption" family
+   (phantom errors, SbrkAllocator free-list GP, malloc null-deref). Fix: one
+   break owner — n9libc exports a locked `cc9_sbrk`, and `plan9.sbrk` delegates
+   to it under `zig_backend == .stage2_c` (native-backend target programs keep
+   the local cursor).
+5. **Retain-forever gpa free** (`main.zig` Cc9Allocator): with a real
+   malloc/free, a still-unpinned stale-pointer write in the compiler corrupts
+   the K&R heap at build_runner scale (DebugAllocator's retained buckets had
+   masked it for years). freeFn is a deliberate no-op — a compile is a one-shot
+   process; the kernel reclaims at exit. Root-causing needs a tracking
+   allocator.
+6. **Uninitialized linker bases** (`link/Plan9.zig` createEmpty): `.bases =
+   undefined`, set only by `open()`. cmdBuild's in-process whole-cache flow
+   goes createEmpty → makeWritable (opens the file, never sets bases) → every
+   atom got offset ~0, entry 0, "exec header invalid". The docker one-shot
+   repro used open() — flow-sensitive, not environment-sensitive. Fix:
+   initialize bases in createEmpty. Related hardening: the entry point is now
+   derived from the `_start` export's atom offset after layout (writeSyms's
+   name-scan assigned a garbage sym `.value` on this path) and fails loudly if
+   absent; flushModule validates/reopens a dead emit fd (fstat + createFile)
+   and reports the kernel errstr on write failures.
+7. **The 2 MB text boundary:** the kernel places the data segment at
+   roundup(text_end, 2MB) while the linker's data base is fixed at 0x400000 —
+   text > 2MB breaks every ds-relative GOT immediate. In-module compiler-rt's
+   float families pushed the runner to 2.13 MB. Fix: exclude the float families
+   from compiler_rt.zig on plan9-stage2 (integer/mem/BigInt cover what std
+   libcalls; the backend can't compile several f16/f80/f128 helpers anyway —
+   "ran out of registers"). Program text ≤ ~2MB is a documented ceiling; linker
+   GC of unreferenced atoms is the upgrade path (needs codegen→linker reference
+   tracking that doesn't exist yet).
+8. **Runner-side cross-dir renames** (lib/std/Build): Options.zig copies+deletes
+   its single generated file; Run.zig moves output trees via a local
+   plan9MoveTree (same snapshot-names-before-delete discipline as
+   Compilation.zig's).
+
+**rc-scripting gotchas that burned hours here** (now permanently in memory):
+unquoted `=` in an argument (`-Doptimize=ReleaseSmall`) is an rc SYNTAX ERROR
+that silently aborts the script mid-run — quote it; `rfork s` (not `n`) is the
+note-group detach that survives listen1 disconnects; `log.warn` is compiled out
+of ReleaseSmall (use `log.err` for diagnostics that must surface); a partial
+`tar x` from a dropped connection leaves a silently stale lib tree — verify by
+grepping for a sentinel after extraction.
 
 ## Packaging (Phase 7)
 

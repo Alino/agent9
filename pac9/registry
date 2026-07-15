@@ -21,10 +21,10 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 # sys/lib/...), record its file list, and unpack it at /. These build from
 # vendored upstream that isn't cloneable, so we ship built artifacts.
 # zig9 — the Zig 0.14.1 compiler running NATIVELY on 9front (CBE+cc9 bootstrap):
-# amd64/bin/zig9 + sys/lib/zig9/lib + rc/bin/zig wrapper. `zig build-exe`/`run`/
-# `test` compile programs on-box with the self-hosted x86_64 backend + Plan9
-# linker. ReleaseFast/ReleaseSmall only; no f16/f128 or @cImport in target progs;
-# `zig build` (the build runner) is not yet supported natively.
+# amd64/bin/zig9 + sys/lib/zig9/lib + rc/bin/zig wrapper. `zig build` /
+# `build-exe` / `run` / `test` all work on-box (build.zig projects incl. -D
+# options; the runner spawns child compilers over pipes). ReleaseFast/
+# ReleaseSmall only; no f16/f80/f128 soft-float or @cImport in target programs.
 zig9	-	.	tarball https://github.com/Alino/agent9/releases/download/zig9/zig9-amd64.tar.gz
 python9	-	.	tarball https://github.com/Alino/agent9/releases/download/python9/python9-amd64.tar.gz
 node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node/node9-amd64.tar.gz
