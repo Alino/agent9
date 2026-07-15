@@ -172,6 +172,16 @@ gpu9_execbuffer2(struct drm_i915_gem_execbuffer2 *eb)
 	}
 	{
 		uint32_t batch_va = (uint32_t)objs[bi].offset + eb->batch_start_offset;
+		uint32_t bh = objs[bi].handle;
+		/* dump the batch commands (from the CPU side) so a hang is decodable */
+		if(bh < (uint32_t)nbo && botab[bh].used && getenv("GPU9_DUMPBATCH")){
+			uint32_t *b = (uint32_t*)botab[bh].cpu + eb->batch_start_offset/4;
+			int n = (int)(eb->batch_len ? eb->batch_len/4 : 64), k;
+			if(n > 96) n = 96;
+			fprintf(stderr, "[gpu9] batch dwords (len=%u):\n", eb->batch_len);
+			for(k = 0; k < n; k++)
+				fprintf(stderr, "  [%02d] %08x\n", k, b[k]);
+		}
 		fprintf(stderr, "[gpu9] submitting batch @ GGTT %#x\n", batch_va);
 		return gpu9dev_exec(batch_va);
 	}
