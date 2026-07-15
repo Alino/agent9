@@ -12,6 +12,9 @@ typedef unsigned short sa_family_t;
 #define AF_INET   2
 #define AF_INET6  10
 #define PF_UNIX   AF_UNIX
+#define PF_UNSPEC AF_UNSPEC   /* POSIX: PF_* == AF_* (curl asyn-thrdd.c uses PF_) */
+#define PF_INET   AF_INET
+#define PF_INET6  AF_INET6
 #define SOCK_STREAM 1
 #define SOCK_DGRAM  2
 #define SOCK_CLOEXEC  0x2000   /* == O_CLOEXEC (poll.c fd-flag table) */
