@@ -1,0 +1,44 @@
+diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
+index caa5dadebd..0bc6ca3616 100644
+--- a/Utilities/CMakeLists.txt
++++ b/Utilities/CMakeLists.txt
+@@ -1,7 +1,7 @@
+ ladybird_utility(js SOURCES js.cpp LIBS LibCrypto LibJS LibMain LibTextCodec LibGC)
+ ladybird_utility(wasm SOURCES wasm.cpp LIBS LibFileSystem LibWasm LibMain LibJS LibCrypto LibGC)
+ 
+-if (NOT WIN32 AND NOT ANDROID)
++if (NOT WIN32 AND NOT ANDROID AND NOT PLAN9)
+     target_link_libraries(js PRIVATE PkgConfig::LIBEDIT)
+ endif()
+ 
+diff --git a/Utilities/js.cpp b/Utilities/js.cpp
+index 716225f959..abb2f284cc 100644
+--- a/Utilities/js.cpp
++++ b/Utilities/js.cpp
+@@ -36,7 +36,7 @@
+ #include <LibMain/Main.h>
+ #include <LibTextCodec/Decoder.h>
+ 
+-#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
++#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID) && !defined(AK_OS_PLAN9)
+ #    include <editline/readline.h>
+ #endif
+ #include <stdlib.h>
+@@ -101,7 +101,7 @@ static bool s_print_last_result = false;
+ static bool s_strip_ansi = false;
+ static bool s_raw_strings = false;
+ static bool s_disable_source_location_hints = false;
+-#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
++#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID) && !defined(AK_OS_PLAN9)
+ static JS::Realm* s_repl_realm;
+ static JS::GlobalEnvironment* s_repl_global_environment;
+ #endif
+@@ -512,7 +512,7 @@ private:
+     int m_group_stack_depth { 0 };
+ };
+ 
+-#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID)
++#if !defined(AK_OS_WINDOWS) && !defined(AK_OS_ANDROID) && !defined(AK_OS_PLAN9)
+ static Vector<ByteString> complete_repl_line(StringView line)
+ {
+     auto& realm = *s_repl_realm;
