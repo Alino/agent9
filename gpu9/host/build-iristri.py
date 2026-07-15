@@ -22,6 +22,7 @@ TARGET = ["--target=x86_64-unknown-none", "-femulated-tls", "-funwind-tables",
           "-fno-pic", "-O2", "-w"]
 MESA = os.path.join(GL9, "vendor", "mesa")
 INCS = ["-isystem", os.path.join(GPU9, "shim", "include"),        # xf86drm.h, sys/ioccom.h
+        "-I", os.path.join(GPU9, "lib"),                          # gpu9.h (constants)
         "-isystem", os.path.join(GL9, "vendor", "mesa", "include"),  # drm-uapi
         # the harness builds iris's driconf tables, so it needs Mesa's util +
         # the two driinfo fragment headers (gallium common + iris specific)
@@ -40,7 +41,8 @@ LDS     = os.path.join(CC9, "test", "plan9.ld")
 SRCS = [os.path.join(GPU9, "test", "iristri.c"),
         os.path.join(GPU9, "shim", "drmshim.c"),
         os.path.join(GPU9, "shim", "stubs.c"),
-        os.path.join(GPU9, "shim", "gpu9_ioctl.c")]
+        os.path.join(GPU9, "shim", "gpu9_ioctl.c"),
+        os.path.join(GPU9, "shim", "gpu9_dev.c")]
 
 if not os.path.exists(ARCHIVE):
     print("no libgl9mesa-iris.a — build iris first"); sys.exit(1)
