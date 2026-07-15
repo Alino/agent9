@@ -59,24 +59,63 @@ page over TLS; verified 2026-07-15). Two runtime issues gate the headless PNG:
 The full multi-process stack now spawns, connects, and reaches "Taking
 screenshot after 8 seconds" on cirno. Two render-stage bugs remain before a PNG:
 
-3. **No monospace font → WebContent VERIFY crash.** FontPlugin.cpp:56
-   `VERIFY(m_default_fixed_width_font)` fails: the bundled fonts
-   (Base/res/fonts: SerenitySans + NotoEmoji) have NO monospace, and
-   generic_font_name(UiMonospace) tries {DejaVu Sans Mono, Liberation Mono,
-   Noto Sans Mono, ...} — none present. Linux gets these from fontconfig.
-   Fix: bundle a monospace TTF whose internal name matches a fallback (ship
-   DejaVu Sans Mono / Liberation Mono into Base/res/fonts + /lib/ladybird/fonts).
+3. **No monospace font → WebContent VERIFY crash. [FIXED — commit fdbcbd2]**
+   FontPlugin.cpp:56 `VERIFY(m_default_fixed_width_font)` failed: bundled fonts
+   (SerenitySans + NotoEmoji) have NO monospace and Plan 9 has no fontconfig, so
+   generic_font_name(UiMonospace)'s fallbacks {DejaVu Sans Mono, ...} all missed.
+   Fixed by bundling DejaVuSansMono.ttf (internal name matches the fallback list)
+   into the res font set via patch 0004 + port/assets/fonts/ + fetch.sh copy.
+   Also fixed a latent deploy bug: Plan 9 tar reads stdin as /fd/0 not '-', so
+   the Lagom resource tarball was shipped but never extracted on-box.
 
-4. **Compositor shm backing-store IPC parse failure — likely the Phase A shm
-   segment cap.** DidAllocateBackingStores (Compositor->UI, carrying
-   Vector<Gfx::SharedImage> = shm AnonymousBuffers) fails to parse ("endpoint
-   magic number mismatch") and the Compositor disconnects/restarts. The
-   TransportPlan9 attachment framing is symmetric (verified), so the leading
-   suspect is the documented Phase A limitation: one #g named segment PER
-   bitmap against a ~60-64 segment SYSTEM-WIDE kernel cap. A page render
-   allocates many backing stores; exhausting the cap yields invalid
-   AnonymousBuffers that corrupt the message. Fix: the planned **Phase B shm
-   pool allocator** (per-process pool segments carved into many buffers, same
-   {name,offset,len} wire format — the offset field is already there for
-   exactly this). ~500 lines, specified in docs/plans/2026-07-15-ladybird9-
-   browser.md. Confirm by tracing shm create failures during the render.
+4. **Backing-store shm segment fails to attach on the receiver — cc9 #g
+   segattach bug, NOT an IPC/framing bug.** [Root-caused this session from a
+   full on-box run; the earlier "framing drift" and "segment cap" theories were
+   BOTH wrong — corrected here.] Reproduce with:
+   `ladybird --headless --temporary-profile --disable-sql-database
+   --screenshot-path shot.png file:///…/test.html` (the `--temporary-profile`
+   is essential — see the profile-lock note below).
+
+   What actually happens: the Compositor sends CompositorControlClient::
+   DidAllocateBackingStores (Vector<Gfx::SharedImage> = shm AnonymousBuffers).
+   The message parses FINE — the magic matches, decode proceeds. It fails inside
+   the message body: `AnonymousBufferImpl::create` does
+   `mmap(MAP_SHARED, fd)` → cc9 routes that to `cc9_shm_try_map` →
+   `n9_segattach(0, name, 0, 0)` which FAILS, so mmap returns MAP_FAILED with
+   errno mapped to ENOENT → the decode returns "No such file or directory". The
+   "Endpoint magic number mismatch" line is a RED HERRING: try_parse_message
+   tries local then peer endpoint; local (the right one) failed with the mmap
+   ENOENT, peer failed on magic — the dbgln prints the peer error last.
+
+   Key facts that pin it to segattach (not the segment being gone):
+   - `deserialize_attachment` already did `cc9_shm_import` = `open(#g/name/data)`
+     and its `VERIFY(fd>=0)` did NOT fire → the segment DIR EXISTS and is
+     openable. So it is NOT swept/removed and NOT a lifetime/close-races-import
+     problem. `open` succeeds; only the subsequent `segattach` fails.
+   - Deterministic: all 3 Compositor auto-restarts fail identically.
+   - The single-segment `segshm_gate` (create→mmap→fork+exec child→import→mmap)
+     PASSES with the identical code path, so the primitive works — the failure
+     is specific to the real multi-process/multi-segment flow.
+   - Same root cause crashes WebContent at AK/RefPtr.h:275 (VERIFY(m_ptr)): its
+     backing bitmap is null because ITS mmap of the backing store segattach-
+     failed too. One bug, two symptoms.
+
+   Leading hypothesis: **VA collision.** shm9.c pins every segment at a fixed VA
+   `SHM9_BASE + ((getpid()&0xFFFF)<<30) + bump` and all importers must map at
+   that same VA (a #g global segment can't relocate). `getpid()&0xFFFF` gives
+   only 64K slabs; with pid recycling across many procs, two live creators can
+   share a slab and mint overlapping VAs, so an importer's 2nd segattach lands
+   on an occupied VA and fails. Fix direction: a collision-free GLOBAL VA
+   allocator (a well-known #g counter segment handing out non-overlapping
+   ranges), replacing the pid-keyed slab. Confirm first with an env-gated trace
+   in cc9_shm_try_map logging {name, va, seglen, segattach result, errstr}
+   (read errstr non-destructively via the n9_errstr swap trick, poll.c:129) —
+   relinking JUST the `ladybird` main against the traced libcc9cxx.a is enough
+   to capture the import-side failure + the colliding VAs.
+
+   NOTE — headless needs `--temporary-profile`: the per-profile SQLite store is
+   opened with a Plan 9 exclusive lock; a prior run's process holding it makes
+   every subsequent run die at startup with "Runtime error: locking protocol".
+   A temporary/fresh profile sidesteps the contended lock. (Also fixed this
+   session: deploy9.sh extracted the Lagom resource tar with `tar xf -`, which
+   Plan 9 tar rejects — must be `/fd/0` — so resources silently never landed.)
