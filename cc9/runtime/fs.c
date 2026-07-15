@@ -349,6 +349,10 @@ static int env_num(const char *name){
  * "kernel driver", in-process. Weak, so ordinary cc9 programs are unaffected. */
 extern int gpu9_ioctl(int fd, unsigned long req, void *arg) __attribute__((weak));
 
+/* BSD flock(2), <sys/file.h>: Plan 9 has no advisory file locks — always
+ * succeed, matching the fcntl record-lock stubs (single-writer is the norm). */
+int flock(int fd, int op){ (void)fd; (void)op; return 0; }
+
 int ioctl(int fd, unsigned long req, ...){
 	__builtin_va_list ap; __builtin_va_start(ap, req);
 	void *arg = __builtin_va_arg(ap, void *);
@@ -406,7 +410,15 @@ int mkfifo(const char *a, mode_t m){ (void)a;(void)m; errno=ENOSYS; return -1; }
 int symlinkat(const char*a,int d,const char*b){ (void)a;(void)d;(void)b; errno=ENOSYS; return -1; }
 long readlink(const char *p, char *b, size_t n){ (void)p;(void)b;(void)n; errno=EINVAL; return -1; }
 long readlinkat(int d,const char*p,char*b,size_t n){ (void)d;(void)p;(void)b;(void)n; errno=EINVAL; return -1; }
-char *realpath(const char *p, char *out){ if(out){ size_t i=0; while(p[i]){out[i]=p[i];i++;} out[i]=0; return out; } return 0; }
+/* Identity canonicalization (Plan 9 paths are already clean; no symlinks to
+ * resolve). POSIX: out==NULL means "malloc the result" — LibFileSystem's
+ * real_path() uses exactly that form, so it must be honored, not return 0. */
+char *realpath(const char *p, char *out){
+	size_t i=0; while(p[i]) i++;
+	if(!out){ out = malloc(i+1); if(!out) return 0; }
+	for(size_t j=0;j<=i;j++) out[j]=p[j];
+	return out;
+}
 char *getcwd(char *buf, size_t n){ long fd=n9_open(".",0); if(fd<0)return 0; long r=n9_fd2path((int)fd,buf,(int)n); n9_close((int)fd); return r<0?0:buf; }
 
 /* ---- directories ---- */

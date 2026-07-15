@@ -12,6 +12,11 @@
 #define O_CLOEXEC 0x2000
 #define O_DIRECTORY 0x4000
 #define O_NOFOLLOW 0x8000
+/* Plan 9 open(2) has no per-fd sync mode; accepted and ignored (like O_NOCTTY).
+ * Distinct bits so F_GETFL round-trips honestly. */
+#define O_SYNC  0x10000
+#define O_DSYNC 0x20000
+#define O_RSYNC 0x40000
 #define O_NOCTTY 0
 #define AT_FDCWD (-100)
 #define AT_SYMLINK_NOFOLLOW 0x100

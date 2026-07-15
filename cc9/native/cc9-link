@@ -17,6 +17,21 @@ while [ $# -gt 0 ]; do
     # paths: cc9 provides all of libc/libm/pthreads inside libcc9cxx.a+libcc9m.a,
     # which are added below. lld would otherwise fail to find e.g. -lm.
     -l*|-L*) shift;;
+    # Pass through the lld flags callers legitimately need. ladybird9 links
+    # several Rust staticlibs into one static binary; each carries rustc's
+    # identical __rustc::__rust_alloc forwarding shims, so first-def-wins is safe.
+    -Wl,--allow-multiple-definition) inputs+=(--allow-multiple-definition); shift;;
+    # -Xlinker <arg> pairs (CMake's <LINK_FLAGS> spelling): keep the same
+    # allowlist, drop the rest (e.g. -z defs / --no-undefined from hosted
+    # toolchain probes — meaningless for the static a.out link).
+    -Xlinker)
+      case "${2:-}" in
+        --allow-multiple-definition) inputs+=(--allow-multiple-definition);;
+      esac
+      shift 2;;
+    # Compiler-driver codegen flags leaking into <LINK_FLAGS> (e.g.
+    # -fstack-protector-strong): meaningless to ld.lld, drop.
+    -f*) shift;;
     # Drop host driver/linker flags that don't apply to a static Plan 9 a.out
     # (rpath, shared, soname, pie, gc-sections passthroughs, etc.).
     -Wl,*|-rpath|-shared|-pie|-no-pie|-rdynamic|-Wl) shift;;
