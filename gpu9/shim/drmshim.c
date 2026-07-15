@@ -73,12 +73,34 @@ drmGetDeviceFromDevId(dev_t dev_id, uint32_t flags, drmDevicePtr *device)
 	return -1;
 }
 
+/* iris queries PCI info here before anything else (intel_get_device_info_from_
+ * fd). gpu9 knows the one GPU it drives: cirno's Broadwell-U GT1, 8086/1606 at
+ * PCI 0:2:0. Report it; init_common then fills the whole gen8 devinfo from
+ * static tables keyed on 0x1606. Allocate one block so drmFreeDevice frees it. */
 int
 drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device)
 {
-	(void)fd; (void)flags; (void)device;
-	errno = ENOSYS;		/* gpu9 drives one known GPU; iris falls back */
-	return -1;
+	struct blk {
+		drmDevice d;
+		drmPciBusInfo bus;
+		drmPciDeviceInfo dev;
+	} *b;
+	(void)fd; (void)flags;
+
+	b = calloc(1, sizeof *b);
+	if(b == NULL){ errno = ENOMEM; return -1; }
+	b->bus.domain = 0; b->bus.bus = 0; b->bus.dev = 2; b->bus.func = 0;
+	b->dev.vendor_id = 0x8086;
+	b->dev.device_id = 0x1606;		/* Broadwell-U GT1 */
+	b->dev.subvendor_id = 0x8086;
+	b->dev.subdevice_id = 0;
+	b->dev.revision_id = 0x09;
+	b->d.bustype = DRM_BUS_PCI;
+	b->d.available_nodes = 1;
+	b->d.businfo.pci = &b->bus;
+	b->d.deviceinfo.pci = &b->dev;
+	*device = &b->d;
+	return 0;
 }
 
 void drmFreeDevice(drmDevicePtr *device) { (void)device; }

@@ -340,10 +340,17 @@ static int env_num(const char *name){
 	int v = 0; for(char *s = buf; *s >= '0' && *s <= '9'; s++) v = v*10 + (*s - '0');
 	return v;
 }
+/* GPU driver hook. iris (and any DRM client) issues ioctls with type byte 'd'
+ * (0x64). If a gpu9 handler is linked in, route those to it — that IS the
+ * "kernel driver", in-process. Weak, so ordinary cc9 programs are unaffected. */
+extern int gpu9_ioctl(int fd, unsigned long req, void *arg) __attribute__((weak));
+
 int ioctl(int fd, unsigned long req, ...){
 	__builtin_va_list ap; __builtin_va_start(ap, req);
 	void *arg = __builtin_va_arg(ap, void *);
 	__builtin_va_end(ap);
+	if(gpu9_ioctl != 0 && ((req >> 8) & 0xff) == 0x64 /* DRM_IOCTL_BASE 'd' */)
+		return gpu9_ioctl(fd, req, arg);
 	(void)fd;
 	if(req == 0x5413 /*TIOCGWINSZ*/){
 		struct { unsigned short r, c, xp, yp; } *ws = arg;
