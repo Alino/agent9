@@ -291,6 +291,36 @@ n9_segattach:
 	REST_CALLEE
 	ret
 
+// long n9_segdetach(void *addr)  SEGDETACH=31. Detaches the segment containing
+// addr from this process; the segment itself lives on while other processes
+// hold it (or its #g name exists). Pairs with n9_segattach for shm9's
+// MAP_SHARED emulation over named global segments.
+	.globl n9_segdetach
+n9_segdetach:
+	SAVE_CALLEE
+	subq	$16, %rsp
+	movq	%rdi, 8(%rsp)      // addr
+	movq	$31, %rbp
+	syscall
+	addq	$16, %rsp
+	REST_CALLEE
+	ret
+
+// long n9_segfree(void *va, unsigned long len)  SEGFREE=32. Tells the kernel the
+// pages [va, va+len) may be discarded (demand-refilled as zeros) — the Plan 9
+// madvise(DONTNEED). Used by shm9's Phase B pool to return carved-out buffers.
+	.globl n9_segfree
+n9_segfree:
+	SAVE_CALLEE
+	subq	$32, %rsp
+	movq	%rdi, 8(%rsp)      // va
+	movq	%rsi, 16(%rsp)     // len
+	movq	$32, %rbp
+	syscall
+	addq	$32, %rsp
+	REST_CALLEE
+	ret
+
 // long n9_rfork_thread(void *stacktop, void (*fn)(void*), void *arg)
 //   Creates a thread (RFPROC|RFMEM|RFNOWAIT = 112) running fn(arg) on a fresh
 //   stack. Returns the child pid in the parent; the child never returns.

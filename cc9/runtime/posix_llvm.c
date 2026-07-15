@@ -134,6 +134,14 @@ void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
 	(void)addr;
 	if ((prot & 4) && (flags & 0x20))     /* PROT_EXEC + MAP_ANON: JIT memory */
 		return exec_alloc(len);
+	if ((flags & 0x1) && fd >= 0) {       /* MAP_SHARED of a #g data fd: real
+		 * cross-process shared memory over a named segment (shm9.c). Any
+		 * other fd keeps the historical pread-copy behavior below. */
+		extern void *cc9_shm_try_map(int, n9size_t, int *);
+		int handled;
+		void *p = cc9_shm_try_map(fd, len, &handled);
+		if (handled) return p ? p : (void *)-1;
+	}
 	(void)prot;
 	/* Allocate len+1 and zero the trailing byte. Real mmap zero-pads the file's
 	 * last page past EOF; clang's MemoryBuffer maps exactly FileSize bytes and then
@@ -154,7 +162,13 @@ void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
 	}
 	return p;
 }
-int munmap(void *p, n9size_t len) { (void)len; if (is_exec_map(p)) return 0; free(p); return 0; }
+int munmap(void *p, n9size_t len) {
+	extern int cc9_shm_unmap(void *, n9size_t);
+	if (is_exec_map(p)) return 0;
+	if (cc9_shm_unmap(p, len)) return 0;   /* named-segment mapping: detached */
+	free(p);
+	return 0;
+}
 /* POSIX shm — 9front has no shm_open; the JIT's in-process mapper never calls
  * these (only the cross-process SharedMemoryMapper does). Fail cleanly. */
 int shm_open(const char *n, int f, unsigned m) { (void)n; (void)f; (void)m; return -1; }
@@ -398,6 +412,15 @@ int    execve(const char *p, char *const a[], char *const e[]) {
 	}
 	for (int fd = 3; fd < 64; fd++)
 		if (cc9_poll_cloexec(fd)) n9_close(fd);
+	/* Userspace SG_CEXEC: the kernel ignores SG_CEXEC on #g named-segment
+	 * attaches (verified: fork+exec children inherit the mapping and a fresh
+	 * segattach fails "segments overlap"), so shm mappings are detached here,
+	 * where CLOEXEC fds already die. A failed exec leaves them detached —
+	 * acceptable: spawn paths _exit on exec failure. */
+	{
+		extern void cc9_shm_detach_all(void);
+		cc9_shm_detach_all();
+	}
 	n9_exec(p, (char **)a);
 	errno = 2 /*ENOENT*/;
 	return -1;
