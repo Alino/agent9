@@ -12,7 +12,7 @@ index caa5dadebd..0bc6ca3616 100644
  endif()
  
 diff --git a/Utilities/js.cpp b/Utilities/js.cpp
-index 716225f959..abb2f284cc 100644
+index 716225f959..da2fe2e1e6 100644
 --- a/Utilities/js.cpp
 +++ b/Utilities/js.cpp
 @@ -36,7 +36,7 @@
@@ -42,3 +42,12 @@ index 716225f959..abb2f284cc 100644
  static Vector<ByteString> complete_repl_line(StringView line)
  {
      auto& realm = *s_repl_realm;
+@@ -891,7 +891,7 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     // FIXME: Figure out some way to interrupt the interpreter now that vm.exception() is gone.
+ 
+     if (evaluate_script.is_empty() && script_paths.is_empty()) {
+-#if defined(AK_OS_WINDOWS) || defined(AK_OS_ANDROID)
++#if defined(AK_OS_WINDOWS) || defined(AK_OS_ANDROID) || defined(AK_OS_PLAN9)
+         dbgln("REPL functionality is not supported on this platform");
+         VERIFY_NOT_REACHED();
+ #else
