@@ -41,6 +41,19 @@ python9/port/cc9/deps/
 python9/release/stage/
 python9/release/*.tar.gz
 
+# hermes9: parked WIP (last touched 2026-07-08) — the LLM-agent bundle +
+# launcher. Ignored FOR NOW so it stops reading as untracked noise; the tree is
+# still on disk, nothing is deleted. Drop this line when it's ready to land.
+# Two things to know first:
+#   - pac9's registry already advertises hermes9 (and its python9 dep), but both
+#     release URLs 404 — the tarballs were built and never published, so
+#     `pac9 install hermes9` is broken today. Ignoring the source doesn't fix
+#     that; publishing the releases does.
+#   - hermes9/vendor/ is an embedded upstream clone with its own .git, so
+#     `git stash -u` can't take this directory cleanly (it skips nested repos
+#     and leaves vendor/ behind, splitting the tree in half).
+hermes9/
+
 # Local-only secrets and dev scratch
 .env
 .env.*
