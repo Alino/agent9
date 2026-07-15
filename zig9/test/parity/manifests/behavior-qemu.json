@@ -2,10 +2,10 @@
   "target": "qemu",
   "host": "127.0.0.1:1717",
   "files_total": 119,
-  "files_ran": 115,
-  "files_compile_fail": 4,
+  "files_ran": 116,
+  "files_compile_fail": 3,
   "files_crash": 0,
-  "tests_pass": 1773,
+  "tests_pass": 1792,
   "tests_fail": 0,
   "tests_skip": 291,
   "results": [
@@ -355,7 +355,7 @@
     {
       "file": "import_c_keywords",
       "status": "compile-fail",
-      "detail": "thread 18826 panic: reached unreachable code"
+      "detail": "thread 1312 panic: reached unreachable code"
     },
     {
       "file": "incomplete_struct_param_tld",
@@ -831,8 +831,10 @@
     },
     {
       "file": "zon",
-      "status": "compile-fail",
-      "detail": "error: plan9: undefined symbol: '__cmphf2' (no zcu export with that name)"
+      "status": "ran",
+      "pass": 19,
+      "fail": 0,
+      "skip": 0
     }
   ]
 }

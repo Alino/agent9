@@ -13,7 +13,7 @@ upstream behavior test suite runs on real hardware.**
   VM and `cirno` (bare-metal Shuttle 9front)** — including heap allocation,
   `std.mem.sort`, `std.AutoHashMap`, `ArrayList`, `std.fmt`, FP math, generics,
   comptime, tagged unions, error unions.
-- **Upstream behavior suite: 1773 of Zig's own `test/behavior/*.zig` tests pass**
+- **Upstream behavior suite: 1792 of Zig's own `test/behavior/*.zig` tests pass**
   on 9front (`test/parity/manifests/behavior-qemu.json`), via a minimal plan9
   test runner — **0 failures, 0 crashes: 100% of the tests the suite considers
   runnable on the self-hosted x86_64 backend.** The 291 "skips" are the suite skipping
@@ -41,7 +41,7 @@ compiler as one C file (`zig2.c`, ~213 MB) targeting `x86_64-plan9`, and
 [cc9](../cc9)'s clang→ld.lld→elf2aout pipeline compiles that into a ~56 MB native
 a.out linked against n9libc (real fork/exec, POSIX-over-9P fs, pthreads, malloc).
 The resulting `zig9` drives the *same* self-hosted x86_64 backend + Plan 9 linker
-as the cross path, so its output carries the same 1773-test verification.
+as the cross path, so its output carries the same 1792-test verification.
 Build it with `port/plan9/native/build.py`; package with `--package`.
 
 **Proven reliable — two heavy programs, bit-exact.** Compiled natively on
@@ -70,13 +70,24 @@ root cause of a years-latent heap-corruption family), an uninitialized linker
 compiler-rt with named-symbol resolution in the Plan 9 linker, and cross-dir
 cache renames — see `port/plan9/NOTES.md` for the full accounting.
 
+**The linker garbage-collects.** compiler-rt (integer *and* float families —
+`f128`/`f80` arithmetic works in target programs) is compiled into every build
+and swept per-program: reference edges are recorded during codegen, flush marks
+from `_start`, and unreferenced atoms are dropped. hello-world is ~26 KB, not
+the ~540 KB of embedded runtime it briefly was. The ~2 MB text ceiling (the
+kernel places the data segment at `roundup(text_end, 2MB)`; the linker's data
+base is fixed at codegen time) is now a **hard link error** instead of a
+silently corrupt binary — and with GC, hard to reach.
+
 **Native limits.** ReleaseFast/ReleaseSmall only (Debug/ReleaseSafe trip a
-backend panic + a `std.debug.SelfInfo` gap); no f16/f80/f128 soft-float or
-`@cImport` in target programs; compiler-rt floats are excluded on plan9 (a
-genuinely-missing float libcall fails the link by name). Program text is capped
-at ~2 MB by the fixed a.out data base (the runner fits after trimming; linker GC
-is the upgrade path). The compiler retains memory until exit (deliberate:
-sidesteps a still-unpinned stale-pointer write; a compile is a one-shot process).
+backend panic + a `std.debug.SelfInfo` gap); no f16 arithmetic or `@cImport` in
+target programs; program text ≤ ~2 MB (hard error past it). The compiler frees
+memory normally — the years-latent "heap corruption" that once forced a
+retain-forever allocator was root-caused to the Plan 9 linker's deinit freeing
+`undefined`-initialized fields (deterministic 0xAA under the C backend) plus
+two sbrk cursors sharing one program break; both are fixed at the source, and
+the allocator's magic-validated headers now convert any future wild free into
+a logged diagnostic instead of a fault.
 
 ## Why Zig 0.14.1 (and not 0.16)
 
@@ -96,7 +107,7 @@ format. **0.14.1 is the newest release that can target 9front at all** (verified
 - `std.mem` (sort, indexOf, split…), `std.fmt`, raw `std.os.plan9` syscalls
 - **`!void` main, `@errorName`, `std.testing.expectError`** (error-name table via GOT)
 - Correct IEEE FP on bare metal (FP-exception masking — proven necessary on cirno)
-- A large fraction of Zig's upstream `test/behavior` suite (1773 tests)
+- A large fraction of Zig's upstream `test/behavior` suite (1792 tests)
 
 Rule for source that compiles today: build `-OReleaseSmall`/`-OReleaseFast`
 (safety-on modes trip a backend codegen bug). The `host/zig9` driver and the test
@@ -110,11 +121,11 @@ harnesses bake in the right flags (`-target x86_64-plan9 -mcpu=x86_64_v2
 
 ## What does NOT work yet
 
-- Named external symbols / compiler-rt (`x86_64`'s u128 division, `zon`'s
-  `format_float`) — the only 2 unrunnable files that aren't platform-N/A. The
-  *codegen* half is now done (patch 14 materializes 128-bit symbol operands); what
-  remains is a backend↔linker **name→export reloc** so libcalls (`__udivti3`) resolve
-  against the in-module compiler_rt (`.zcu` strat). See `port/plan9/NOTES.md`.
+- ~~Named external symbols / compiler-rt~~ — **DONE** (patches 19-20): compiler-rt
+  is compiled into the zcu and libcalls (`__udivti3`, the float families) resolve
+  by name through phantom GOT atoms in the Plan 9 linker, garbage-collected
+  per-program. `zon` now builds and passes; the only non-N/A unrunnable file left
+  is `x86_64` (a register-pressure case in its 16k-line generated math test).
 - N/A on Plan 9: `@wasmMemorySize` (no wasm runtime), translate-c `@cImport`
   (no C frontend).
 - Threads (`std.Thread.spawn`) — deferred (rfork); `getCurrentId`/`getCpuCount` stubbed.

@@ -780,6 +780,57 @@ of ReleaseSmall (use `log.err` for diagnostics that must surface); a partial
 `tar x` from a dropped connection leaves a silently stale lib tree — verify by
 grepping for a sentinel after extraction.
 
+## Linker GC + the end of the heap-corruption mystery (2026-07-15, later)
+
+Two debts closed in one sitting: the 2MB text pressure and the retain-forever
+allocator.
+
+**GC.** Every code-side inter-atom reference flows through exactly four linker
+entry points during codegen (seeNav, getOrCreateAtomForLazySymbol,
+getGlobalSymbol, lowerUav) and data-side pointers already live in `relocs` with
+explicit targets — so edges are recorded there (an updateFunc/updateNav/
+updateLazySymbolAtom bracket sets the current atom; lazy codegen NESTS inside a
+function's codegen, so the bracket restores rather than clears). flushModule
+marks from the `_start` export and skips unmarked atoms everywhere (code, syms,
+GOT — the table is `@memset(0)` so swept slots aren't heap garbage; an
+adversarial-review workflow caught that one, plus stale-export-index validation
+in findExportAtom, before either shipped). Gated on `gc_sections` (on in
+release modes). Result: hello 538 KB -> ~26 KB with ALL compiler-rt float
+families exported (f128/f80 arithmetic now works in target programs — the trim
+from earlier today is reverted); the 2MB boundary (kernel: `S_MAGIC => align =
+0x1fffff`, `adata = (text+align)&~align` — confirmed in /sys/src) is now a hard
+link error instead of silent corruption.
+
+**The heap corruption, actually root-caused.** The method: (1) an
+ASAN-instrumented compiler (CBE emit for aarch64-macos with -lc, clang
+-fsanitize=address, 512MB stack via -Wl,-stack_size) ran the EXACT corrupting
+workload — the in-process build_runner compile — **clean**, proving the
+portable compiler logic sound and localizing the bug to plan9-only paths;
+(2) restoring real free on cirno still faulted, so the allocator got
+magic-validated stash headers + a wild-pointer guard + an rbp-chain backtrace
+(clang -O0 keeps frame pointers; log.err, since ReleaseSmall strips log.warn);
+(3) the fingerprint came back `ptr=0xaaaaaaaaaaaaaaaa len=0xaaaa...` —
+**Zig's `undefined` pattern, which the C backend materializes as a
+deterministic 0xAA fill** (ELF elides it; `cleanExit` skips deinit in one-shot
+builds — which is why only `zig build`, whose cmdBuild destroys the runner
+Compilation in-process, ever hit it); (4) the backtrace symbolized to
+**`Plan9.deinit`**: it frees `code.getOwnedCode()` for every atom and the
+lazy-sym names, but `createAtom` left `.code = undefined` (phantom atoms —
+named globals, etext/edata/end — never assign it) and the anyerror lazy sym's
+name stays unassigned until flush. deinit freed 0xAA wild pointers into cc9's
+K&R heap; under DebugAllocator-over-sbrk the same frees had corrupted quietly
+for the whole history of the port (the "phantom error count" of the original
+bring-up included). Fixes: initialize `.code` to a null CodePtr in createAtom;
+give lazy syms a zero-length static name until updateLazySymbolAtom assigns the
+real one. With both: `zig build` end-to-end on cirno with REAL free, zero
+allocator diagnostics, demos bit-exact, cached rebuild 15 s. The magic-header
+validation stays permanently — any future wild free is a logged, leaked block
+with a backtrace instead of a GP fault.
+
+(The earlier one-break-owner sbrk fix remains necessary — it was A root cause,
+of the original build-exe-era corruption; the deinit frees were THE remaining
+one at zig-build scale.)
+
 ## Packaging (Phase 7)
 
 `build.py --package` assembles `_out/zig9-amd64.tar.gz` (`amd64/bin/zig9`,

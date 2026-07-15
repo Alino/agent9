@@ -1,10 +1,11 @@
-THE root cause of the CBE compiler's latent heap corruption: two independent
-sbrk cursors, both rooted at `end` — Zig std's plan9.sbrk and cc9 n9libc's
-n9_sbrk — handing out overlapping memory in one process. Under the C backend
-plan9.sbrk now delegates to n9libc's exported, locked cc9_sbrk (one break
-owner); native-backend target programs keep the local cursor. Also the
-std.os.plan9 gaps the build runner needs: CLOCK, symlinkat (EOPNOTSUPP),
-futimens (no-op success; the Cache content-hashes when mtime is unreliable).
+THE root cause of the CBE compiler's original heap-corruption family: two
+independent sbrk cursors, both rooted at `end` — Zig std's plan9.sbrk and
+cc9 n9libc's n9_sbrk — handing out overlapping memory in one process.
+Under the C backend plan9.sbrk now delegates to n9libc's exported, locked
+cc9_sbrk (one break owner); native-backend target programs keep the local
+cursor. Also the std.os.plan9 gaps the build runner needs: CLOCK, symlinkat
+(EOPNOTSUPP), futimens (no-op success; the Cache content-hashes when mtime
+is unreliable).
 
 --- a/lib/std/os/plan9.zig
 +++ b/lib/std/os/plan9.zig

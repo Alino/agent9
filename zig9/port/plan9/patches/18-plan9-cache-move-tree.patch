@@ -2,7 +2,7 @@ Plan 9 cannot rename across directories (wstat renames a leaf in place), and
 std.fs.Dir.walk/deleteTree misbehave over 9P — move cache trees by recursive
 copy+delete with entry names snapshotted before any delete. Covers both
 Compilation.renameTmpIntoCache and Package.Fetch.renameTmpIntoCache (the
-dependencies.zig move that zig build hits). Regenerated 2026-07-15.
+dependencies.zig move that zig build hits).
 
 --- a/src/Compilation.zig
 +++ b/src/Compilation.zig

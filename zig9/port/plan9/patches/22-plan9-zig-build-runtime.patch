@@ -4,9 +4,10 @@ spawnPlan9 (rfork+exec+pipes, no CLOEXEC/errpipe), std.io pollPlan9
 runtime-fails on void-Os OSes, the build runner's fuzz/std.net block
 comptime-gated, Options/Run cross-directory moves, Target.zig's
 stage2_x86_64 vector workarounds extended to plan9, and main.zig: the
-Cc9Allocator (cc9-malloc-backed gpa, retain-forever free — a still-unpinned
-stale write corrupts a real free-list; a compile is a one-shot process) and
-cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
+Cc9Allocator (cc9-malloc-backed gpa with REAL free — magic-validated
+stash headers convert any wild/corrupted free into a logged, leaked block
+with an rbp backtrace instead of a GP fault) and cmdBuild forcing the
+runner to ReleaseSmall+single-threaded+strip on plan9.
 
 --- a/lib/std/process/Child.zig
 +++ b/lib/std/process/Child.zig
@@ -396,10 +397,11 @@ cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
                          result = result and (set_int.* & other_set_int) == other_set_int;
 --- a/src/main.zig
 +++ b/src/main.zig
-@@ -216,6 +216,52 @@
+@@ -215,6 +215,91 @@
+     }
  };
  var zero_allocator: ZeroAllocator = undefined;
- 
++
 +// zig9: back the plan9 single-threaded compiler heap with cc9's malloc/free
 +// (n9libc — the same heap that runs rustc and CPython on 9front) instead of the
 +// std sbrk page allocator, whose free-list corrupts under the heavy allocation
@@ -411,7 +413,13 @@ cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
 +const Cc9Allocator = struct {
 +    extern fn malloc(n: usize) ?*anyopaque;
 +    extern fn free(p: ?*anyopaque) void;
-+    const hdr = @sizeOf(usize);
++    // Two stash words below every aligned pointer: [raw malloc ptr][magic ^ raw].
++    // The magic makes header corruption (the scale-dependent plan9 mystery)
++    // observable: a trashed header logs and leaks that one block instead of
++    // handing cc9's free() a wild pointer and GP-faulting the compile.
++    const hdr = 2 * @sizeOf(usize);
++    const magic: usize = 0x5A17C0DE_9F9F600D;
++    var bad_free_count: usize = 0;
 +    fn allocator() std.mem.Allocator {
 +        return .{ .ptr = undefined, .vtable = &.{
 +            .alloc = alloc,
@@ -425,8 +433,9 @@ cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
 +        const raw = malloc(len + alignb + hdr) orelse return null;
 +        const base = @intFromPtr(raw) + hdr;
 +        const aligned = std.mem.alignForward(usize, base, alignb);
-+        const store: *usize = @ptrFromInt(aligned - hdr);
-+        store.* = @intFromPtr(raw);
++        const store: *[2]usize = @ptrFromInt(aligned - hdr);
++        store[0] = @intFromPtr(raw);
++        store[1] = magic ^ @intFromPtr(raw);
 +        return @ptrFromInt(aligned);
 +    }
 +    fn resize(_: *anyopaque, buf: []u8, _: std.mem.Alignment, new_len: usize, _: usize) bool {
@@ -436,20 +445,51 @@ cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
 +        return if (new_len <= buf.len) buf.ptr else null;
 +    }
 +    fn freeFn(_: *anyopaque, buf: []u8, _: std.mem.Alignment, _: usize) void {
-+        // ponytail: deliberately a no-op — retain-forever. The compiler has a
-+        // latent stale-pointer write (masked for years by DebugAllocator's
-+        // retained buckets; with real free it corrupts the K&R heap and GP-
-+        // faults at build_runner scale). A one-shot compiler process can leak;
-+        // the kernel reclaims at exit. Real fix needs a tracking allocator to
-+        // pin the UAF, then restore: free(@ptrFromInt(store.*)).
-+        _ = buf;
++        // A GP fault here means the CALLER passed a wild (non-canonical)
++        // pointer — corruption upstream of the allocator. Log the raw value
++        // (its bit pattern fingerprints the owner) instead of dereferencing.
++        const p = @intFromPtr(buf.ptr);
++        if (p < 0x200000 or p >= 0x8000000000 or (p & (@sizeOf(usize) - 1)) != 0) {
++            bad_free_count += 1;
++            if (bad_free_count <= 8) {
++                // walk the rbp chain (clang -O0 keeps frame pointers) so the
++                // caller can be symbolized offline against zig9big.elf
++                var ra: [6]usize = @splat(0);
++                var fp = @frameAddress();
++                for (&ra) |*slot| {
++                    if (fp < 0x1000 or fp >= 0x8000000000 or (fp & 7) != 0) break;
++                    const frame: *const [2]usize = @ptrFromInt(fp);
++                    slot.* = frame[1];
++                    if (frame[0] <= fp) break;
++                    fp = frame[0];
++                }
++                std.log.err("cc9alloc: WILD free #{d}: ptr=0x{x} len={d} bt=0x{x},0x{x},0x{x},0x{x},0x{x},0x{x}", .{
++                    bad_free_count, p, buf.len, ra[0], ra[1], ra[2], ra[3], ra[4], ra[5],
++                });
++            }
++            return;
++        }
++        const store: *const [2]usize = @ptrFromInt(@intFromPtr(buf.ptr) - hdr);
++        const raw = store[0];
++        if (store[1] != magic ^ raw or raw == 0 or raw >= @intFromPtr(buf.ptr)) {
++            // Header trashed (the scale-dependent corruption this diagnostic
++            // exists to profile): leak this one block and report it rather
++            // than GP-faulting the whole compile.
++            bad_free_count += 1;
++            if (bad_free_count <= 8) {
++                std.log.err("cc9alloc: corrupted header at free #{d}: ptr=0x{x} len={d} stash=[0x{x}, 0x{x}]", .{
++                    bad_free_count, @intFromPtr(buf.ptr), buf.len, raw, store[1],
++                });
++            }
++            return;
++        }
++        free(@ptrFromInt(raw));
 +    }
 +};
-+
+ 
  pub fn main() anyerror!void {
      crash_report.initialize();
- 
-@@ -235,7 +281,7 @@
+@@ -235,7 +320,7 @@
          // the sbrk page_allocator is the proven plan9 heap (behavior suite);
          // skip its leak-check deinit (is_debug=false) — the process is exiting.
          if (builtin.single_threaded) {
@@ -458,21 +498,20 @@ cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
              break :gpa .{ zero_allocator.allocator(), false };
          }
          break :gpa switch (builtin.mode) {
-@@ -5209,6 +5255,13 @@
-                 },
+@@ -5210,12 +5295,21 @@
                  .root_src_path = "build_runner.zig",
              };
-+
+ 
 +            // zig9: the build runner runs on the host (native target). On Plan 9
 +            // the self-hosted x86_64 backend panics in safety modes and
 +            // Thread.spawn is a compile-error, so force the runner to
 +            // ReleaseSmall + single-threaded + strip (matches the rule for every
 +            // natively-compiled plan9 program).
 +            const runner_is_plan9 = resolved_target.result.os.tag == .plan9;
- 
++
              const config = try Compilation.Config.resolve(.{
                  .output_mode = .Exe,
-@@ -5216,6 +5269,8 @@
+                 .resolved_target = resolved_target,
                  .have_zcu = true,
                  .emit_bin = true,
                  .is_test = false,
@@ -481,7 +520,7 @@ cmdBuild forcing the runner to ReleaseSmall+single-threaded+strip on plan9.
              });
  
              const root_mod = try Package.Module.create(arena, .{
-@@ -5225,6 +5280,8 @@
+@@ -5225,6 +5319,8 @@
                  .cc_argv = &.{},
                  .inherited = .{
                      .resolved_target = resolved_target,

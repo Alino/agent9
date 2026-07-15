@@ -1,19 +1,43 @@
-Named externs (compiler-rt libcalls) on plan9: each name gets a phantom atom
-with a GOT slot, resolved at flush against the same-named zcu export
-(fail-by-name if missing). CodeGen's genExternSymbolRef and the Select
-.symbol operand emit ds-relative GOT loads/calls; Lower promotes call/jmp
-memory operands to 64-bit (call m32 has no encoding). Robustness: bases
-initialized in createEmpty (the in-process cmdBuild flow never calls open(),
-which was the only place setting them — atoms all landed at offset ~0 and
-the header entry was 0); entry derived from the _start export's atom offset
-after layout (writeSyms's name scan read a garbage sym value on this path);
-flushModule validates/reopens a dead emit fd and reports kernel errstr on
-write failures; seeNav allocates got_index on the found-existing path;
-getOffset handles .memory/.indirect operands.
+The Plan 9 linker learns named externs, GC, and loses a family of
+undefined-memory bugs.
+
+Named externs (compiler-rt libcalls): phantom atoms with GOT slots,
+resolved at flush against the same-named zcu export (fail-by-name if
+missing, validated against recycled Export.Index slots). CodeGen's
+genExternSymbolRef and the Select .symbol operand emit ds-relative GOT
+loads/calls; Lower promotes call/jmp memory operands to 64-bit (call m32
+has no encoding).
+
+GC (gated on gc_sections, i.e. release modes): reference edges recorded at
+the four linker entry points every code-side reference flows through
+(seeNav / lazy symbols / named globals / lowerUav) plus relocs for
+data-side pointers; flushModule marks from the _start export and skips
+unmarked atoms (no code, no syms, GOT slot zeroed — the table is now
+@memset). This is what keeps in-zcu compiler-rt from bloating binaries
+toward the 2MB text boundary, which is now also a hard link error
+(the kernel maps data at roundup(text_end, 2MB); a fixed 0x400000 data
+base past that boundary would corrupt every GOT reference silently).
+
+Robustness, each a real bug found landing zig build natively:
+- bases initialized in createEmpty (only open() set them; the in-process
+  cmdBuild flow goes createEmpty+makeWritable and produced offset-0 atoms
+  and entry=0 binaries: "exec header invalid")
+- entry derived from the _start export's atom offset after layout
+  (writeSyms's name scan read an undefined sym value on this path)
+- createAtom no longer leaves .code undefined: deinit frees
+  code.getOwnedCode() for every atom, and phantom atoms never assign it —
+  under the C backend undefined is a deterministic 0xAA fill, so deinit
+  freed wild pointers (the years-latent "heap corruption" that forced a
+  retain-forever allocator; found by fingerprinting 0xAA frees + an rbp
+  backtrace on cirno). Same for pre-flush lazy-sym names (zero-len static
+  name until updateLazySymbolAtom assigns the real one).
+- emit-fd validated/reopened at flush; kernel errstr in write diagnostics;
+  seeNav allocates got_index on the found-existing path; getOffset handles
+  .memory/.indirect operands.
 
 --- a/src/link/Plan9.zig
 +++ b/src/link/Plan9.zig
-@@ -62,6 +62,12 @@
+@@ -62,6 +62,26 @@
  /// during flush.
  nav_exports: std.AutoArrayHashMapUnmanaged(InternPool.Nav.Index, []Zcu.Export.Index) = .empty,
  
@@ -23,10 +47,24 @@ getOffset handles .memory/.indirect operands.
 +/// is always in-module). Keys are owned by gpa.
 +globals: std.StringArrayHashMapUnmanaged(Atom.Index) = .empty,
 +
++/// zig9 GC (gated on base.gc_sections): code-side reference edges, recorded
++/// while an atom's codegen runs — every code reference reaches another atom
++/// through this linker (seeNav / lazy symbols / named globals / lowerUav), so
++/// hooking those four entry points captures the full code-side graph.
++/// Data-side references (pointers inside initializers) already live in
++/// `relocs` with explicit targets. flushModule marks from the `_start` entry
++/// and skips unmarked atoms entirely: no code written, no syms, GOT slot left
++/// zero. This is what keeps in-module compiler-rt (a few hundred exported
++/// functions, mostly unreferenced) from bloating every binary toward the 2MB
++/// text boundary.
++gc_edges: std.AutoArrayHashMapUnmanaged(Atom.Index, std.ArrayListUnmanaged(Atom.Index)) = .empty,
++/// The atom whose codegen is currently running — the source of recorded edges.
++gc_current: ?Atom.Index = null,
++
  lazy_syms: LazySymbolTable = .{},
  
  uavs: std.AutoHashMapUnmanaged(InternPool.Index, Atom.Index) = .empty,
-@@ -335,7 +341,12 @@
+@@ -335,7 +355,12 @@
              .build_id = options.build_id,
          },
          .sixtyfour_bit = sixtyfour_bit,
@@ -40,33 +78,172 @@ getOffset handles .memory/.indirect operands.
          .magic = try aout.magicFromArch(target.cpu.arch),
      };
      // a / will always be in a file path
-@@ -598,8 +609,25 @@
+@@ -432,6 +457,8 @@
+     const func = zcu.funcInfo(func_index);
+ 
+     const atom_idx = try self.seeNav(pt, func.owner_nav);
++    const gc_prev = self.gcBegin(atom_idx);
++    defer self.gc_current = gc_prev;
+ 
+     var code_buffer: std.ArrayListUnmanaged(u8) = .empty;
+     defer code_buffer.deinit(gpa);
+@@ -490,6 +517,8 @@
+ 
+     if (nav_init.typeOf(zcu).hasRuntimeBits(zcu)) {
+         const atom_idx = try self.seeNav(pt, nav_index);
++        const gc_prev = self.gcBegin(atom_idx);
++        defer self.gc_current = gc_prev;
+ 
+         var code_buffer: std.ArrayListUnmanaged(u8) = .empty;
+         defer code_buffer.deinit(gpa);
+@@ -598,8 +627,122 @@
      for (self.etext_edata_end_atom_indices) |idx| {
          if (idx != null) extern_atom_count += 1;
      }
 +    // named globals are phantom atoms too: a GOT slot, no content, no iovec
 +    extern_atom_count += self.globals.count();
      return extern_atom_count;
- }
++}
 +
 +/// Get (or create) the phantom atom for a named external symbol. The returned
 +/// atom has a GOT slot; its value is resolved against the zcu's exports at
 +/// flush time. `lib_name` is meaningless on Plan 9 (fully static).
 +pub fn getGlobalSymbol(self: *Plan9, name: []const u8, lib_name: ?[]const u8) !Atom.Index {
 +    _ = lib_name;
-+    if (self.globals.get(name)) |index| return index;
++    if (self.globals.get(name)) |index| {
++        try self.gcEdge(index);
++        return index;
++    }
 +    const gpa = self.base.comp.gpa;
 +    const owned = try gpa.dupe(u8, name);
 +    errdefer gpa.free(owned);
 +    const index = try self.createAtom();
 +    self.getAtomPtr(index).got_index = self.allocateGotIndex();
 +    try self.globals.putNoClobber(gpa, owned, index);
++    try self.gcEdge(index);
 +    return index;
++}
++
++/// Mark the start of `atom_idx`'s codegen: subsequent atom references recorded
++/// as its GC edges. Re-codegen of the same atom resets its edge list. Returns
++/// the previous codegen context — lazy-symbol codegen nests inside a function's
++/// codegen, so the caller must RESTORE (not clear) it when done.
++fn gcBegin(self: *Plan9, atom_idx: Atom.Index) ?Atom.Index {
++    if (!self.base.gc_sections) return null;
++    const prev = self.gc_current;
++    self.gc_current = atom_idx;
++    if (self.gc_edges.getPtr(atom_idx)) |lst| lst.clearRetainingCapacity();
++    return prev;
++}
++
++/// Record "the atom currently being codegen'd references `to`".
++fn gcEdge(self: *Plan9, to: Atom.Index) !void {
++    if (!self.base.gc_sections) return;
++    const from = self.gc_current orelse return;
++    if (from == to) return;
++    const gpa = self.base.comp.gpa;
++    const gop = try self.gc_edges.getOrPut(gpa, from);
++    if (!gop.found_existing) gop.value_ptr.* = .{};
++    try gop.value_ptr.append(gpa, to);
++}
++
++/// Find the atom of the zcu export named `name`, if any.
++fn findExportAtom(self: *Plan9, pt: Zcu.PerThread, name: []const u8) ?Atom.Index {
++    const ip = &pt.zcu.intern_pool;
++    var nit = self.nav_exports.iterator();
++    while (nit.next()) |ne| {
++        for (ne.value_ptr.*) |export_idx| {
++            const exp = export_idx.ptr(pt.zcu);
++            // deleteExport is a no-op for plan9 and the Zcu recycles
++            // Export.Index slots, so a stale entry here may now describe a
++            // different nav's export — trust it only if it still points back
++            // at the nav it is filed under.
++            if (exp.exported != .nav or exp.exported.nav != ne.key_ptr.*) continue;
++            if (exp.opts.name.eqlSlice(name, ip)) {
++                if (self.navs.get(ne.key_ptr.*)) |meta| return meta.index;
++                return null;
++            }
++        }
++    }
++    return null;
+ }
++
++/// Compute atom liveness from the `_start` entry export. Edges: `gc_edges`
++/// (code-side, recorded during codegen), `relocs` (data-side pointers), and
++/// named-global phantoms -> their same-named export's atom. Returns one bool
++/// per atom; caller frees. If no `_start` export exists (exotic outputs),
++/// everything is kept.
++fn gcMark(self: *Plan9, pt: Zcu.PerThread) ![]bool {
++    const gpa = self.base.comp.gpa;
++    const marks = try gpa.alloc(bool, self.atoms.items.len);
++    errdefer gpa.free(marks);
++    @memset(marks, false);
++
++    // reverse map for the phantom-global hop (atom -> name)
++    var global_names: std.AutoHashMapUnmanaged(Atom.Index, []const u8) = .empty;
++    defer global_names.deinit(gpa);
++    var git = self.globals.iterator();
++    while (git.next()) |g| try global_names.put(gpa, g.value_ptr.*, g.key_ptr.*);
++
++    var work: std.ArrayListUnmanaged(Atom.Index) = .empty;
++    defer work.deinit(gpa);
++
++    if (self.findExportAtom(pt, "_start")) |root| {
++        try work.append(gpa, root);
++    } else {
++        @memset(marks, true);
++        return marks;
++    }
++
++    while (work.pop()) |idx| {
++        if (marks[idx]) continue;
++        marks[idx] = true;
++        if (self.gc_edges.getPtr(idx)) |lst| {
++            for (lst.items) |t| if (!marks[t]) try work.append(gpa, t);
++        }
++        if (self.relocs.getPtr(idx)) |lst| {
++            for (lst.items) |r| switch (r.type) {
++                .pcrel, .nonpcrel => if (!marks[r.target]) try work.append(gpa, r.target),
++                else => {},
++            };
++        }
++        if (global_names.get(idx)) |name| {
++            // a live libcall keeps its in-module implementation alive
++            if (self.findExportAtom(pt, name)) |t| {
++                if (!marks[t]) try work.append(gpa, t);
++            }
++        }
++    }
++    return marks;
 +}
  // counts decls, and lazy syms
  fn atomCount(self: *Plan9) usize {
      var fn_nav_count: usize = 0;
-@@ -696,6 +724,27 @@
+@@ -677,12 +820,23 @@
+         if (metadata.text_state != .unused) metadata.text_state = .flushed;
+         if (metadata.rodata_state != .unused) metadata.rodata_state = .flushed;
+     }
++    // zig9 GC: compute liveness now that every atom exists (lazy syms were just
++    // finished). Unmarked atoms are skipped below: no code written, no syms, GOT
++    // slot left zero.
++    const gc_marks: ?[]bool = if (self.base.gc_sections) try self.gcMark(pt) else null;
++    defer if (gc_marks) |m| gpa.free(m);
++    var atoms_written: usize = 0;
++
+     // make sure the got table is good
+     const atom_count = self.atomCount();
+     assert(self.got_len == atom_count + self.got_index_free_list.items.len);
+     const got_size = self.got_len * if (!self.sixtyfour_bit) @as(u32, 4) else 8;
+     var got_table = try gpa.alloc(u8, got_size);
+     defer gpa.free(got_table);
++    // Swept atoms keep their (never-written) slots; without this they'd ship
++    // as heap garbage — nondeterministic binaries, and a wild pointer instead
++    // of a near-zero fault if a marking miss ever slips through.
++    @memset(got_table, 0);
+ 
+     // + 4 for header, got, symbols, linecountinfo; + atomCount() for at most one
+     // alignment-padding iovec per atom. pwritevAll writes the whole slice, so any
+@@ -696,6 +850,27 @@
      @memset(pad_buf, 0);
      var n_pad: usize = 0;
  
@@ -94,32 +271,101 @@ getOffset handles .memory/.indirect operands.
      const file = self.base.file.?;
  
      var hdr_buf: [40]u8 = undefined;
-@@ -891,8 +940,63 @@
+@@ -718,8 +893,11 @@
+             while (it.next()) |entry| {
+                 const nav_index = entry.key_ptr.*;
+                 const nav = pt.zcu.intern_pool.getNav(nav_index);
+-                const atom = self.getAtomPtr(self.navs.get(nav_index).?.index);
++                const nav_atom_index = self.navs.get(nav_index).?.index;
++                if (gc_marks) |m| if (!m[nav_atom_index]) continue;
++                const atom = self.getAtomPtr(nav_atom_index);
+                 const out = entry.value_ptr.*;
++                atoms_written += 1;
+                 {
+                     // connect the previous decl to the next
+                     const delta_line = @as(i32, @intCast(out.start_line)) - @as(i32, @intCast(linecount));
+@@ -767,7 +945,9 @@
+         while (it.next()) |kv| {
+             const meta = kv.value_ptr;
+             const text_atom = if (meta.text_state != .unused) self.getAtomPtr(meta.text_atom) else continue;
++            if (gc_marks) |m| if (!m[meta.text_atom]) continue;
+             const code = text_atom.code.getOwnedCode().?;
++            atoms_written += 1;
+             foff += code.len;
+             iovecs[iovecs_i] = .{ .base = code.ptr, .len = code.len };
+             iovecs_i += 1;
+@@ -793,6 +973,19 @@
+             mem.writeInt(u64, got_table[etext_atom.got_index.? * 8 ..][0..8], val, target.cpu.arch.endian());
+         }
+     }
++    // zig9: the kernel places the data segment at roundup(text_end, 2MB) on
++    // amd64 (sysexec: S_MAGIC -> align = 0x1fffff), while our data base (where
++    // every ds-relative GOT reference points) was fixed at codegen time. If
++    // text has grown past the boundary the two diverge and the binary would be
++    // silently corrupt — fail loudly instead.
++    if (target.cpu.arch == .x86_64) {
++        const kernel_adata = (self.bases.text + text_i + 0x1fffff) & ~@as(u64, 0x1fffff);
++        if (kernel_adata != self.bases.data)
++            return diags.fail(
++                "plan9: program text (0x{x} bytes, ends 0x{x}) crosses the 2MB segment boundary: the kernel would map data at 0x{x} but the linker's data base is 0x{x}",
++                .{ text_i, self.bases.text + text_i, kernel_adata, self.bases.data },
++            );
++    }
+     // global offset table is in data
+     iovecs[iovecs_i] = .{ .base = got_table.ptr, .len = got_table.len };
+     iovecs_i += 1;
+@@ -802,8 +995,11 @@
+         var it = self.data_nav_table.iterator();
+         while (it.next()) |entry| {
+             const nav_index = entry.key_ptr.*;
+-            const atom = self.getAtomPtr(self.navs.get(nav_index).?.index);
++            const nav_atom_index = self.navs.get(nav_index).?.index;
++            if (gc_marks) |m| if (!m[nav_atom_index]) continue;
++            const atom = self.getAtomPtr(nav_atom_index);
+             const code = entry.value_ptr.*;
++            atoms_written += 1;
+ 
+             const d_align: u64 = switch (pt.navAlignment(nav_index)) {
+                 .none => 1,
+@@ -829,8 +1025,10 @@
+         {
+             var it_uav = self.uavs.iterator();
+             while (it_uav.next()) |kv| {
++                if (gc_marks) |m| if (!m[kv.value_ptr.*]) continue;
+                 const atom = self.getAtomPtr(kv.value_ptr.*);
+                 const code = atom.code.getOwnedCode().?;
++                atoms_written += 1;
+                 log.debug("write anon decl: {s}", .{self.syms.items[atom.sym_index.?].name});
+                 const u_align: u64 = self.uav_alignment.get(kv.key_ptr.*) orelse 1;
+                 padSegment(iovecs, &iovecs_i, &data_i, self.bases.data, u_align, pad_buf, &n_pad);
+@@ -853,7 +1051,9 @@
+         while (it_lazy.next()) |kv| {
+             const meta = kv.value_ptr;
+             const data_atom = if (meta.rodata_state != .unused) self.getAtomPtr(meta.rodata_atom) else continue;
++            if (gc_marks) |m| if (!m[meta.rodata_atom]) continue;
+             const code = data_atom.code.getOwnedCode().?; // lazy symbols must own their code
++            atoms_written += 1;
+             foff += code.len;
+             iovecs[iovecs_i] = .{ .base = code.ptr, .len = code.len };
+             iovecs_i += 1;
+@@ -891,11 +1091,44 @@
              }
          }
      }
 +    // Resolve named globals (compiler-rt libcalls): every atom now has its final
 +    // offset, so point each global's GOT slot at the same-named zcu export.
 +    if (self.globals.count() != 0) {
-+        const ip = &pt.zcu.intern_pool;
 +        var git = self.globals.iterator();
 +        while (git.next()) |g| {
 +            const name = g.key_ptr.*;
++            // an unreferenced libcall name (e.g. referenced only by swept
++            // compiler-rt code) must not fail resolution
++            if (gc_marks) |m| if (!m[g.value_ptr.*]) continue;
 +            const global_atom = self.getAtom(g.value_ptr.*);
-+            const target_off: u64 = off: {
-+                var nit = self.nav_exports.iterator();
-+                while (nit.next()) |ne| {
-+                    for (ne.value_ptr.*) |export_idx| {
-+                        const exp = export_idx.ptr(pt.zcu);
-+                        if (exp.opts.name.eqlSlice(name, ip)) {
-+                            const target_atom = self.getAtom(self.navs.get(ne.key_ptr.*).?.index);
-+                            break :off target_atom.offset orelse
-+                                return diags.fail("plan9: export '{s}' has no address at flush", .{name});
-+                        }
-+                    }
-+                }
++            const target_atom_idx = self.findExportAtom(pt, name) orelse
 +                return diags.fail("plan9: undefined symbol: '{s}' (no zcu export with that name)", .{name});
-+            };
++            const target_off: u64 = self.getAtom(target_atom_idx).offset orelse
++                return diags.fail("plan9: export '{s}' has no address at flush", .{name});
 +            log.debug("resolve global '{s}' (got_table[0x{x}] = 0x{x})", .{ name, global_atom.got_index.? * 8, target_off });
 +            if (!self.sixtyfour_bit) {
 +                mem.writeInt(u32, got_table[global_atom.got_index.? * 4 ..][0..4], @as(u32, @intCast(target_off)), target.cpu.arch.endian());
@@ -129,36 +375,36 @@ getOffset handles .memory/.indirect operands.
 +        }
 +    }
      var sym_buf = std.ArrayList(u8).init(gpa);
-     try self.writeSyms(&sym_buf);
+-    try self.writeSyms(&sym_buf);
++    try self.writeSyms(&sym_buf, gc_marks);
 +    // zig9: derive the entry point directly from the `_start` export's atom,
 +    // AFTER writeSyms — whose name scan also assigns entry_val, from the export
 +    // sym's `.value`, which is 0/undefined on the compiler-on-plan9 path (the
 +    // silent source of "exec header invalid" runners). The atom offset is
 +    // authoritative; the scan is only a fallback for a missing export.
-+    {
-+        const ip = &pt.zcu.intern_pool;
-+        var found_export = false;
-+        var nit = self.nav_exports.iterator();
-+        outer: while (nit.next()) |ne| {
-+            for (ne.value_ptr.*) |export_idx| {
-+                const exp = export_idx.ptr(pt.zcu);
-+                if (exp.opts.name.eqlSlice("_start", ip)) {
-+                    found_export = true;
-+                    if (self.navs.get(ne.key_ptr.*)) |meta| {
-+                        if (self.getAtom(meta.index).offset) |o| self.entry_val = o;
-+                    }
-+                    break :outer;
-+                }
-+            }
-+        }
-+        log.debug("entry: found_export={} entry_val={?x}", .{ found_export, self.entry_val });
++    if (self.findExportAtom(pt, "_start")) |entry_atom| {
++        if (self.getAtom(entry_atom).offset) |o| self.entry_val = o;
 +    }
++    log.debug("entry: entry_val={?x}", .{self.entry_val});
 +    if (self.entry_val == null or self.entry_val.? == 0)
 +        return diags.fail("plan9: no usable '_start' entry (export missing or unplaced)", .{});
      const syms = try sym_buf.toOwnedSlice();
      defer gpa.free(syms);
-     assert(2 + self.atomCount() - self.externCount() + n_pad == iovecs_i); // real content + alignment padding
-@@ -969,7 +1073,17 @@
+-    assert(2 + self.atomCount() - self.externCount() + n_pad == iovecs_i); // real content + alignment padding
++    assert(2 + atoms_written + n_pad == iovecs_i); // hdr + got + written atoms + alignment padding
+     iovecs[iovecs_i] = .{ .base = syms.ptr, .len = syms.len };
+     iovecs_i += 1;
+     iovecs[iovecs_i] = .{ .base = linecountinfo.items.ptr, .len = linecountinfo.items.len };
+@@ -924,6 +1157,8 @@
+         var it = self.relocs.iterator();
+         while (it.next()) |kv| {
+             const source_atom_index = kv.key_ptr.*;
++            // a swept atom's code isn't written and its targets may be unplaced
++            if (gc_marks) |m| if (!m[source_atom_index]) continue;
+             const source_atom = self.getAtom(source_atom_index);
+             const source_atom_symbol = self.syms.items[source_atom.sym_index.?];
+             const code = source_atom.code.getCode(self);
+@@ -969,7 +1204,17 @@
              }
          }
      }
@@ -177,7 +423,23 @@ getOffset handles .memory/.indirect operands.
  }
  fn addNavExports(
      self: *Plan9,
-@@ -1041,6 +1155,13 @@
+@@ -1022,7 +1267,14 @@
+         .offset = null,
+         .sym_index = null,
+         .got_index = null,
+-        .code = undefined,
++        // NOT `undefined`: deinit frees `code.getOwnedCode()` for every atom,
++        // and phantom atoms (named-global/extern) never assign code. Under the
++        // C backend `undefined` is a deterministic 0xAA fill, so deinit handed
++        // free() a wild pointer — the source of the "latent heap corruption"
++        // that forced a retain-forever allocator for a while. An explicit null
++        // code_ptr makes getOwnedCode() return null. (code_len 0 keeps the
++        // other union leg equally harmless.)
++        .code = .{ .code_ptr = null, .other = .{ .code_len = 0 } },
+     };
+     return index;
+ }
+@@ -1041,6 +1293,13 @@
          };
      }
      const atom_idx = gop.value_ptr.index;
@@ -191,15 +453,123 @@ getOffset handles .memory/.indirect operands.
      // handle externs here because they might not get updateDecl called on them
      const nav = ip.getNav(nav_index);
      if (nav.getExtern(ip) != null) {
-@@ -1206,6 +1327,8 @@
+@@ -1058,6 +1317,7 @@
+             self.getAtom(atom_idx).getOffsetTableAddress(self),
+         });
+     } else log.debug("seeNav for {}", .{nav.name.fmt(ip)});
++    try self.gcEdge(atom_idx);
+     return atom_idx;
+ }
+ 
+@@ -1095,12 +1355,26 @@
+     };
+     switch (state_ptr.*) {
+         .unused => atom_ptr.* = try self.createAtom(),
+-        .pending_flush => return atom_ptr.*,
++        .pending_flush => {
++            try self.gcEdge(atom_ptr.*);
++            return atom_ptr.*;
++        },
+         .flushed => {},
+     }
+     state_ptr.* = .pending_flush;
+     const atom = atom_ptr.*;
++    try self.gcEdge(atom);
+     _ = try self.getAtomPtr(atom).getOrCreateSymbolTableEntry(self);
++    // Initialize the sym now: updateLazySymbolAtom (which assigns the real
++    // heap-allocated name) is deferred to flush for anyerror, and deinit
++    // unconditionally frees this name — an `undefined` entry there is a wild
++    // free if the Compilation is destroyed before its first flush. A zero-len
++    // static name makes that free a no-op.
++    self.syms.items[self.getAtomPtr(atom).sym_index.?] = .{
++        .value = undefined,
++        .type = if (lazy_sym.kind == .code) .t else .d,
++        .name = "",
++    };
+     _ = self.getAtomPtr(atom).getOrCreateOffsetTableEntry(self);
+     // anyerror needs to be deferred until flushModule
+     if (lazy_sym.ty != .anyerror_type) try self.updateLazySymbolAtom(pt, lazy_sym, atom);
+@@ -1135,6 +1409,8 @@
+     self.syms.items[self.getAtomPtr(atom_index).sym_index.?] = symbol;
+ 
+     // generate the code
++    const gc_prev = self.gcBegin(atom_index);
++    defer self.gc_current = gc_prev;
+     const src = Type.fromInterned(sym.ty).srcLocOrNull(pt.zcu) orelse Zcu.LazySrcLoc.unneeded;
+     codegen.generateLazySymbol(
+         &self.base,
+@@ -1206,6 +1482,10 @@
          gpa.free(export_indices);
      }
      self.nav_exports.deinit(gpa);
 +    for (self.globals.keys()) |key| gpa.free(key);
 +    self.globals.deinit(gpa);
++    for (self.gc_edges.values()) |*lst| lst.deinit(gpa);
++    self.gc_edges.deinit(gpa);
      self.syms.deinit(gpa);
      self.got_index_free_list.deinit(gpa);
      self.syms_index_free_list.deinit(gpa);
+@@ -1284,7 +1564,7 @@
+     try w.writeByte(0);
+ }
+ 
+-pub fn writeSyms(self: *Plan9, buf: *std.ArrayList(u8)) !void {
++pub fn writeSyms(self: *Plan9, buf: *std.ArrayList(u8), gc_marks: ?[]const bool) !void {
+     const zcu = self.base.comp.zcu.?;
+     const ip = &zcu.intern_pool;
+     const writer = buf.writer();
+@@ -1308,6 +1588,7 @@
+         while (it.next()) |entry| {
+             const nav_index = entry.key_ptr.*;
+             const nav_metadata = self.navs.get(nav_index).?;
++            if (gc_marks) |m| if (!m[nav_metadata.index]) continue;
+             const atom = self.getAtom(nav_metadata.index);
+             const sym = self.syms.items[atom.sym_index.?];
+             try self.writeSym(writer, sym);
+@@ -1327,6 +1608,7 @@
+         while (it.next()) |kv| {
+             const meta = kv.value_ptr;
+             const data_atom = if (meta.rodata_state != .unused) self.getAtomPtr(meta.rodata_atom) else continue;
++            if (gc_marks) |m| if (!m[meta.rodata_atom]) continue;
+             const sym = self.syms.items[data_atom.sym_index.?];
+             try self.writeSym(writer, sym);
+         }
+@@ -1347,6 +1629,7 @@
+             while (submap_it.next()) |entry| {
+                 const nav_index = entry.key_ptr.*;
+                 const nav_metadata = self.navs.get(nav_index).?;
++                if (gc_marks) |m| if (!m[nav_metadata.index]) continue;
+                 const atom = self.getAtom(nav_metadata.index);
+                 const sym = self.syms.items[atom.sym_index.?];
+                 try self.writeSym(writer, sym);
+@@ -1369,6 +1652,7 @@
+             while (it.next()) |kv| {
+                 const meta = kv.value_ptr;
+                 const text_atom = if (meta.text_state != .unused) self.getAtomPtr(meta.text_atom) else continue;
++                if (gc_marks) |m| if (!m[meta.text_atom]) continue;
+                 const sym = self.syms.items[text_atom.sym_index.?];
+                 try self.writeSym(writer, sym);
+             }
+@@ -1463,7 +1747,10 @@
+     // ...
+     const gpa = self.base.comp.gpa;
+     const gop = try self.uavs.getOrPut(gpa, uav);
+-    if (gop.found_existing) return .{ .mcv = .{ .load_direct = gop.value_ptr.* } };
++    if (gop.found_existing) {
++        try self.gcEdge(gop.value_ptr.*);
++        return .{ .mcv = .{ .load_direct = gop.value_ptr.* } };
++    }
+     const val = Value.fromInterned(uav);
+     const name = try std.fmt.allocPrint(gpa, "__anon_{d}", .{@intFromEnum(uav)});
+ 
+@@ -1488,6 +1775,7 @@
+         .value = undefined,
+         .name = name,
+     };
++    try self.gcEdge(index);
+     return .{ .mcv = .{ .load_direct = index } };
+ }
+ 
 --- a/src/arch/x86_64/CodeGen.zig
 +++ b/src/arch/x86_64/CodeGen.zig
 @@ -96261,6 +96261,28 @@
