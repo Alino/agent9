@@ -8,9 +8,14 @@
  *     counting semantics close the check-then-wait race),
  *   - fs.c read() diverts to cc9_poll_read() for fds owned here: buffered
  *     bytes, else EOF/error, else EAGAIN (nonblocking) or wait (blocking),
- *   - POLLOUT is reported always-ready. ponytail: Plan 9 pipe writes block
- *     only when the pipe is full and complete soon after; add writer-side
- *     readiness threads if a real workload ever stalls on this.
+ *   - O_NONBLOCK fds get a WRITE ring too: fs.c write() diverts to
+ *     cc9_poll_write() (copy into ring, partial counts, EAGAIN when full); a
+ *     writer pthread drains it with blocking pwrites, so POLLOUT is HONEST
+ *     (ring has space) and two peers streaming large payloads at each other
+ *     can no longer deadlock (the Ladybird IPC topology). Blocking fds keep
+ *     direct write + always-ready POLLOUT (writes block-but-complete).
+ *     ponytail: net9 datagram paths (sendto/sendmsg) bypass fs.c write and
+ *     stay direct — their POLLOUT remains optimistic.
  *
  * A reader thread can linger blocked in pread after close() (Plan 9 has no
  * way to interrupt another proc's read short of a note); entries are marked
@@ -26,15 +31,22 @@ extern long n9_pread(int, void *, long, long long);
 extern long n9_pwrite(int, const void *, long, long long);
 extern long n9_pipe(int *);
 extern long n9_dup(int, int);
+extern long n9_close(int);
 extern void n9_semacquire(int *, int);
 extern void n9_semrelease(int *, int);
 extern long n9_tsemacquire(int *, long);
 extern long n9_errstr(char *, unsigned long);
 extern int strncmp(const char *, const char *, unsigned long);
 extern char *strstr(const char *, const char *);
+extern void *malloc(unsigned long);
+extern void *memcpy(void *, const void *, unsigned long);
 
-#define PFD_MAX 64
-#define PFD_BUF 8192
+/* 256 fds / 64K rings: sized for a multi-process browser (UI process at a few
+ * tabs polls ~45 fds; IPC messages are framed in 64K windows). Rings are
+ * malloc'd on first use so the static table stays small. */
+#define PFD_MAX 256
+#define PFD_BUF 65536
+#define PFD_WBUF 65536
 
 typedef struct {
 	int fd;                 /* -1 = free slot */
@@ -46,7 +58,15 @@ typedef struct {
 	int space;              /* reader waits here when the ring is full */
 	int data;               /* blocking cc9_poll_read waiters */
 	unsigned head, tail;    /* ring positions: head = fill, tail = drain */
-	char buf[PFD_BUF];
+	char *buf;              /* PFD_BUF, malloc'd when the slot is claimed */
+	/* write side (O_NONBLOCK fds only) */
+	int writer;             /* writer thread started */
+	int werr;               /* a drain pwrite failed; fd is done for */
+	int wlock;              /* binary sem, 1 = unlocked */
+	int wdata;              /* writer waits here when the ring is empty */
+	int wdrain;             /* close-flush waiters; released per drain pass */
+	unsigned whead, wtail;
+	char *wbuf;             /* PFD_WBUF, malloc'd on first nonblocking write */
 } cc9_pfd;
 
 static cc9_pfd tab[PFD_MAX];
@@ -119,6 +139,8 @@ static int was_interrupted(void){
 
 static unsigned ring_avail(cc9_pfd *p){ return p->head - p->tail; }
 static unsigned ring_space(cc9_pfd *p){ return PFD_BUF - ring_avail(p); }
+static unsigned wring_avail(cc9_pfd *p){ return p->whead - p->wtail; }
+static unsigned wring_space(cc9_pfd *p){ return PFD_WBUF - wring_avail(p); }
 
 static void *reader_main(void *arg){
 	cc9_pfd *p = arg;
@@ -148,12 +170,48 @@ static void *reader_main(void *arg){
 		n9_semrelease(&p->data, 1);
 		if(r <= 0) break;
 	}
-	/* dead (fd closed under us): free the slot; eof/err: keep it so
-	 * cc9_poll_read can report 0/-1 until close() reclaims it. */
+	/* dead (fd closed under us): the slot is freed by whoever set dead once
+	 * BOTH threads are gone; here just drop our claim. eof/err: keep the slot
+	 * so cc9_poll_read can report 0/-1 until close() reclaims it. */
 	n9_semacquire(&tab_lock, 1);
-	if(p->dead) p->fd = -1;
-	else p->reader = 0;
+	p->reader = 0;
+	if(p->dead && !p->writer) p->fd = -1;
 	n9_semrelease(&tab_lock, 1);
+	return 0;
+}
+
+/* Drains the write ring with blocking pwrites. Ordering: single drainer per
+ * fd, FIFO ring. On pwrite failure the fd is poisoned (werr) — pending bytes
+ * are dropped, matching a peer-death mid-stream. */
+static void *writer_main(void *arg){
+	cc9_pfd *p = arg;
+	for(;;){
+		while(!p->dead && wring_avail(p) == 0)
+			n9_semacquire(&p->wdata, 1);
+		if(p->dead && wring_avail(p) == 0) break;
+		unsigned tail = p->wtail;
+		unsigned chunk = wring_avail(p);
+		unsigned cont = PFD_WBUF - (tail % PFD_WBUF);   /* contiguous run */
+		if(chunk > cont) chunk = cont;
+		long r = n9_pwrite(p->fd, p->wbuf + (tail % PFD_WBUF), (long)chunk, -1);
+		trace("wrthr", p->fd, r);
+		if(r < 0 && was_interrupted() && !p->dead)
+			continue;
+		n9_semacquire(&p->wlock, 1);
+		if(r > 0)
+			p->wtail += (unsigned)r;
+		else
+			p->werr = 1;
+		n9_semrelease(&p->wlock, 1);
+		n9_semrelease(&poll_sem, 1);      /* POLLOUT state changed */
+		n9_semrelease(&p->wdrain, 1);     /* wake a close-flush waiter */
+		if(r <= 0) break;
+	}
+	n9_semacquire(&tab_lock, 1);
+	p->writer = 0;
+	if(p->dead && !p->reader) p->fd = -1;
+	n9_semrelease(&tab_lock, 1);
+	n9_semrelease(&p->wdrain, 1);
 	return 0;
 }
 
@@ -165,9 +223,13 @@ static cc9_pfd *ensure(int fd, int start_reader){
 		for(int i = 0; i < PFD_MAX; i++)
 			if(tab[i].fd == -1){ p = &tab[i]; break; }
 		if(p){
+			if(!p->buf) p->buf = malloc(PFD_BUF);
+			if(!p->buf){ n9_semrelease(&tab_lock, 1); return 0; }
 			p->fd = fd; p->flags = 0; p->reader = 0; p->dead = 0;
 			p->eof = p->err = 0; p->lock = 1; p->space = 0; p->data = 0;
 			p->head = p->tail = 0;
+			p->writer = 0; p->werr = 0; p->wlock = 1; p->wdata = 0;
+			p->wdrain = 0; p->whead = p->wtail = 0;
 		}
 	}
 	if(p && start_reader && !p->reader){
@@ -215,24 +277,103 @@ long cc9_poll_read(int fd, void *buf, long n){
 	}
 }
 
+/* Is write() for this fd routed through the write ring? */
+int cc9_poll_wowned(int fd){
+	cc9_pfd *p = lookup(fd);
+	return p && (p->flags & O_NONBLOCK);
+}
+
+long cc9_poll_write(int fd, const void *buf, long n){
+	cc9_pfd *p = lookup(fd);
+	if(!p){ errno = EBADF; return -1; }
+	if(p->werr){ errno = EPIPE; return -1; }
+	if(!p->wbuf){
+		n9_semacquire(&tab_lock, 1);
+		if(!p->wbuf) p->wbuf = malloc(PFD_WBUF);
+		n9_semrelease(&tab_lock, 1);
+		if(!p->wbuf){ errno = ENOMEM; return -1; }
+	}
+	n9_semacquire(&p->wlock, 1);
+	unsigned space = wring_space(p);
+	if(space == 0){
+		n9_semrelease(&p->wlock, 1);
+		trace("wagain", fd, -1);
+		errno = EAGAIN;
+		return -1;
+	}
+	long take = (long)space < n ? (long)space : n;
+	unsigned head = p->whead;
+	for(long i = 0; i < take; i++)
+		p->wbuf[(head + i) % PFD_WBUF] = ((const char *)buf)[i];
+	p->whead += (unsigned)take;
+	n9_semrelease(&p->wlock, 1);
+	if(!p->writer){
+		n9_semacquire(&tab_lock, 1);
+		if(!p->writer){
+			pthread_t t;
+			if(pthread_create(&t, 0, writer_main, p) == 0){
+				pthread_detach(t);
+				p->writer = 1;
+			}
+		}
+		n9_semrelease(&tab_lock, 1);
+	}
+	n9_semrelease(&p->wdata, 1);
+	trace("wring", fd, take);
+	return take;
+}
+
 void cc9_poll_onclose(int fd){
+	/* flush: close() must not drop ring bytes the caller was told were
+	 * written. Kick the writer and wait per drain pass. Ceiling: a peer that
+	 * never reads keeps us here until it dies (its death fails the pwrite ->
+	 * werr -> we stop waiting) — the same place a blocking write would sit. */
+	for(;;){
+		cc9_pfd *p = lookup(fd);
+		if(!p || !p->writer || p->werr || wring_avail(p) == 0) break;
+		n9_semrelease(&p->wdata, 1);
+		n9_tsemacquire(&p->wdrain, 100);
+	}
 	n9_semacquire(&tab_lock, 1);
 	if(tab_inited)
 		for(int i = 0; i < PFD_MAX; i++)
 			if(tab[i].fd == fd && !tab[i].dead){
-				if(tab[i].reader){
-					tab[i].dead = 1;               /* reader reclaims on return */
+				if(tab[i].reader || tab[i].writer){
+					tab[i].dead = 1;               /* threads reclaim on return */
 					n9_semrelease(&tab[i].space, 1);
+					n9_semrelease(&tab[i].wdata, 1);
 				} else
-					tab[i].fd = -1;                /* no reader: free now */
+					tab[i].fd = -1;                /* no threads: free now */
 			}
 	n9_semrelease(&tab_lock, 1);
+}
+
+/* Drop a slot without flush or thread handshakes. For fork children about to
+ * exec: the parent's reader/writer pthreads do NOT exist in the child, so any
+ * flush wait would sleep forever; the table is just inherited bytes here. */
+void cc9_poll_forget(int fd){
+	if(!tab_inited) return;
+	for(int i = 0; i < PFD_MAX; i++)
+		if(tab[i].fd == fd) tab[i].fd = -1;
 }
 
 /* FD_CLOEXEC set? (consulted by execve before n9_exec) */
 int cc9_poll_cloexec(int fd){
 	cc9_pfd *p = lookup(fd);
 	return p && (p->flags & O_CLOEXEC);
+}
+
+/* Close every CLOEXEC fd (execve, replacing its old fixed 3..63 scan; the
+ * table is the single source of CLOEXEC truth). Raw n9_close, no flush: on
+ * the exec path there are no live rings to flush in this process image
+ * (post-fork children have no threads; pre-exec state is discarded anyway). */
+void cc9_poll_close_cloexec(void){
+	if(!tab_inited) return;
+	for(int i = 0; i < PFD_MAX; i++)
+		if(tab[i].fd >= 0 && (tab[i].flags & O_CLOEXEC)){
+			n9_close(tab[i].fd);
+			tab[i].fd = -1;
+		}
 }
 
 /* ---- POSIX surface ---- */
@@ -261,8 +402,14 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout){
 				if(eof) fds[i].revents |= POLLIN | POLLHUP;
 				if(err) fds[i].revents |= POLLERR;
 			}
-			if(fds[i].events & POLLOUT)
-				fds[i].revents |= POLLOUT;         /* writes block-but-complete */
+			if(fds[i].events & POLLOUT){
+				cc9_pfd *p = lookup(fds[i].fd);
+				if(p && (p->flags & O_NONBLOCK)){  /* ring-routed: honest */
+					if(p->werr) fds[i].revents |= POLLERR;
+					else if(!p->wbuf || wring_space(p) > 0) fds[i].revents |= POLLOUT;
+				} else
+					fds[i].revents |= POLLOUT;     /* blocking fd: writes block-but-complete */
+			}
 			if(fds[i].revents) ready++;
 		}
 		if(ready || timeout == 0) return ready;

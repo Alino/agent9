@@ -119,7 +119,11 @@ long read(int fd, void *buf, size_t n){
 	if(cc9_poll_owned(fd)) return cc9_poll_read(fd, buf, (long)n);
 	long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=cc9_errno_from_errstr_or(EIO); return r; }
 extern void cc9_trace(const char *, int, long);
-long write(int fd, const void *buf, size_t n){ long r=n9_pwrite(fd,buf,(long)n,-1); cc9_trace("write", fd, r); if(r<0)errno=cc9_errno_from_errstr_or(EIO); return r; }
+extern int cc9_poll_wowned(int);
+extern long cc9_poll_write(int, const void *, long);
+long write(int fd, const void *buf, size_t n){
+	if(cc9_poll_wowned(fd)) return cc9_poll_write(fd, buf, (long)n);  /* O_NONBLOCK: ring + honest POLLOUT */
+	long r=n9_pwrite(fd,buf,(long)n,-1); cc9_trace("write", fd, r); if(r<0)errno=cc9_errno_from_errstr_or(EIO); return r; }
 long pread(int fd, void *buf, size_t n, long off){ return n9_pread(fd,buf,(long)n,off); }
 long pwrite(int fd, const void *buf, size_t n, long off){ return n9_pwrite(fd,buf,(long)n,off); }
 long lseek(int fd, long off, int whence){ long long r=0; if(n9_seek(&r,fd,off,whence)<0){errno=EIO;return -1;} return (long)r; }

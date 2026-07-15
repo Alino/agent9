@@ -187,12 +187,127 @@ void __deregister_frame(const void *fde) { (void)fde; }
 int backtrace(void **b, int n) { (void)b; (void)n; return 0; }
 char **backtrace_symbols(void *const *b, int n) { (void)b; (void)n; return 0; }
 void backtrace_symbols_fd(void *const *b, int n, int fd) { (void)b; (void)n; (void)fd; }
-int posix_spawn(int *pid, const char *p, const void *fa, const void *at, char *const av[], char *const ev[]) { (void)pid;(void)p;(void)fa;(void)at;(void)av;(void)ev; return -1; }
-int posix_spawnp(int *pid, const char *p, const void *fa, const void *at, char *const av[], char *const ev[]) { (void)pid;(void)p;(void)fa;(void)at;(void)av;(void)ev; return -1; }
-int posix_spawn_file_actions_init(void *a) { (void)a; return 0; }
-int posix_spawn_file_actions_destroy(void *a) { (void)a; return 0; }
-int posix_spawn_file_actions_adddup2(void *a, int x, int y) { (void)a;(void)x;(void)y; return 0; }
-int posix_spawn_file_actions_addopen(void *a, int x, const char *p, int f, unsigned m) { (void)a;(void)x;(void)p;(void)f;(void)m; return 0; }
+/* ---- real posix_spawn: fork + file_actions + execve -----------------------
+ * The header type is { void *__acts } pointing at this growable vector.
+ * Applied IN ORDER in the child between fork and exec. attrs are ignored.
+ * Child-side rules (the parent's pthreads don't exist here):
+ *   - dup2 lands via n9_dup, then the target's poll-table slot is FORGOTTEN
+ *     (cc9_poll_forget) so no stale O_CLOEXEC mark can close it at exec —
+ *     POSIX says a dup2 file action clears CLOEXEC on the result.
+ *   - close/open likewise bypass fs.c close() (its ring flush would wait on
+ *     threads that don't exist in the child). */
+typedef struct {
+	int op;                     /* 0=dup2 1=close 2=open */
+	int fd, newfd;
+	char path[192];
+	int oflag; unsigned mode;
+} cc9_spawn_act;
+typedef struct { int n, cap; cc9_spawn_act *v; } cc9_spawn_acts;
+
+extern void cc9_poll_forget(int);
+extern int open(const char *, int, ...);
+extern int fork(void);
+extern int execve(const char *, char *const[], char *const[]);
+extern void _exit(int);
+
+static cc9_spawn_act *spawn_act_new(void **slot) {
+	cc9_spawn_acts *a = *slot;
+	if (!a) {
+		a = malloc(sizeof *a);
+		if (!a) return 0;
+		a->n = 0; a->cap = 8;
+		a->v = malloc(a->cap * sizeof *a->v);
+		if (!a->v) { free(a); return 0; }
+		*slot = a;
+	}
+	if (a->n == a->cap) {
+		cc9_spawn_act *nv = malloc(2 * a->cap * sizeof *nv);
+		if (!nv) return 0;
+		memcpy(nv, a->v, a->n * sizeof *nv);
+		free(a->v); a->v = nv; a->cap *= 2;
+	}
+	return &a->v[a->n++];
+}
+
+int posix_spawn_file_actions_init(void **fa) { *fa = 0; return 0; }
+int posix_spawn_file_actions_destroy(void **fa) {
+	cc9_spawn_acts *a = *fa;
+	if (a) { free(a->v); free(a); *fa = 0; }
+	return 0;
+}
+int posix_spawn_file_actions_adddup2(void **fa, int fd, int newfd) {
+	cc9_spawn_act *x = spawn_act_new(fa);
+	if (!x) return 12 /*ENOMEM*/;
+	x->op = 0; x->fd = fd; x->newfd = newfd;
+	return 0;
+}
+int posix_spawn_file_actions_addclose(void **fa, int fd) {
+	cc9_spawn_act *x = spawn_act_new(fa);
+	if (!x) return 12;
+	x->op = 1; x->fd = fd;
+	return 0;
+}
+int posix_spawn_file_actions_addopen(void **fa, int fd, const char *path, int oflag, unsigned mode) {
+	cc9_spawn_act *x = spawn_act_new(fa);
+	if (!x) return 12;
+	unsigned long i = 0;
+	while (path[i] && i < sizeof x->path - 1) { x->path[i] = path[i]; i++; }
+	x->path[i] = 0;
+	x->op = 2; x->fd = fd; x->oflag = oflag; x->mode = mode;
+	return 0;
+}
+
+static int spawn_apply(const cc9_spawn_acts *a) {
+	if (!a) return 0;
+	extern long n9_dup(int, int);
+	for (int i = 0; i < a->n; i++) {
+		const cc9_spawn_act *x = &a->v[i];
+		if (x->op == 0) {
+			if (n9_dup(x->fd, x->newfd) < 0) return -1;
+			cc9_poll_forget(x->newfd);
+		} else if (x->op == 1) {
+			n9_close(x->fd);
+			cc9_poll_forget(x->fd);
+		} else {
+			int got = open(x->path, x->oflag, x->mode);
+			if (got < 0) return -1;
+			if (got != x->fd) {
+				if (n9_dup(got, x->fd) < 0) return -1;
+				n9_close(got);
+			}
+			cc9_poll_forget(x->fd);
+		}
+	}
+	return 0;
+}
+
+static int spawn_common(int *pid, const char *path, const void *fa,
+                        char *const av[], char *const ev[]) {
+	int kid = fork();
+	if (kid < 0) return 11 /*EAGAIN*/;
+	if (kid == 0) {
+		if (spawn_apply(fa ? *(cc9_spawn_acts *const *)fa : 0) == 0)
+			execve(path, av, ev);
+		_exit(127);              /* POSIX-sanctioned late failure */
+	}
+	if (pid) *pid = kid;
+	return 0;
+}
+
+int posix_spawn(int *pid, const char *p, const void *fa, const void *at, char *const av[], char *const ev[]) {
+	(void)at;
+	return spawn_common(pid, p, fa, av, ev);
+}
+int posix_spawnp(int *pid, const char *p, const void *fa, const void *at, char *const av[], char *const ev[]) {
+	(void)at;
+	for (const char *s = p; *s; s++)
+		if (*s == '/') return spawn_common(pid, p, fa, av, ev);
+	char b[256]; char *d = b;
+	const char *pre = "/bin/"; while (*pre) *d++ = *pre++;
+	const char *s = p; while (*s && d < b + sizeof b - 1) *d++ = *s++;
+	*d = 0;
+	return spawn_common(pid, b, fa, av, ev);
+}
 unsigned long getauxval(unsigned long t) { return t == 6 ? 4096 : 0; } /* AT_PAGESZ */
 int mprotect(void *p, n9size_t len, int prot) { (void)p; (void)len; (void)prot; return 0; }
 int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; return 0; }
@@ -410,8 +525,10 @@ int    execve(const char *p, char *const a[], char *const e[]) {
 			}
 		}
 	}
-	for (int fd = 3; fd < 64; fd++)
-		if (cc9_poll_cloexec(fd)) n9_close(fd);
+	{
+		extern void cc9_poll_close_cloexec(void);
+		cc9_poll_close_cloexec();
+	}
 	/* Userspace SG_CEXEC: the kernel ignores SG_CEXEC on #g named-segment
 	 * attaches (verified: fork+exec children inherit the mapping and a fresh
 	 * segattach fails "segments overlap"), so shm mappings are detached here,
@@ -542,10 +659,10 @@ extern int pthread_create(cc9_pthread_t *, const void *, void *(*)(void *), void
 extern int pthread_detach(cc9_pthread_t);
 
 static int zlock = 1;
-static struct { int pid; int status; } ztab[32];
+static struct { int pid; int status; } ztab[128];
 static int znum;
 static int reap_sem;                      /* released once per new zombie */
-static struct { int parent; int outstanding; int kick; int running; } rtab[4];
+static struct { int parent; int outstanding; int kick; int running; } rtab[8];
 
 static void *cc9_reaper(void *arg) {
 	int slot = (int)(long)arg;
@@ -678,8 +795,8 @@ int setitimer(int which, const struct itimerval *nv, struct itimerval *ov) {
 	n9_alarm(ms);
 	return 0;
 }
-int    usleep(unsigned int us) { (void)us; return 0; }
 extern long n9_sleep(long);
+int    usleep(unsigned int us) { if (us) n9_sleep((us + 999) / 1000); return 0; }  /* ms floor: Plan 9 sleep(2) granularity */
 unsigned int sleep(unsigned int sec) { n9_sleep((long)sec * 1000); return 0; }
 /* ioctl moved to fs.c (real TIOCGWINSZ over /env/LINES + /env/COLS) */
 /* fcntl moved to poll.c (real O_NONBLOCK/FD_CLOEXEC; locks still "succeed") */
