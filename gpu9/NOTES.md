@@ -44,7 +44,43 @@ segments; it does NOT program the display, so the screen is untouched).
 Probes: `gpu9/probe/{m1,m0,m2,m3}.c` — native kencc, build on-box with
 `6c x.c && 6l -o x x.6`. Serve them from the Mac over the LAN and hget.
 
+## M4 DONE — the GPU does real, verified work. The blitter is NOT a speedup.
+
+`XY_SRC_COPY_BLT` on the blitter ring (BCS, 0x22000 — BLT moved off the render
+ring at Gen6). Gen8 form is 10 dwords, per Linux i915 `intel_migrate.c`
+emit_copy(); field layout from Mesa `genxml/gen5.xml` (gen6+ excludes it because
+Mesa switched to BLORP). Copied 1 MB, verified all 262144 dwords.
+
+    GPU blit (stolen mem)    : 1534 us  ( 683 MB/s)
+    CPU memcpy (cached RAM)  :  180 us  (5806 MB/s)   <- fair baseline
+    CPU memcpy (via aperture): 76354 us (  13 MB/s)   <- uncached, NOT fair
+
+    GPU vs cached-RAM CPU : 0.118 x   -> the GPU is 8.5x SLOWER
+
+Expected, not a bug: cirno's GT1 is the weakest Broadwell (Celeron, fewest EUs),
+copying through stolen memory; a blit engine does not beat modern CPU SSE memcpy.
+Blitters win on async offload, not throughput. Says nothing about 3D, where
+parallel EUs beat per-pixel CPU shading — that is still the open question.
+
+### TWO MEASUREMENT TRAPS (both nearly produced a false headline)
+
+1. **HEAD==TAIL is NOT completion.** It means the command was PARSED; the blit is
+   pipelined behind the parser. The first run "failed" while printing the CORRECT
+   value — the check ran before the copy landed. Real fix: `MI_FLUSH_DW` with
+   store-dword (`(0x26<<23)|(1<<14)|2`, addr|USE_GTT(1<<2), addr_hi, value) after
+   the blit, and poll THAT fence.
+2. **Never benchmark the CPU through the aperture.** It is uncached/WC device
+   memory: memcpy there runs at 13 MB/s vs 5.8 GB/s in normal RAM. Comparing the
+   GPU against it yields a flattering, meaningless "30-50x faster". The fair CPU
+   baseline is cached RAM — which is where a CPU renderer actually works.
+   Also: poll with a BUSY loop, not `sleep(1)` — Plan 9's 1ms tick is the same
+   order as the blit, so sleeping measures the scheduler (2539us -> 1534us real).
+
 ## Next
 
-M4 blitter (XY_SRC_COPY_BLT — first *measurable* GPU work: GPU blit vs CPU
-memcpy), then the ioctl shim + iris (M5-M8) for real OpenGL.
+M5-M8 for real OpenGL: the 22-ioctl shim (implementable ENTIRELY in userspace —
+we already have MMIO, GTT, aperture and a working ring in-process, so the "kernel
+half" collapses into the same process), then iris through cc9 (~160k lines, the
+gl9/llvm9 grind), then measure GL vs llvmpipe. Open risk: iris wants PPGTT +
+softpin while we have a 64MB GGTT window — either map softpin addresses into it
+or build PPGTT page tables.
