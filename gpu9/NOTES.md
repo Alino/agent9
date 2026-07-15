@@ -44,7 +44,44 @@ segments; it does NOT program the display, so the screen is untouched).
 Probes: `gpu9/probe/{m1,m0,m2,m3}.c` — native kencc, build on-box with
 `6c x.c && 6l -o x x.6`. Serve them from the Mac over the LAN and hget.
 
-## M4 DONE — the GPU does real, verified work. The blitter is NOT a speedup.
+## ⭐ THE HEADLINE: the GPU was asleep. RPS makes it 6.7x faster.
+
+**Nothing on 9front runs RPS (Render P-State), so Broadwell sits at its 100MHz
+floor forever — 1/8 of the 800MHz it can do.** Requesting RP0 (what a real driver
+does: read RP_STATE_CAP, write RPNSWREQ) is the single biggest performance factor
+on this box, and it is now part of `gpu9_open()`.
+
+    blitter, 4MB copy:
+      @100 MHz (BIOS default)  6129 us ->  684 MB/s
+      @200 MHz                 3108 us -> 1349 MB/s
+      @400 MHz                 1599 us -> 2623 MB/s
+      @600 MHz                 1147 us -> 3654 MB/s
+      @800 MHz (RP0)            915 us -> 4582 MB/s     <- 6.7x, linear in clock
+
+**Honest head-to-head at full clock (GPU is flat; the CPU falls out of cache):**
+
+    bytes      GPU blit      CPU memcpy (cached RAM)   verdict
+      256K   4602 MB/s       8464 MB/s                 GPU 0.54x
+        1M   4631 MB/s       6115 MB/s                 GPU 0.76x
+        4M   4576 MB/s       4204 MB/s                 GPU 1.09x  <- crossover
+       16M   4563 MB/s       4084 MB/s                 GPU 1.12x
+       32M   4504 MB/s       4100 MB/s                 GPU 1.10x
+
+So: the CPU wins while the data fits in cache; **beyond ~4MB the GPU wins — and
+does it asynchronously, leaving the CPU free.** This also means every earlier
+gpu9 number was taken at 1/8 clock, and that whenever iris lands, 3D would have
+been 8x slower than the hardware can do.
+
+BDW/HSW register traps (wrong shift = you read garbage and conclude nonsense):
+  RPNSWREQ: freq in bits **31:24** (HSW_FREQUENCY), not 31:25
+  RPSTAT1 : CAGF at shift **7** (HSW_CAGF_SHIFT), not 8 — both in 50MHz units
+
+Dead ends worth not repeating: it is NOT overhead (throughput was flat 684 MB/s
+from 256KB to 32MB — perfectly linear, zero fixed cost) and NOT cache policy
+(PAT[0] WB/eLLC-override vs i915's WB|LLC vs WB|LLCeLLC: 684.4 / 684.1 / 684.4
+MB/s — identical). It was always the clock.
+
+## M4 DONE — the GPU does real, verified work (numbers above supersede these)
 
 `XY_SRC_COPY_BLT` on the blitter ring (BCS, 0x22000 — BLT moved off the render
 ring at Gen6). Gen8 form is 10 dwords, per Linux i915 `intel_migrate.c`
@@ -57,10 +94,12 @@ Mesa switched to BLORP). Copied 1 MB, verified all 262144 dwords.
 
     GPU vs cached-RAM CPU : 0.118 x   -> the GPU is 8.5x SLOWER
 
-Expected, not a bug: cirno's GT1 is the weakest Broadwell (Celeron, fewest EUs),
-copying through stolen memory; a blit engine does not beat modern CPU SSE memcpy.
-Blitters win on async offload, not throughput. Says nothing about 3D, where
-parallel EUs beat per-pixel CPU shading — that is still the open question.
+**^ That conclusion was WRONG, and instructively so.** I blamed the hardware
+("cirno's GT1 is the weakest Broadwell, blitters do not beat SSE memcpy") when the
+real cause was that the GPU was running at 1/8 clock because *I* had not written
+the RPS code a driver owes it. Attributing a measurement to inherent hardware
+limits is a comfortable story; it stopped me looking. The flat-with-size curve was
+the clue that eventually cracked it.
 
 ### TWO MEASUREMENT TRAPS (both nearly produced a false headline)
 

@@ -53,6 +53,10 @@ gpu9_open(Gpu9 *g)
 	g->fence[0] = 0;
 	g->seqno = 0x9000;
 
+	/* Ask for the real clock. Without this the GPU runs at its 100MHz floor
+	 * (1/8 of RP0) because nothing else on 9front runs RPS. */
+	gpu9_max_clock(g);
+
 	memset((void*)g->ring, 0, 4096);
 	gpu9_wr(g, GPU9_RCS_BASE+GPU9_RING_CTL, 0);
 	gpu9_wr(g, GPU9_RCS_BASE+GPU9_RING_HEAD, 0);
@@ -90,6 +94,27 @@ gpu9_forcewake_put(Gpu9 *g)
 {
 	gpu9_wr(g, GPU9_FORCEWAKE_MT, GPU9_FW_KERNEL<<16);
 	gpu9_rd(g, GPU9_FORCEWAKE_MT);
+}
+
+int
+gpu9_cur_clock(Gpu9 *g)
+{
+	return ((gpu9_rd(g, GPU9_RPSTAT1) & GPU9_HSW_CAGF_MASK) >> GPU9_HSW_CAGF_SHIFT) * 50;
+}
+
+int
+gpu9_max_clock(Gpu9 *g)
+{
+	int rp0, i;
+
+	rp0 = gpu9_rd(g, GPU9_RP_STATE_CAP) & 0xff;	/* byte 0 = RP0 = max */
+	if(rp0 == 0)
+		return gpu9_cur_clock(g);
+	gpu9_wr(g, GPU9_RPNSWREQ, GPU9_HSW_FREQUENCY(rp0));
+	gpu9_rd(g, GPU9_RPNSWREQ);
+	for(i = 0; i < 400 && gpu9_cur_clock(g) < rp0*50; i++)
+		sleep(1);
+	return gpu9_cur_clock(g);
 }
 
 g9u32

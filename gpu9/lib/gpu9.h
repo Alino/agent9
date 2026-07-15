@@ -51,6 +51,23 @@ typedef uchar  g9u8;
 
 #define GPU9_GFX_MODE_GEN7	0x229c		/* bit15 = execlist enable (we need it OFF) */
 
+/* RPS (Render P-State). THE single biggest performance factor on this box.
+ * With no driver, nothing ever requests a frequency and Broadwell sits at its
+ * 100MHz floor — 1/8 of the 800MHz it can do. Managing the P-state is a real
+ * driver's job; doing it made the blitter 6.7x faster (684 -> 4582 MB/s) and is
+ * the difference between the GPU losing to memcpy and beating it.
+ *
+ * BDW/HSW register details that differ from gen6 (wrong = you read garbage):
+ *   RPNSWREQ: freq in bits 31:24 (HSW_FREQUENCY), NOT 31:25
+ *   RPSTAT1 : CAGF at shift 7 (HSW_CAGF_SHIFT), NOT 8
+ * All frequencies are in 50MHz units. */
+#define GPU9_RPSTAT1		0xa01c
+#define GPU9_RPNSWREQ		0xa008
+#define GPU9_RP_STATE_CAP	0x145998	/* RP0=byte0 max, RP1=byte1, RPn=byte2 */
+#define GPU9_HSW_FREQUENCY(x)	((x)<<24)
+#define GPU9_HSW_CAGF_SHIFT	7
+#define GPU9_HSW_CAGF_MASK	(0x7fu<<GPU9_HSW_CAGF_SHIFT)
+
 /* ---- commands (verified working in probe/m3, m4) ---- */
 #define MI_NOOP			0u
 #define MI_BATCH_BUFFER_END	(0x0au << 23)
@@ -109,6 +126,15 @@ int   gpu9_open(Gpu9 *g);
 void  gpu9_close(Gpu9 *g);
 int   gpu9_forcewake_get(Gpu9 *g);
 void  gpu9_forcewake_put(Gpu9 *g);
+
+/* Frequency control. gpu9_max_clock() asks for RP0 and is what makes the GPU
+ * worth using at all. Returns the MHz actually reached.
+ * ponytail: pins the clock high for the process's lifetime rather than tracking
+ * load like i915's RPS does — it burns power while idle. Fine for a benchmark or
+ * a render loop; add up/down thresholds (RP_CONTROL + RP_UP/DOWN_EI) if gpu9
+ * ever runs in the background. */
+int   gpu9_cur_clock(Gpu9 *g);		/* MHz */
+int   gpu9_max_clock(Gpu9 *g);		/* request RP0, return MHz reached */
 
 /* allocate GPU-visible memory. Returns the GGTT address; *cpu gets the CPU
  * pointer (the same bytes, through the aperture). */
