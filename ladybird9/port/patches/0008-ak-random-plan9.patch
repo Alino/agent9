@@ -1,0 +1,45 @@
+diff --git a/AK/Random.cpp b/AK/Random.cpp
+index 1a9c352be2..3271960481 100644
+--- a/AK/Random.cpp
++++ b/AK/Random.cpp
+@@ -20,6 +20,11 @@
+ #    include <AK/Windows.h>
+ #endif
+ 
++#if defined(AK_OS_PLAN9)
++#    include <fcntl.h>
++#    include <unistd.h>
++#endif
++
+ static inline ErrorOr<void> csprng(void* const buf, size_t size)
+ {
+     // We shouldn't use OpenSSL's RAND_bytes function here, because we want to avoid adding dependencies to AK.
+@@ -45,6 +50,28 @@ static inline ErrorOr<void> csprng(void* const buf, size_t size)
+ #elif defined(AK_OS_WINDOWS)
+     // Documented to always return TRUE
+     g_system.ProcessPrng((PBYTE)buf, size);
++#elif defined(AK_OS_PLAN9)
++    // The kernel CSPRNG device; read() never short-reads for sane sizes but
++    // loop anyway, mirroring the getrandom branch above.
++    {
++        int fd = open("/dev/random", O_RDONLY);
++        if (fd < 0) [[unlikely]]
++            return Error::from_errno(errno);
++        unsigned char* out = (unsigned char*)buf;
++        size_t left = size;
++        while (left > 0u) {
++            ssize_t ret = read(fd, out, left);
++            if (ret < 0 && errno != EINTR) [[unlikely]] {
++                close(fd);
++                return Error::from_errno(errno);
++            }
++            if (ret > 0) [[likely]] {
++                left -= (size_t)ret;
++                out += ret;
++            }
++        }
++        close(fd);
++    }
+ #else
+     static_assert(false, "This build target doesn't have a valid CSPRNG interface specified in AK/Random.cpp.");
+ #endif

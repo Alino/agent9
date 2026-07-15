@@ -856,6 +856,8 @@ long mktime(struct cc9_tm *tm) {
 	gmtime_r(&t, tm);
 	return t;
 }
+/* timegm — identical here: local == UTC on Plan 9 (see mktime). */
+long timegm(struct cc9_tm *tm) { return mktime(tm); }
 
 /* uname — fixed Plan 9 amd64 identity (LLVM host triple detection). */
 struct cc9_utsname { char sysname[65], nodename[65], release[65], version[65], machine[65], domainname[65]; };

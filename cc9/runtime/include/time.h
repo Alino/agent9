@@ -9,6 +9,10 @@ struct timespec { time_t tv_sec; long tv_nsec; };
 #define TIME_UTC 1
 #define CLOCK_REALTIME 0
 #define CLOCK_MONOTONIC 1
+/* Linux "coarse" variants: same clocks here — Plan 9's bintime read is one
+ * cached-fd pread either way; callers just want cheap. */
+#define CLOCK_REALTIME_COARSE  CLOCK_REALTIME
+#define CLOCK_MONOTONIC_COARSE CLOCK_MONOTONIC
 typedef int clockid_t;
 typedef void *locale_t;
 #ifdef __cplusplus
@@ -20,6 +24,7 @@ time_t time(time_t *); clock_t clock(void);
  * without touching threads never saw it). */
 int nanosleep(const struct timespec *, struct timespec *);
 double difftime(time_t, time_t); time_t mktime(struct tm *);
+time_t timegm(struct tm *);   /* mktime, UTC: Plan 9 wall time IS UTC */
 void tzset(void);
 char *asctime(const struct tm *); char *ctime(const time_t *);
 struct tm *gmtime(const time_t *); struct tm *localtime(const time_t *);
