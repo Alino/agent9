@@ -41,20 +41,15 @@ page over TLS; verified 2026-07-15). Two runtime issues gate the headless PNG:
    lock shim (Plan 9 exclusive-open or a no-op lock VFS), OR build SQLite with
    `SQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_LOCKING_MODE=1` / a unix-none VFS.
 
-2. **Headless paint/present does not complete the PNG.** With
-   `--disable-sql-database` the main process starts, spawns helpers, and stays
-   alive (no crash), but no screenshot is written after minutes. Compositor now
-   defaults `--force-cpu-painting` on plan9 (`SkiaBackendContext::
-   initialize_gpu_backend` skipped; `the_main_thread_context()` returns null →
-   no GPU). Root cause NOT yet isolated — the on-box picture is contaminated by
-   `gl9win2`/`swgl9` processes that are almost certainly a CONCURRENT servo9
-   session's (swgl9 is servo9's binary; gl9egl.c only writes frames to fd 1, it
-   doesn't spawn a presenter), so they are likely a red herring, not ladybird's.
-   Next: reproduce on a QUIET box (no concurrent servo9), trace the WebContent→
-   Compositor paint IPC and the screenshot-write path (load_page_for_screenshot_
-   and_exit + the CPU WrapPixels readback), and confirm whether the render
-   completes or the paint/present IPC deadlocks. Candidate areas: the shm
-   AnonymousBuffer bitmap handoff under real load (Phase A single-segment cap),
-   the poll write-ring backpressure, or the screenshot timer firing before
-   first paint (a known upstream race). Needs interactive debugging, not
-   autonomous hammering.
+2. **[ROOT-CAUSED + FIXED] TransportPlan9 wrongly triggered the peer-pid
+   handshake.** HelperProcess guards the `init_transport` sync handshake with
+   `if constexpr (requires { transport().set_peer_pid(0); })`; the Unix
+   TransportSocket omits set_peer_pid so the handshake is skipped, but
+   TransportPlan9 kept it (no-op), making the guard fire. The helper-side
+   init_transport handler is `#ifdef AK_OS_WINDOWS` (VERIFY_NOT_REACHED
+   elsewhere), so the parent's send_sync deadlocked after spawning the first
+   helper — no ImageDecoder/Compositor/WebContent ever came up. Fix: remove
+   set_peer_pid from TransportPlan9 (patch 0005) so Plan 9 matches Unix (no
+   peer-pid needed — shm/fd handles are addressed by global name). The
+   gl9win2/swgl9 procs I first suspected were a concurrent servo9 session's,
+   not ladybird's.

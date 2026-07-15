@@ -27,10 +27,10 @@ index 49c66b30e8..4f743f2961 100644
  #else
 diff --git a/Libraries/LibIPC/TransportPlan9.cpp b/Libraries/LibIPC/TransportPlan9.cpp
 new file mode 100644
-index 0000000000..7db03c1237
+index 0000000000..fcf1d160b7
 --- /dev/null
 +++ b/Libraries/LibIPC/TransportPlan9.cpp
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,378 @@
 +/*
 + * Copyright (c) 2024, Andrew Kaster <andrew@ladybird.org>
 + * Copyright (c) 2025, stasoid <stasoid@yahoo.com>
@@ -118,11 +118,6 @@ index 0000000000..7db03c1237
 +TransportPlan9::TransportPlan9(NonnullOwnPtr<Core::LocalSocket> socket)
 +    : m_socket(move(socket))
 +{
-+}
-+
-+void TransportPlan9::set_peer_pid(int)
-+{
-+    // Names are globally addressable; no peer pid needed for anything.
 +}
 +
 +void TransportPlan9::set_up_read_hook(Function<void()> hook)
@@ -416,10 +411,10 @@ index 0000000000..7db03c1237
 +}
 diff --git a/Libraries/LibIPC/TransportPlan9.h b/Libraries/LibIPC/TransportPlan9.h
 new file mode 100644
-index 0000000000..813c97b364
+index 0000000000..0a2b36d1e2
 --- /dev/null
 +++ b/Libraries/LibIPC/TransportPlan9.h
-@@ -0,0 +1,71 @@
+@@ -0,0 +1,77 @@
 +/*
 + * Copyright (c) 2024, Andrew Kaster <andrew@ladybird.org>
 + * Copyright (c) 2026, the Ladybird developers.
@@ -458,7 +453,13 @@ index 0000000000..813c97b364
 +
 +    explicit TransportPlan9(NonnullOwnPtr<Core::LocalSocket> socket);
 +
-+    void set_peer_pid(int pid);
++    // NB: no set_peer_pid — like the Unix TransportSocket. Its presence is what
++    // the `if constexpr (requires { transport().set_peer_pid(0); })` guards in
++    // HelperProcess use to decide whether to run the peer-pid `init_transport`
++    // handshake. Plan 9 addresses shm/fd handles by global name, so no peer pid
++    // is needed; and the init_transport HANDLER is #ifdef AK_OS_WINDOWS
++    // (VERIFY_NOT_REACHED elsewhere), so sending it would deadlock/crash the
++    // helper. Omitting the method makes those guards false — matching Unix.
 +    void set_up_read_hook(Function<void()>);
 +    bool is_open() const;
 +    void close();
