@@ -91,7 +91,10 @@ getparam(struct drm_i915_getparam *gp)
 	case I915_PARAM_HAS_CONTEXT_ISOLATION: v = 1; break;
 	case I915_PARAM_HAS_SCHEDULER:       v = 0; break;	/* no preemption/priority */
 	case I915_PARAM_CS_TIMESTAMP_FREQUENCY: v = 12000000; break;	/* BDW: 12MHz */
-	case I915_PARAM_MMAP_GTT_VERSION:    v = 4; break;
+	/* MMAP_GTT_VERSION intentionally UNHANDLED (-> -EINVAL): forces iris down the
+	 * old GEM_MMAP path, which returns a CPU pointer directly. gpu9's BOs are
+	 * already aperture-mapped, so we hand back aper+ggtt; the MMAP_OFFSET+mmap
+	 * path would need cc9's mmap to understand GPU tokens, which it doesn't. */
 	case I915_PARAM_NUM_FENCES_AVAIL:    v = 32; break;
 	default:
 		/* Real i915 returns -EINVAL for unknown params, and iris overwrites a

@@ -19,7 +19,11 @@ OUT  = os.path.join(GPU9, "_out")
 os.makedirs(OUT, exist_ok=True)
 
 TARGET = ["--target=x86_64-unknown-none", "-femulated-tls", "-funwind-tables",
-          "-fno-pic", "-O2", "-w"]
+          "-fno-pic", "-O2", "-w",
+          # Mesa's gallium headers need endianness + a couple of platform defines
+          # that the iris archive build supplies via compile_commands.
+          "-DUTIL_ARCH_LITTLE_ENDIAN=1", "-DUTIL_ARCH_BIG_ENDIAN=0",
+          "-DHAVE_STRUCT_TIMESPEC=1"]
 MESA = os.path.join(GL9, "vendor", "mesa")
 INCS = ["-isystem", os.path.join(GPU9, "shim", "include"),        # xf86drm.h, sys/ioccom.h
         "-I", os.path.join(GPU9, "lib"),                          # gpu9.h (constants)

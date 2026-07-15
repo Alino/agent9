@@ -1,0 +1,23 @@
+# gpu9 iris memzone compression (M9b/M10) — apply to Mesa 24.0.9 iris.
+# Compresses iris's softpin VMA (default 0..12GB, 48-bit) into gpu9's
+# 64MB global GTT: all zones in the backed arena [2MB,32MB), above the
+# framebuffer at GTT[0..384]. Also drops the SHADER_START==0 assert and
+# forces devinfo->gtt_size to 32MB. PROVEN: iris's batches bind + submit,
+# and a batch completes on the GPU. (The full BLORP clear still wedges on
+# 3D state — the next debugging frontier.)
+#
+# --- iris_bufmgr.h : the compressed memzone constants
+/* GPU9_COMPRESSED_VMA: gpu9 has a 64MB global GTT, not a 48-bit PPGTT. Squeeze
+ * iris's zones into the backed arena [2MB,32MB) — above the framebuffer
+ * (GTT[0..384]) and below the aperture edge. The ordering STATIC_ASSERTs still
+ * hold; only the absolute addresses shrink. SHADER no longer starts at 0 (its
+ * assert is patched out in iris_bufmgr.c) so shader BOs never alias the screen. */
+#define IRIS_SCRATCH_ZONE_SIZE (1 * 1024 * 1024)
+#define IRIS_BINDER_ZONE_SIZE  (2 * 1024 * 1024)
+
+#define IRIS_MEMZONE_SHADER_START     (2ull * 1024 * 1024)   /* [2MB,6MB) */
+#define IRIS_MEMZONE_BINDER_START     (6ull * 1024 * 1024)   /* [6MB,8MB) */
+#define IRIS_MEMZONE_SCRATCH_START    IRIS_MEMZONE_BINDER_START
+#define IRIS_MEMZONE_SURFACE_START    (IRIS_MEMZONE_BINDER_START + IRIS_BINDER_ZONE_SIZE) /* 8MB */
+#define IRIS_MEMZONE_DYNAMIC_START    (14ull * 1024 * 1024)  /* [14MB,20MB) */
+#define IRIS_MEMZONE_OTHER_START      (20ull * 1024 * 1024)  /* [20MB,32MB) */
