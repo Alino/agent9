@@ -209,6 +209,24 @@ index 723b507bcc..4b920283e7 100644
      list(APPEND SOURCES SandboxLinux.cpp)
  elseif (APPLE)
      list(APPEND SOURCES SandboxMacOS.cpp)
+diff --git a/Services/RequestServer/main.cpp b/Services/RequestServer/main.cpp
+index d5acf45747..d340dab7b0 100644
+--- a/Services/RequestServer/main.cpp
++++ b/Services/RequestServer/main.cpp
+@@ -86,6 +86,13 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+ 
+     Optional<HTTP::DiskCache> disk_cache;
+ 
++#if defined(AK_OS_PLAN9)
++    // The disk cache is SQLite-backed, and cc9's SQLite VFS hits Plan 9's
++    // "locking protocol" on the cache index DB (see parity/deferrals.md). Skip
++    // it until the VFS lock shim lands — a cache is non-essential.
++    http_disk_cache_mode = "disabled"sv;
++#endif
++
+     if (http_disk_cache_mode != "disabled"sv) {
+         auto mode = TRY([&]() -> ErrorOr<HTTP::DiskCache::Mode> {
+             if (http_disk_cache_mode == "enabled"sv)
 diff --git a/Services/WebContent/CMakeLists.txt b/Services/WebContent/CMakeLists.txt
 index c3e897b5d7..64fe9a10ca 100644
 --- a/Services/WebContent/CMakeLists.txt
