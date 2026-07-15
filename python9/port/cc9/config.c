@@ -59,6 +59,7 @@ extern PyObject* PyInit__socket(void);
 extern PyObject* PyInit__ssl(void);
 extern PyObject* PyInit__hashlib(void);
 extern PyObject* PyInit_zlib(void);
+extern PyObject* PyInit_mmap(void);  /* anon maps are malloc-backed in cc9; pip's cachecontrol needs it */
 extern PyObject* PyInit__sqlite3(void);
 extern PyObject* PyInit_cc9demo(void);  /* rust9/PyO3 static-embed demo */
 extern PyObject* PyInit_jiter(void);  /* rust9/PyO3: openai SDK's fast JSON */
@@ -125,6 +126,7 @@ struct _inittab _PyImport_Inittab[] = {
     {"_ssl", PyInit__ssl},
     {"_hashlib", PyInit__hashlib},
     {"zlib", PyInit_zlib},
+    {"mmap", PyInit_mmap},
     {"_sqlite3", PyInit__sqlite3},
     {"_pydantic_core", PyInit__pydantic_core},
     {"jiter", PyInit_jiter},

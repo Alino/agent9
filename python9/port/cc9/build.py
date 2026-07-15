@@ -71,7 +71,7 @@ MODULES = [
     "Modules/_blake2/blake2module.c", "Modules/_blake2/blake2b_impl.c",
     "Modules/_blake2/blake2s_impl.c", "Modules/_blake2/impl/blake2b-ref.c",
     "Modules/_blake2/impl/blake2s-ref.c", "Modules/_sha3/sha3module.c",
-    "Modules/zlibmodule.c",
+    "Modules/zlibmodule.c", "Modules/mmapmodule.c",
     "Modules/_sqlite/blob.c", "Modules/_sqlite/connection.c",
     "Modules/_sqlite/cursor.c", "Modules/_sqlite/microprotocols.c",
     "Modules/_sqlite/module.c", "Modules/_sqlite/prepare_protocol.c",
