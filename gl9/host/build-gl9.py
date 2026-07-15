@@ -169,9 +169,20 @@ def archive(objs):
 
 
 def link(main_src, extra_srcs=()):
-    lib = os.path.join(OUT, "libgl9mesa.a")
+    # GL9_LLVM=1 links the llvm-enabled Mesa (softpipe AND llvmpipe) + LLVM
+    # itself, so the driver can be chosen at runtime via GALLIUM_DRIVER. It costs
+    # ~57 MB of statically-linked LLVM per binary (9front has no dynamic linking),
+    # so it is opt-in. See llvm9/ for how those archives are built.
+    if os.environ.get("GL9_LLVM"):
+        lib = os.path.join(OUT, "libgl9mesa-llvm.a")
+        libllvm = [os.path.join(REPO, "llvm9", "_out", "libllvm9.a")]
+        if not os.path.exists(libllvm[0]):
+            print("no libllvm9.a — run llvm9/host/build-llvm9.py first"); sys.exit(1)
+    else:
+        lib = os.path.join(OUT, "libgl9mesa.a")
+        libllvm = []
     if not os.path.exists(lib):
-        print("no libgl9mesa.a — run `build-gl9.py build` first"); sys.exit(1)
+        print("no " + os.path.basename(lib) + " — build it first"); sys.exit(1)
     lld = os.environ.get("CC9_LLD", "/opt/homebrew/bin/ld.lld")
     cc9lib = os.path.join(CC9, "lib", "libcc9cxx.a")
     cc9m = os.path.join(CC9, "lib", "libcc9m.a")
@@ -197,8 +208,8 @@ def link(main_src, extra_srcs=()):
         subprocess.run(c, check=True)
         objs.append(o)
     # link: app objects + gl9 archive + cc9 runtime, in one group (mutually dependent).
-    l = [lld, "-o", elf, *objs, "--start-group", lib, cc9lib, cc9m, "--end-group",
-         "-T", lds, "-static", "-nostdlib"]
+    l = [lld, "-o", elf, *objs, "--start-group", lib, *libllvm, cc9lib, cc9m,
+         "--end-group", "-T", lds, "-static", "-nostdlib"]
     r = subprocess.run(l, capture_output=True, text=True)
     if r.returncode:
         # surface undefined symbols — the real integration signal

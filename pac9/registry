@@ -40,11 +40,15 @@ go	-	.	tarball https://github.com/Alino/agent9/releases/download/go/go-amd64.tar
 # download, ~210 MB installed under /usr/glenda/rust + /rc/bin wrappers).
 # Self-contained: bundles its cc9 runtime substrate, no other package needed.
 rust9	-	.	tarball https://github.com/Alino/agent9/releases/download/rust9/rust9-amd64.tar.gz
-# gl9 — OpenGL (Mesa softpipe) for 9front. gl9win is the native libdraw window
-# server (builds on-box); gl9 is the prebuilt tarball of cross-compiled GL demos
-# + the `gl9` launcher, depending on gl9win. `pac9 install gl9` then `gl9 cube`.
+# gl9 — OpenGL 3.3 for 9front. gl9win is the native libdraw window server (builds
+# on-box); gl9 is the prebuilt tarball of cross-compiled GL demos + the `gl9`
+# launcher, depending on gl9win. `pac9 install gl9` then `gl9 cube`.
+# 0.2.0 carries BOTH rasterizers and picks at runtime: llvmpipe (~15x faster) on a
+# wxallow/W^X kernel, softpipe on a stock one. That costs size — 9front has no
+# dynamic linking, so each binary statically links all of LLVM (~43 MB tarball vs
+# 6.9 MB at 0.1.0). `pac9 changelog gl9` has the numbers and the tradeoff.
 gl9win	https://github.com/Alino/agent9	gl9/port/plan9/win	-
-gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9/gl9-amd64.tar.gz	gl9win
+gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9-v0.2.0/gl9-amd64.tar.gz	gl9win	0.2.0
 # alacritty9 — real upstream Alacritty 0.17.0 (GPU terminal) on 9front: the
 # cross-compiled binary (rust9 + Mesa softpipe + OSMesa EGL statically linked,
 # fonts bundled) + gl9win2, the interactive native window host. Self-contained

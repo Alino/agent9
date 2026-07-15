@@ -1,0 +1,48 @@
+gl9 — OpenGL for 9front. Changelog.
+(`pac9 changelog gl9` shows this; newest first.)
+
+0.2.0 — 2026-07-15
+  llvmpipe: ~15x faster OpenGL, when your kernel allows it.
+
+  gl9 now ships Mesa's llvmpipe alongside softpipe and picks between them
+  automatically. llvmpipe JIT-compiles shaders to x86-64 at runtime; softpipe
+  is the scalar reference rasterizer. They render identically, pixel for pixel
+  — this is purely a speed choice.
+
+  Measured on bare metal (Shuttle DS57U, Broadwell), 512x512 per-pixel Phong:
+
+      softpipe   220-269 ms/frame    3.7-4.5 fps
+      llvmpipe   14.7-16.5 ms/frame  60-68 fps      (15.0x and 16.2x)
+
+  llvmpipe's FIRST frame costs ~820 ms more (it compiles the shaders once), so
+  it breaks even after ~4 frames. Great for anything sustained; a real cost for
+  a one-shot render.
+
+  REQUIRES A PATCHED KERNEL for the fast path. llvmpipe writes machine code at
+  runtime and jumps to it, which needs writable+executable memory. Stock 9front
+  NX-enforces every writable segment, so llvmpipe cannot run there at all. The
+  optional wxallow kernel patch (cc9/kernel/ in the agent9 repo) adds a gated,
+  per-segment opt-in; `wxallow=1` in plan9.ini turns it on.
+
+    - Patched kernel + wxallow=1 -> llvmpipe, automatically.
+    - Stock kernel (the default)  -> softpipe, exactly as in 0.1.0. Nothing
+                                     breaks; you just don't get the speedup.
+
+  Check what you'd get:  gl9 driver
+  Force a driver:        GALLIUM_DRIVER=softpipe gl9 cube
+
+  SIZE: 6.9 MB -> ~40 MB. 9front has no dynamic linking, so each binary
+  statically links all of LLVM. On a stock kernel that weight is dead — you
+  download LLVM you cannot use. If that trades badly for you, stay on 0.1.0:
+  it is unchanged and still correct.
+
+  Also in this release:
+    - The launcher only forces GALLIUM_NOSSE=1 on the softpipe path now (where
+      it is still needed: softpipe's own x86 vertex-fetch JIT NX-faults on a
+      stock kernel). On a wxallow kernel that JIT works and the flag is dropped.
+    - New: `gl9 driver` prints which rasterizer would be used.
+
+0.1.0
+  First release. OpenGL 3.3 via Mesa softpipe (OSMesa), presented to a rio
+  window by gl9win. Pixel-exact against host Mesa on the 6-test parity corpus.
+  Demos: `gl9 cube` (lit spinning cube), `gl9 egl` (triangle through EGL).
