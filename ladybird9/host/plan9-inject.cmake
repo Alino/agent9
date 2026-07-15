@@ -11,8 +11,9 @@ set(PLAN9 ON CACHE BOOL "" FORCE)
 # lagom libs; helper processes are standalone static a.outs).
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
-# M1-M4 bring-up: engine + services only; the chrome is UI/Plan9 (M5).
-set(ENABLE_GUI_TARGETS OFF CACHE BOOL "" FORCE)
+# M4+: Services (WebContent/Compositor/RequestServer/ImageDecoder) + the
+# headless UI driver. The bespoke UI/Plan9 libdraw chrome is M5.
+set(ENABLE_GUI_TARGETS ON CACHE BOOL "" FORCE)
 
 # No QT/AppKit chrome, no installer targets.
 set(ENABLE_QT OFF CACHE BOOL "" FORCE)
