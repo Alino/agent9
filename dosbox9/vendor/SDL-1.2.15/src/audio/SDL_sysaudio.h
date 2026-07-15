@@ -181,30 +181,6 @@ extern AudioBootStrap EPOCAudio_bootstrap;
 #endif
 
 #if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
-#endif
-
-#if SDL_AUDIO_DRIVER_P9
 extern AudioBootStrap P9AUD_bootstrap;
 #endif
 

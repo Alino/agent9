@@ -415,30 +415,6 @@ extern VideoBootStrap DUMMY_bootstrap;
 #endif
 
 #if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
-#endif
-
-#if SDL_VIDEO_DRIVER_P9
 extern VideoBootStrap P9_bootstrap;
 #endif
 

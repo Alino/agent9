@@ -75,9 +75,13 @@
 #define HAVE_SETJMP 1
 #define HAVE_CLOCK_GETTIME 1
 #define HAVE_SIGACTION 1
-/* NOT in cc9: nanosleep (SDL_Delay falls back to select), strlcpy/strlcat,
- * iconv, getpagesize, sem_timedwait. mprotect exists but is a NO-OP
- * (posix_llvm.c) — must NOT claim HAVE_MPROTECT: SDL would believe it worked. */
+/* nanosleep: cc9 has a real one (pthread.c). Do NOT turn this off — without it
+ * SDL_Delay falls back to select(), and select lives in cc9's socket layer,
+ * which drags an otherwise unrelated dependency into every SDL_Delay. */
+#define HAVE_NANOSLEEP 1
+/* NOT in cc9: strlcpy/strlcat, iconv, getpagesize, sem_timedwait. mprotect
+ * exists but is a NO-OP (posix_llvm.c) — must NOT claim HAVE_MPROTECT: SDL
+ * would believe it worked. */
 
 /* Subsystems: only what DOSBox actually uses.
  * NB: do NOT set SDL_CDROM_DISABLED/SDL_JOYSTICK_DISABLED. DOSBox calls

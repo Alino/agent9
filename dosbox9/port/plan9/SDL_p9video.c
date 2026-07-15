@@ -573,6 +573,25 @@ P9_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 		SDL_LowerBlit(screen, &all, rgba, &all);
 	}
 
+	/* Force the 4th byte opaque before shipping. gl9win2's Image is ABGR32 —
+	 * a format WITH an alpha channel — so Plan 9's draw(2) computes
+	 *
+	 *     dst = src + dst*(1 - src.alpha)
+	 *
+	 * from that byte. Our masks declare no alpha, so SDL leaves it 0 and every
+	 * draw became an ADDITIVE blend instead of a replace. GL9F hid this because
+	 * gl9win2 blacks the window first (src + 0 == src); a GL9D draws straight
+	 * onto live pixels, so old text stayed visible under new and colours crept
+	 * brighter with each blend. alacritty9 never hit it: OSMesa already writes
+	 * alpha 255. The protocol says RGBA, so sending 0 was our bug, not
+	 * gl9win2's. One pass over a buffer we just memcpy'd anyway. */
+	{
+		Uint32 *p = (Uint32 *)rgba->pixels;
+		size_t i, n = (size_t)rgba->w * rgba->h;
+		for (i = 0; i < n; i++)
+			p[i] |= 0xFF000000u;
+	}
+
 	/* P9_DUMP_FRAME=N: write frame N to /tmp/d9/frame.ppm. Proves whether a
 	 * rendering artifact is in OUR frame or in the window server. */
 	{
@@ -598,38 +617,30 @@ P9_UpdateRects(_THIS, int numrects, SDL_Rect *rects)
 		}
 	}
 
-	/* Full frames by DEFAULT. GL9D deltas are the fast path (a 16x16 cursor
-	 * blink is ~1KB instead of a 1MB frame) and gl9win2 supports them, but
-	 * they are currently BUGGY here and full frames are provably not:
+	/* GL9D deltas are the default: a blinking cursor is ~1KB here instead of a
+	 * 1MB frame plus a whole-window reload.
 	 *
-	 *   Reproduce: P9_DELTAS=1, run bmenace or keen4 (Apogee "Galaxy" engine),
-	 *   wait for the screen to settle, screenshot. The memory counter reads
-	 *   "xx414" and the status box "Loaddyg..PresPleaseyWait" — old text left
-	 *   under new. It PERSISTS on a static screen, so it is lost state, not a
-	 *   mid-animation capture. Same run with full frames is clean.
+	 * DOSBox's rects are trustworthy. They come from GFX_EndUpdate's
+	 * changedLines run-lengths, and a from-scratch diff of consecutive frames
+	 * (ignoring the rects entirely) was measured to pick exactly the same rows
+	 * — e.g. both say "13 rows at y=354" on bmenace's blinking status box. The
+	 * artifact that used to be blamed on this path was the alpha blend fixed
+	 * above, not lost damage.
 	 *
-	 *   Ruled out: our frame is byte-correct (P9_DUMP_FRAME + compare);
-	 *   gl9win2 drops no GL9D (instrumented its out-of-range branch: zero
-	 *   hits); the wire format matches (4+16 header, rows packed at rect
-	 *   stride); no stray printf corrupts fd 1; there is no SDL shadow
-	 *   surface (shadow=0). So some pixels reach the surface without being
-	 *   reported in changedLines, and we have not found that path.
-	 *
-	 * Cost of the safe default: a full 640x400 frame is a 1MB write + a whole
-	 * -window reload per update. Fix the delta path before this port is fast.
-	 * ponytail: correct-and-slow beats fast-and-wrong; the knob keeps the
-	 * investigation one env var away. */
+	 * P9_FULLFRAMES=1 forces full frames. Keep it: it is how the alpha bug was
+	 * bisected (full frames were correct only because gl9win2 blacks the window
+	 * first, which is exactly what made the delta path look guilty). */
 	{
 		int i, area = 0;
-		static int deltas = -1;
+		static int fullframes = -1;
 
-		if (deltas < 0)
-			deltas = SDL_getenv("P9_DELTAS") ? 1 : 0;
+		if (fullframes < 0)
+			fullframes = SDL_getenv("P9_FULLFRAMES") ? 1 : 0;
 
 		for (i = 0; i < numrects; i++)
 			area += rects[i].w * rects[i].h;
 
-		if (!deltas || this->hidden->need_full || numrects > 16 ||
+		if (fullframes || this->hidden->need_full || numrects > 16 ||
 		    area * 3 >= this->hidden->w * this->hidden->h) {
 			P9_SendFull(this);
 			this->hidden->need_full = 0;

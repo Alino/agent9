@@ -35,8 +35,14 @@ sdl = sys.argv[1]
 
 def register(path, anchor, block, marker):
     s = open(path).read()
-    # drop any previous (possibly misplaced) insertion, then re-insert cleanly
-    s = "\n".join(l for l in s.split("\n") if marker not in l)
+    # Drop any previous insertion, then re-insert cleanly. Remove the whole
+    # BLOCK, not just the marker line: the block is `#if ...`/extern/`#endif`,
+    # so line-filtering the extern alone left the guard husk behind and every
+    # build appended another one — this file is vendored AND tracked, so the
+    # junk accumulated in git.
+    s = s.replace(block, "")
+    s = "\n".join(l for l in s.split("\n") if marker not in l)   # stray/misplaced
+    s = re.sub(r"#if SDL_(?:VIDEO|AUDIO)_DRIVER_P9\n#endif\n\n?", "", s)  # husks
     s = s.replace(anchor, block + anchor, 1)
     open(path, "w").write(s)
 
