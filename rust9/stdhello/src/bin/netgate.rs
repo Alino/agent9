@@ -83,6 +83,28 @@ fn main() {
         Err(e) => println!("5 from_raw_fd adopts an unconnected socket: FAIL {e}"),
     }
 
+    // 6. hostname resolution through /net/cs — only when a name to resolve is
+    //    given (it needs working DNS, which the QEMU VM may not have). The
+    //    /net/cs protocol reads replies from OFFSET 0 after the query write
+    //    (dial(2) seeks back explicitly); reading from the current offset gets
+    //    instant EOF, which made every hostname "not found" — Servo's first real
+    //    site on bare metal died with "client error (Connect)" from exactly this.
+    if let Some(name) = std::env::args().nth(2) {
+        total += 1;
+        match std::net::ToSocketAddrs::to_socket_addrs(&(name.as_str(), 80u16)) {
+            Ok(addrs) => {
+                let addrs: Vec<_> = addrs.collect();
+                if addrs.is_empty() {
+                    println!("6 resolve {name}: FAIL empty result");
+                } else {
+                    println!("6 resolve {name}: PASS ({} -> {})", name, addrs[0]);
+                    pass += 1;
+                }
+            },
+            Err(e) => println!("6 resolve {name}: FAIL {e}"),
+        }
+    }
+
     println!("netgate {pass}/{total} {}", if pass == total { "PASS" } else { "FAIL" });
     if pass != total {
         std::process::exit(1);

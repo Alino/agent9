@@ -820,15 +820,28 @@ pub fn lookup_host(host: &str, port: u16) -> io::Result<LookupHost> {
     }
 
     // Ask the connection server: write "tcp!host!port", read back translations.
+    //
+    // The replies are read from OFFSET 0 — dial(2) does an explicit
+    // `seek(fd, 0, 0)` between the query write and the reads. Reading from the
+    // current offset (the end of what was just written) returns EOF immediately,
+    // so every non-numeric hostname came back "host not found" while hget on the
+    // same box resolved fine (webfs does the seek). pread with an explicit,
+    // advancing offset is the same thing without needing a seek call.
     let cs = open_path("/net/cs", O_RDWR)?;
     cs.write_all(format!("tcp!{host}!{port}").as_bytes())?;
     let mut addrs = Vec::new();
     let mut buf = [0u8; 256];
+    let mut off: i64 = 0;
     loop {
-        let n = cs.raw_read(&mut buf)?;
+        let n = unsafe { pread(cs.0, buf.as_mut_ptr(), buf.len(), off) };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let n = n as usize;
         if n == 0 {
             break;
         }
+        off += n as i64;
         let line = core::str::from_utf8(&buf[..n]).unwrap_or("");
         // Each reply: "/net/tcp/clone ip!port"; take the last field.
         if let Some(field) = line.split_whitespace().last() {
