@@ -10,7 +10,10 @@ SRC_URL="https://github.com/libtom/libtommath/releases/download/v$VERSION/ltm-$V
 SRC_SHA=296272d93435991308eb73607600c034b558807a07e829e751142e65ccfa9d08
 
 fetch "$SRC_URL" "$SRC_SHA" "$VENDOR/libtommath"
-cmake_dep "$VENDOR/libtommath"
+# __STDC_IEC_559__: the freestanding cc9 target doesn't advertise IEEE floats,
+# so tommath silently drops mp_set_double/mp_get_double (LibCrypto needs them).
+# cc9 doubles ARE IEEE754 — assert it.
+cmake_dep "$VENDOR/libtommath" -DCMAKE_C_FLAGS="-D__STDC_IEC_559__=1"
 
 cat > "$PREFIX/lib/pkgconfig/libtommath.pc" <<EOF
 prefix=$PREFIX

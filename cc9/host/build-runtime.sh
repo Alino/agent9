@@ -105,6 +105,9 @@ uwf=(--target=x86_64-unknown-none -nostdlib -I "$LLVMSRC/libunwind/include" -I "
      -DNDEBUG -O1 -w -funwind-tables -fno-pic -femulated-tls)
 "$LLVM/clang++" "${uwf[@]}" -frtti -fno-exceptions -nostdinc++ -isystem "$LIBCXX" -c "$LLVMSRC/libunwind/src/libunwind.cpp" -o "$O/uw_core.o"
 "$LLVM/clang" "${uwf[@]}" -c "$LLVMSRC/libunwind/src/UnwindLevel1.c" -o "$O/uw_level1.o"
+# gcc-ext entry points (_Unwind_GetIPInfo/GetDataRelBase/GetTextRelBase/...):
+# Rust std's panic/backtrace machinery references them (ladybird9 Rust crates).
+"$LLVM/clang" "${uwf[@]}" -c "$LLVMSRC/libunwind/src/UnwindLevel1-gcc-ext.c" -o "$O/uw_gccext.o"
 "$LLVM/clang" "${uwf[@]}" -c "$LLVMSRC/libunwind/src/UnwindRegistersSave.S" -o "$O/uw_save.o"
 "$LLVM/clang" "${uwf[@]}" -c "$LLVMSRC/libunwind/src/UnwindRegistersRestore.S" -o "$O/uw_restore.o"
 
