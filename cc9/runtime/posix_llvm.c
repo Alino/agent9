@@ -904,6 +904,9 @@ int getrusage(int who, void *ru) { (void)who; (void)ru; return 0; }
 
 /* passwd db: none. getpwuid* return failure so LLVM falls back to $HOME/cwd. */
 void *getpwuid(unsigned uid) { (void)uid; return 0; }
+void setpwent(void) {}
+void *getpwent(void) { return 0; }     /* empty db: iteration sees nothing */
+void endpwent(void) {}
 int   getpwuid_r(unsigned uid, void *pw, char *buf, unsigned long n, void **res) { (void)uid; (void)pw; (void)buf; (void)n; if (res) *res = 0; return 0; }
 void *getpwnam(const char *nm) { (void)nm; return 0; }
 int   getpwnam_r(const char *nm, void *pw, char *buf, unsigned long n, void **res) { (void)nm; (void)pw; (void)buf; (void)n; if (res) *res = 0; return 0; }

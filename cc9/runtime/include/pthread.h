@@ -48,6 +48,13 @@ int pthread_mutex_trylock(pthread_mutex_t *);
 int pthread_mutex_unlock(pthread_mutex_t *);
 int pthread_mutexattr_init(pthread_mutexattr_t *);
 int pthread_mutexattr_destroy(pthread_mutexattr_t *);
+/* Process-shared: cc9 mutexes are Plan 9 semaphores on the mutex word, which
+ * work across processes when the mutex lives in shared memory (shm9) — so
+ * accepting the attribute is honest, not a stub. */
+#define PTHREAD_PROCESS_PRIVATE 0
+#define PTHREAD_PROCESS_SHARED 1
+int pthread_mutexattr_setpshared(pthread_mutexattr_t *, int);
+int pthread_mutexattr_getpshared(const pthread_mutexattr_t *, int *);
 int pthread_mutexattr_settype(pthread_mutexattr_t *, int);
 int pthread_cond_init(pthread_cond_t *, const pthread_condattr_t *);
 int pthread_cond_destroy(pthread_cond_t *);

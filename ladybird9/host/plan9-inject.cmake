@@ -7,6 +7,10 @@
 # rows in check_for_dependencies.cmake).
 set(PLAN9 ON CACHE BOOL "" FORCE)
 
+# No dynamic linker on Plan 9: everything static (Ladybird defaults to shared
+# lagom libs; helper processes are standalone static a.outs).
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
 # M1-M4 bring-up: engine + services only; the chrome is UI/Plan9 (M5).
 set(ENABLE_GUI_TARGETS OFF CACHE BOOL "" FORCE)
 

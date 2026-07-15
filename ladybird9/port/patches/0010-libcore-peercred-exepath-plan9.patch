@@ -1,0 +1,49 @@
+diff --git a/Libraries/LibCore/Socket.cpp b/Libraries/LibCore/Socket.cpp
+index 7aecfb1597..0a777bbed8 100644
+--- a/Libraries/LibCore/Socket.cpp
++++ b/Libraries/LibCore/Socket.cpp
+@@ -508,7 +508,7 @@ ErrorOr<pid_t> LocalSocket::peer_pid() const
+ #elif defined(AK_OS_SOLARIS)
+     ucred_t* creds = NULL;
+     socklen_t creds_size = sizeof(creds);
+-#elif defined(AK_OS_GNU_HURD)
++#elif defined(AK_OS_GNU_HURD) || defined(AK_OS_PLAN9)
+     return Error::from_errno(ENOTSUP);
+ #else
+     struct ucred creds = {};
+@@ -527,7 +527,7 @@ ErrorOr<pid_t> LocalSocket::peer_pid() const
+ #elif defined(AK_OS_SOLARIS)
+     TRY(System::getsockopt(m_helper.fd(), SOL_SOCKET, SO_RECVUCRED, &creds, &creds_size));
+     return ucred_getpid(creds);
+-#elif !defined(AK_OS_GNU_HURD)
++#elif !defined(AK_OS_GNU_HURD) && !defined(AK_OS_PLAN9)
+     TRY(System::getsockopt(m_helper.fd(), SOL_SOCKET, SO_PEERCRED, &creds, &creds_size));
+     return creds.pid;
+ #endif
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index fadcfc933d..5058349125 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -799,6 +799,22 @@ ErrorOr<ByteString> current_executable_path()
+     if (sizeof(info.name) > sizeof(path))
+         return Error::from_errno(ENAMETOOLONG);
+     strlcpy(path, info.name, sizeof(path) - 1);
++#elif defined(AK_OS_PLAN9)
++    // /proc/<pid>/text is an open handle on the running executable; the
++    // kernel knows its path (cc9's fd2path surfaces it via readlink-style
++    // helper). Falls back to a loud error like the other platforms.
++    {
++        extern "C" long n9_fd2path(int, char*, int);
++        char textpath[64];
++        (void)snprintf(textpath, sizeof(textpath), "/proc/%d/text", getpid());
++        int tfd = open(textpath, O_RDONLY);
++        if (tfd < 0)
++            return Error::from_errno(errno);
++        long rc = n9_fd2path(tfd, path, sizeof(path) - 1);
++        close(tfd);
++        if (rc < 0)
++            return Error::from_string_literal("current_executable_path: fd2path failed");
++    }
+ #else
+ #    warning "Not sure how to get current_executable_path on this platform!"
+     // GetModuleFileName on Windows, unsure about OpenBSD.

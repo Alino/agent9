@@ -421,6 +421,10 @@ int pthread_mutex_unlock(pthread_mutex_t *m){
 	m->owner=0; m->count=0; n9_semrelease(&m->sem, 1); return 0;
 }
 int pthread_mutexattr_init(pthread_mutexattr_t *a){ a->kind=0; return 0; }
+/* process-shared accepted for real: semaphore-word mutexes work cross-process
+ * when placed in shared memory (shm9 segments) */
+int pthread_mutexattr_setpshared(pthread_mutexattr_t *a, int v){ (void)a; (void)v; return 0; }
+int pthread_mutexattr_getpshared(const pthread_mutexattr_t *a, int *v){ (void)a; if(v) *v = 1; return 0; }
 int pthread_mutexattr_destroy(pthread_mutexattr_t *a){ (void)a; return 0; }
 int pthread_mutexattr_settype(pthread_mutexattr_t *a, int k){ a->kind=k; return 0; }
 

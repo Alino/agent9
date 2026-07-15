@@ -11,6 +11,10 @@ extern "C" {
 #endif
 struct passwd *getpwuid(uid_t);
 int getpwuid_r(uid_t, struct passwd *, char *, unsigned long, struct passwd **);
+/* empty-db iteration (LibCore/StandardPaths walks the db; sees nothing) */
+void setpwent(void);
+struct passwd *getpwent(void);
+void endpwent(void);
 struct passwd *getpwnam(const char *);
 int getpwnam_r(const char *, struct passwd *, char *, unsigned long, struct passwd **);
 #ifdef __cplusplus
