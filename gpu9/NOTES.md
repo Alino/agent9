@@ -78,6 +78,25 @@ parallel EUs beat per-pixel CPU shading — that is still the open question.
 
 ## Next
 
+**The seam is confirmed as a single POSIX call.** `intel_gem.h:77` is literally:
+
+    static inline int intel_ioctl(int fd, unsigned long request, void *arg)
+    { do { ret = ioctl(fd, request, arg); } while (...EINTR/EAGAIN); return ret; }
+
+Plain `ioctl()` — NOT libdrm's drmIoctl. So implementing `ioctl()` in cc9's
+runtime (posix_llvm.c already exists for exactly this) routes iris to our driver
+with iris UNMODIFIED. And because M1-M3 proved MMIO + GTT + ring all work from
+userspace, the "kernel half" collapses into the SAME PROCESS: no kernel device,
+no /dev/i915, no context switch. iris -> ioctl() -> our code -> the ring.
+
+**Expectation-setting on the payoff (do the arithmetic before the work):**
+cirno's BDW GT1 is ~12 EUs @ ~700MHz ~= 134 GFLOPS. The Celeron 3205U is 2 cores
+@ 1.5GHz with AVX2 ~= 48 GFLOPS. So the GPU has only ~2.8x the raw FLOPS, plus
+fixed-function texture/raster units, minus shared stolen-memory bandwidth. A
+realistic 3D win over llvmpipe is maybe **3-5x, not 15x**. The M4 blitter result
+(8.5x SLOWER than memcpy) is the same story: this is the weakest Broadwell made.
+That is worth knowing BEFORE spending weeks.
+
 M5-M8 for real OpenGL: the 22-ioctl shim (implementable ENTIRELY in userspace —
 we already have MMIO, GTT, aperture and a working ring in-process, so the "kernel
 half" collapses into the same process), then iris through cc9 (~160k lines, the
