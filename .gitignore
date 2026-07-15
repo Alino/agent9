@@ -1,4 +1,6 @@
 .DS_Store
+__pycache__/
+*.pyc
 
 # Release artifacts — too big for git, shipped via GitHub Releases
 release/*.qcow2
@@ -30,6 +32,14 @@ src/_restore-9front-vt/
 python9/cpython/src/
 python9/cpython/host-build/
 python9/parity/manifests/*.tmp.json
+# python9 cc9 profile (port/cc9/): same rule — build output and fetched upstream
+# stay out, the build script + config headers are committed. deps/ holds the
+# pinned tarballs build.py expects extracted there: zlib-1.3.1 and
+# sqlite-amalgamation-3460100.
+python9/port/cc9/_out/
+python9/port/cc9/deps/
+python9/release/stage/
+python9/release/*.tar.gz
 
 # Local-only secrets and dev scratch
 .env
