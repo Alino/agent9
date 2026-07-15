@@ -16,15 +16,18 @@ HOME = os.path.expanduser("~")
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 GL9 = f"{REPO}/gl9"
 LLVMSRC = os.environ.get("CC9_LLVMSRC", f"{HOME}/Projects/llvm-project")
-CC = f"{GL9}/build-gen-llvm/compile_commands.json"
+# GL9_BUILDGEN/GL9_ARCHIVE let this same pipeline serve both Mesa configures:
+# build-gen-llvm (softpipe+llvmpipe) and build-gen-iris (iris HW + swrast).
+BUILDGEN = os.environ.get("GL9_BUILDGEN", "build-gen-llvm")
+CC = f"{GL9}/{BUILDGEN}/compile_commands.json"
 BIN = os.environ.get("CC9_LLVM", "/opt/homebrew/opt/llvm/bin")
 LIBCXX = os.environ.get("CC9_LIBCXX", "/tmp/libcxx-thr/include/c++/v1")
 INC = f"{REPO}/cc9/runtime/include"
 SHIM_INC = f"{GL9}/port/plan9/shim/include"
 PRE = f"{GL9}/port/plan9/shim/gl9_pre.h"
 OUT = f"{GL9}/_out"
-OBJ = f"{OUT}/obj-llvm"
-ARCHIVE = f"{OUT}/libgl9mesa-llvm.a"
+OBJ = f"{OUT}/obj-" + BUILDGEN.replace("build-gen-","")
+ARCHIVE = f"{OUT}/" + os.environ.get("GL9_ARCHIVE", "libgl9mesa-llvm.a")
 
 # container-path -> host-path (longest prefix first)
 REMAP = [("/work-llvm", LLVMSRC), ("/work", REPO)]
@@ -113,6 +116,17 @@ def cc9_cmd(entry, obj):
     base += ["-isystem", INC]
     return base + [std] + defs + incs + arch + fflags + forced + ["-c", src, "-o", obj], src
 
+# Some sources are compiled once PER KERNEL BACKEND (iris_batch.c ->
+# i915_iris_batch.c.o, xe_iris_batch.c.o, iris_batch.c.o). "xe" is the modern Xe
+# kernel driver (Tiger Lake+); Broadwell is i915, so the xe_* variants are dead
+# weight that only fail on Xe uapi headers we will never have. Exclude by OUTPUT,
+# since the SOURCE is shared with the i915 variant we need.
+EXCLUDE_OUT = ("xe_",)
+
+def excluded_out(entry):
+    out = (entry.get("output") or "").split("/")[-1]
+    return out.startswith(EXCLUDE_OUT)
+
 def excluded(src):
     if src.endswith(".S"): return True
     return any(x in src for x in EXCLUDE)
@@ -120,6 +134,7 @@ def excluded(src):
 def load(filt=None):
     e = [x for x in json.load(open(CC)) if x["file"].endswith((".c",".cc",".cpp",".cxx"))]
     e = [x for x in e if not excluded(resolve(x["file"], basedir(x)))]
+    e = [x for x in e if not excluded_out(x)]
     if filt: e = [x for x in e if filt in x["file"]]
     return e
 
@@ -165,9 +180,9 @@ def main():
         for i in range(1,len(ok),500):
             subprocess.run([BIN+"/llvm-ar","rs",ARCHIVE]+ok[i:i+500], check=True)
         print(f"\narchived {len(ok)} -> {ARCHIVE} ({os.path.getsize(ARCHIVE)//1024//1024} MB)")
-    with open(f"{OUT}/fails-llvm.txt","w") as f:
+    with open(f"{OUT}/fails-{BUILDGEN}.txt","w") as f:
         for src,err in fails: f.write(f"{src}\n    {err}\n")
-    print(f"fail detail -> {OUT}/fails-llvm.txt")
+    print(f"fail detail -> {OUT}/fails-{BUILDGEN}.txt")
 
 if __name__ == "__main__":
     main()
