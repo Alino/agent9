@@ -26,3 +26,35 @@ expected to behave identically to the same-commit host build.
 - M1 js: test262 smoke subset vs same-commit host `Build/release/bin/js` — TBD
 - M4 LibWeb: text/layout test subset vs host — TBD
 - M6 WPT smoke — TBD
+
+## M4 runtime blockers (headless screenshot) — diagnosed, fix pending
+
+The full multi-process stack RUNS on cirno (RequestServer fetched a live HTTPS
+page over TLS; verified 2026-07-15). Two runtime issues gate the headless PNG:
+
+1. **SQLite "locking protocol" on Plan 9.** Both the main cookie/history DB and
+   the RequestServer disk cache (`Database::Database::create`) fail with the
+   Plan 9 errstr "locking protocol". cc9's SQLite VFS uses fcntl record locks
+   (cc9 fcntl returns success for F_SETLK), but the DB open/journal path still
+   hits a real kernel lock error. Bypass: `--disable-sql-database` (main DB) +
+   the disk-cache failure is non-fatal (warnln). Durable fix: a cc9 SQLite VFS
+   lock shim (Plan 9 exclusive-open or a no-op lock VFS), OR build SQLite with
+   `SQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_LOCKING_MODE=1` / a unix-none VFS.
+
+2. **Headless paint/present does not complete the PNG.** With
+   `--disable-sql-database` the main process starts, spawns helpers, and stays
+   alive (no crash), but no screenshot is written after minutes. Compositor now
+   defaults `--force-cpu-painting` on plan9 (`SkiaBackendContext::
+   initialize_gpu_backend` skipped; `the_main_thread_context()` returns null →
+   no GPU). Root cause NOT yet isolated — the on-box picture is contaminated by
+   `gl9win2`/`swgl9` processes that are almost certainly a CONCURRENT servo9
+   session's (swgl9 is servo9's binary; gl9egl.c only writes frames to fd 1, it
+   doesn't spawn a presenter), so they are likely a red herring, not ladybird's.
+   Next: reproduce on a QUIET box (no concurrent servo9), trace the WebContent→
+   Compositor paint IPC and the screenshot-write path (load_page_for_screenshot_
+   and_exit + the CPU WrapPixels readback), and confirm whether the render
+   completes or the paint/present IPC deadlocks. Candidate areas: the shm
+   AnonymousBuffer bitmap handoff under real load (Phase A single-segment cap),
+   the poll write-ring backpressure, or the screenshot timer firing before
+   first paint (a known upstream race). Needs interactive debugging, not
+   autonomous hammering.
