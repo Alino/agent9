@@ -377,16 +377,29 @@ cmdscroll(Gpu9 *g)
 }
 
 /*
- * demo — draw on the ACTUAL screen (GGTT 0 == the framebuffer) so you can see
- * the GPU do it. Softscreen redraws over these on the next damage, so it is
- * self-healing; move the mouse or refresh to clear. Reports the fill rate.
+ * demo — draw on the ACTUAL screen (GGTT 0 == the framebuffer) so you can SEE
+ * the GPU work, then put the screen back exactly as it was. It captures the
+ * framebuffer to a scratch buffer first (GPU blt), draws the grid, holds it
+ * ~600ms, and restores from the capture — so it leaves no mess, unlike a raw
+ * draw (which, with softscreen only repainting damaged regions, would persist).
+ *
+ * Caveat: if 9front repaints part of the screen during the hold (a blinking
+ * cursor, a clock), the restore reverts that region to its captured pixels;
+ * the next damage there heals it. On an idle screen nothing writes the FB, so
+ * the restore is pixel-perfect.
  */
 static void
 cmddemo(Gpu9 *g)
 {
 	static u16int col[] = { 0xf800, 0x07e0, 0x001f, 0xffe0, 0xf81f, 0x07ff, 0xffff };
 	int cols = 8, rows = 6, cw = FBW/8, ch = FBH/6, r, c, k, fills = 0;
+	u32int saveg;
 	vlong t0, t;
+
+	saveg = gpu9_alloc(g, FBBYTES, nil);
+	if(saveg == 0) sysfatal("alloc: %r");
+	if(gpu9_blt(g, saveg, 0, 0, 0, 0, 0, FBPITCH, FBW, FBH, GPU9_DEPTH16) < 0)
+		sysfatal("capture screen: %r");	/* FB (GGTT 0) -> scratch */
 
 	print("drawing %d rectangles on your screen with the GPU blitter...\n", cols*rows);
 	t0 = nsec();
@@ -403,7 +416,11 @@ cmddemo(Gpu9 *g)
 		fills, t/1000000, (double)fills/(double)t*1e9,
 		(double)fills*(cw-4)*(ch-4)*2/(double)t*1000.0);
 	print("look at cirno's screen — that grid was drawn entirely by the GPU.\n");
-	print("(9front's softscreen will paint over it on the next redraw.)\n");
+
+	sleep(600);				/* hold it long enough to see */
+	if(gpu9_blt(g, 0, 0, 0, saveg, 0, 0, FBPITCH, FBW, FBH, GPU9_DEPTH16) < 0)
+		sysfatal("restore screen: %r");	/* scratch -> FB: put it back */
+	print("screen restored.\n");
 }
 
 void
