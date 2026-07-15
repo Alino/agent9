@@ -3,6 +3,15 @@
 > Status: **scope / not started.** Captured 2026-07-15, after llvmpipe landed
 > ([[llvm9]], ~15x softpipe on bare metal). This is the "actually use the GPU"
 > project that llvmpipe was chosen *instead of*. Nothing here is committed to.
+>
+> **SCOPE, because the name doesn't say it:** `gpu9` is a deliberate umbrella
+> name (chosen 2026-07-15), not a claim of generality. This is **Intel Gen8+
+> only** — in practice **Broadwell**, since that is cirno's chip and the only one
+> it would be tested on. Its reach is exactly Mesa `iris`'s reach: Gen8 and later
+> Intel. It cannot help an AMD, NVIDIA, or pre-Gen8 Intel GPU, and the kernel
+> bring-up (forcewake domains, GTT format, submission model) is gen-specific.
+> If a second, unrelated GPU driver ever appears, `gpu9` is the umbrella and this
+> should become `iris9`/`bdw9` underneath it.
 
 ## What this would be
 
