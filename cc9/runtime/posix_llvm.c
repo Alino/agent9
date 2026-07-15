@@ -180,10 +180,10 @@ extern int rand(void);
 unsigned arc4random(void) { return ((unsigned)rand() << 16) ^ (unsigned)rand(); }
 unsigned arc4random_uniform(unsigned u) { return u ? arc4random() % u : 0; }
 void arc4random_buf(void *b, unsigned long n) { unsigned char *p = b; for (unsigned long i = 0; i < n; i++) p[i] = (unsigned char)rand(); }
-/* JIT unwind-frame registration: RuntimeDyld calls these to tell the unwinder
- * about JIT'd code's .eh_frame. Our JIT'd code never throws -> no-op is safe. */
-void __register_frame(const void *fde) { (void)fde; }
-void __deregister_frame(const void *fde) { (void)fde; }
+/* JIT unwind-frame registration (__register_frame/__deregister_frame) now
+ * comes from libunwind's UnwindLevel1-gcc-ext.o (build-runtime.sh) — the real
+ * thing, not the old no-op stubs (JIT'd code still never throws; Rust's
+ * panic machinery wanted the rest of that TU's entry points). */
 int backtrace(void **b, int n) { (void)b; (void)n; return 0; }
 char **backtrace_symbols(void *const *b, int n) { (void)b; (void)n; return 0; }
 void backtrace_symbols_fd(void *const *b, int n, int fd) { (void)b; (void)n; (void)fd; }
