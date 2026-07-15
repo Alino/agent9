@@ -1,0 +1,142 @@
+diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
+index fadcfc933d..b2dbcdb077 100644
+--- a/Libraries/LibCore/System.cpp
++++ b/Libraries/LibCore/System.cpp
+@@ -23,6 +23,16 @@
+ #include <termios.h>
+ #include <unistd.h>
+ 
++#if defined(AK_OS_PLAN9)
++// cc9 runtime: kernel path of an open fd (fd2path(2)) + demand-paged
++// VA-reservation segments (segattach/segfree/segdetach; see cc9 shm9.c
++// siblings). These realize reserve/commit/decommit/release below.
++extern "C" long cc9_fd2path_for_exe(int, char*, unsigned long);
++extern "C" void* cc9_reserve_va_segment(unsigned long);
++extern "C" long cc9_segfree_pages(void*, unsigned long);
++extern "C" long cc9_segdetach_va(void*);
++#endif
++
+ #if defined(AK_OS_LINUX) && !defined(MFD_CLOEXEC)
+ #    include <linux/memfd.h>
+ #    include <sys/syscall.h>
+@@ -144,22 +154,42 @@ ErrorOr<void> munmap(void* address, size_t size)
+ 
+ ErrorOr<void*> reserve_address_space(size_t size)
+ {
++#if defined(AK_OS_PLAN9)
++    // A demand-paged anonymous segment: costs address space until touched,
++    // then pages commit lazily — the closest native to PROT_NONE+NORESERVE.
++    // (Pages are RW from the start; the PROT_NONE guard property is not
++    // enforced.) segattach length is a 32-bit ulong: reject what can't fit.
++    if (size >= (4ull * GiB))
++        return Error::from_errno(ENOMEM);
++    void* ptr = cc9_reserve_va_segment(size);
++    if (ptr == nullptr)
++        return Error::from_syscall("segattach"sv, ENOMEM);
++    return ptr;
++#else
+     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+-#ifdef MAP_NORESERVE
++#    ifdef MAP_NORESERVE
+     flags |= MAP_NORESERVE;
+-#endif
++#    endif
+     auto* ptr = ::mmap(nullptr, size, PROT_NONE, flags, -1, 0);
+     if (ptr == MAP_FAILED)
+         return Error::from_syscall("mmap"sv, errno);
+     return ptr;
++#endif
+ }
+ 
+ ErrorOr<void> commit_memory(void* address, size_t size)
+ {
++#if defined(AK_OS_PLAN9)
++    // Reserved segments demand-commit on touch; nothing to do.
++    (void)address;
++    (void)size;
++    return {};
++#else
+     auto* ptr = ::mmap(address, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+     if (ptr == MAP_FAILED)
+         return Error::from_syscall("mmap"sv, errno);
+     return {};
++#endif
+ }
+ 
+ ErrorOr<void> decommit_memory(void* address, size_t size)
+@@ -167,6 +197,12 @@ ErrorOr<void> decommit_memory(void* address, size_t size)
+     if (size == 0)
+         return {};
+ 
++#if defined(AK_OS_PLAN9)
++    // Return the pages to the kernel; the VA stays attached (segfree(2)).
++    if (cc9_segfree_pages(address, size) < 0)
++        return Error::from_syscall("segfree"sv, EINVAL);
++    return {};
++#else
+     int flags = MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED;
+ #ifdef MAP_NORESERVE
+     flags |= MAP_NORESERVE;
+@@ -176,13 +212,21 @@ ErrorOr<void> decommit_memory(void* address, size_t size)
+         return Error::from_syscall("mmap"sv, errno);
+     VERIFY(ptr == address);
+     return {};
++#endif
+ }
+ 
+ ErrorOr<void> release_address_space(void* address, size_t size)
+ {
++#if defined(AK_OS_PLAN9)
++    if (cc9_segdetach_va(address) < 0)
++        return Error::from_syscall("segdetach"sv, EINVAL);
++    (void)size;
++    return {};
++#else
+     if (::munmap(address, size) < 0)
+         return Error::from_syscall("munmap"sv, errno);
+     return {};
++#endif
+ }
+ 
+ ErrorOr<int> anon_create([[maybe_unused]] size_t size, [[maybe_unused]] int options)
+@@ -799,6 +843,20 @@ ErrorOr<ByteString> current_executable_path()
+     if (sizeof(info.name) > sizeof(path))
+         return Error::from_errno(ENAMETOOLONG);
+     strlcpy(path, info.name, sizeof(path) - 1);
++#elif defined(AK_OS_PLAN9)
++    // /proc/<pid>/text is an open handle on the running executable; the
++    // kernel knows its path and cc9's fd2path shim surfaces it.
++    {
++        char textpath[64];
++        (void)snprintf(textpath, sizeof(textpath), "/proc/%d/text", ::getpid());
++        int tfd = ::open(textpath, O_RDONLY);
++        if (tfd < 0)
++            return Error::from_errno(errno);
++        long rc = cc9_fd2path_for_exe(tfd, path, sizeof(path) - 1);
++        ::close(tfd);
++        if (rc < 0)
++            return Error::from_string_literal("current_executable_path: fd2path failed");
++    }
+ #else
+ #    warning "Not sure how to get current_executable_path on this platform!"
+     // GetModuleFileName on Windows, unsure about OpenBSD.
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index 396bb55bae..a95dd1688b 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -36,7 +36,15 @@ public:
+         Yes,
+     };
+ 
++#if defined(AK_OS_PLAN9)
++    // Plan 9's segattach length argument is a 32-bit ulong, so a single
++    // demand-paged segment (how reserve_address_space is realized there)
++    // caps just under 4 GiB; 2 GiB is the largest power of two that fits
++    // with the trailing guard page. Same semantics, smaller ceiling.
++    static constexpr size_t default_cage_size = 2ull * GiB;
++#else
+     static constexpr size_t default_cage_size = 64ull * GiB;
++#endif
+     static_assert(is_power_of_two(default_cage_size));
+     static constexpr size_t cage_offset_mask = default_cage_size - 1;
+     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();

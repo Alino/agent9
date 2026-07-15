@@ -551,6 +551,21 @@ int putenv(char *s){
  * directly (authoritative); this is only for code that walks `environ`. */
 char **environ = 0;
 char *secure_getenv(const char *n){ extern char *getenv(const char *); return getenv(n); }  /* no setuid on Plan 9 */
+/* C-linkage fd2path for C++ consumers (LibCore current_executable_path) */
+long cc9_fd2path_for_exe(int fd, char *buf, unsigned long n){ return n9_fd2path(fd, buf, (int)n); }
+
+/* Demand-paged VA reservation over anonymous segments — LibCore's
+ * reserve/decommit/release_address_space arms. segattach length is a 32-bit
+ * ulong on Plan 9: callers must stay under 4 GiB per reservation. */
+extern void *n9_segattach(unsigned long, const char *, void *, unsigned long);
+extern long n9_segdetach(void *);
+extern long n9_segfree(void *, unsigned long);
+void *cc9_reserve_va_segment(unsigned long len){
+	void *p = n9_segattach(0, "memory", 0, len);
+	return ((long)p <= 0) ? 0 : p;
+}
+long cc9_segfree_pages(void *va, unsigned long len){ return n9_segfree(va, len); }
+long cc9_segdetach_va(void *va){ return n9_segdetach(va); }
 int clearenv(void){ if(environ) environ[0] = 0; return 0; }
 void __cc9_build_environ(void){
 	/* ponytail: 512-entry cap; /env rarely holds more. Grow if it ever does. */
