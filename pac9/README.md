@@ -28,9 +28,15 @@ overwrite is not a version: the same URL would quietly serve different bytes, an
 nobody could pin a build or roll one back. pac9 records the version it installed,
 which is what lets `list`, `outdated` and `upgrade` mean anything.
 
-Entries without a version still work; they read as `-` and upgrade only via an
-explicit `pac9 install`. Nothing that has no version on both sides is ever
-reported outdated — with nothing to compare, saying so would be a guess.
+Entries without a version still work; a package the registry doesn't version is
+never reported outdated — there's nothing to compare it against.
+
+If you installed something *before* versions existed, its version shows as `?`,
+and `outdated` will offer you the registry's version. That's deliberate: the
+tidier rule (only compare when both sides are versioned) would tell every
+existing install "current" forever, and nobody would ever hear about an update.
+Worst case you reinstall something you already had; after that the version is
+recorded and the answers are exact.
 
 Versioned packages ship a `CHANGELOG` (at `/sys/lib/pac9/changelog/<name>`), so
 `pac9 changelog <name>` works offline and answers "why would I upgrade?".

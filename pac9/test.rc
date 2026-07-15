@@ -75,10 +75,20 @@ pac9 upgrade pac9v1
 if(! grep -s '^pac9v1 .* 0.2.0$' $man) fail 'upgrade did not record the new version'
 if(pac9 outdated | grep -s '^pac9v1') fail 'still outdated after upgrade'
 
-# an UNVERSIONED package must never be reported outdated: with no version on
-# either side there is nothing to compare, and nagging a reinstall would be a lie
+# a package the REGISTRY doesn't version is never outdated — nothing to compare
 echo 'pac9u1 - - ' >>$man
-if(pac9 outdated | grep -s '^pac9u1') fail 'unversioned package reported outdated'
+if(pac9 outdated | grep -s '^pac9u1') fail 'registry-unversioned package reported outdated'
+
+# but an install with NO recorded version IS outdated once the registry names
+# one ('?' -> 0.2.0). This is the grandfathered case — every package installed
+# before versioning existed. If this reports "current", the whole feature is dead
+# on arrival for existing users, which is exactly the bug this pins down.
+awk '$1!=n' 'n=pac9v1' $man >$man.tmp
+mv $man.tmp $man
+echo 'pac9v1 - -' >>$man
+if(! pac9 outdated | grep -s '^pac9v1.*\?.*0.2.0') fail 'unversioned install not offered the versioned release'
+pac9 upgrade pac9v1
+if(! grep -s '^pac9v1 .* 0.2.0$' $man) fail 'upgrade from unversioned did not record the version'
 
 # changelog: present -> printed; absent -> non-zero exit
 mkdir -p /sys/lib/pac9/changelog

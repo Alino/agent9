@@ -270,16 +270,28 @@ fn cmd_list {
 }
 
 # outdated -> print "<name> <installed> <registry>" for each package whose
-# registry version differs from what's installed. Unversioned either side is
-# skipped: with no version to compare, "outdated" is unanswerable — saying
-# nothing beats guessing and nagging a reinstall of a package that is current.
+# registry version differs from what's installed.
+#
+# An install with NO recorded version (installed before versions existed, shown
+# as '?') counts as outdated once the REGISTRY names one: "your install predates
+# versioning, 0.2.0 is current" is useful and actionable. The stricter rule —
+# skip unless both sides are versioned — looks tidier but makes the whole feature
+# dead on arrival: every package installed before this change would silently
+# report "current" forever and its owner would never hear about an update. The
+# cost is one possibly-redundant reinstall, after which the version is recorded
+# and every later answer is exact.
+#
+# A package the registry doesn't version is still skipped — there is genuinely
+# nothing to compare against.
 fn outdated_list {
 	if(! test -f $manifest)
 		exit
 	for(n in `{awk '{print $1}' $manifest}){
 		iv=`{installed_version $n}
 		rv=`{registry_version $n}
-		if(! ~ $iv - && ! ~ $rv - && ! ~ $iv $rv)
+		if(~ $iv -)
+			iv='?'
+		if(! ~ $rv - && ! ~ $iv $rv)
 			echo $n $iv $rv
 	}
 }
@@ -307,6 +319,8 @@ fn cmd_upgrade {
 	for(p in $names){
 		iv=`{installed_version $p}
 		rv=`{registry_version $p}
+		if(~ $iv -)
+			iv='?'    # installed before versions existed
 		if(~ $iv $rv && ! ~ $rv -){
 			echo 'pac9: '$p' is already '$rv
 		}
