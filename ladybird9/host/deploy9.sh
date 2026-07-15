@@ -68,9 +68,12 @@ for cand in "$BUILD/share/Lagom" "$BUILD/Lagom/share/Lagom"; do
 done
 if [ -n "$LAGOM" ]; then
     tmptar="$LB9/_out/lagom-res.tar.gz"
-    tar -C "$LAGOM/.." -czf "$tmptar" "$(basename "$LAGOM")"
+    # COPYFILE_DISABLE: keep macOS from injecting AppleDouble ._* files (the
+    # font scanner would try to parse them as TTFs). Plan 9 tar reads stdin as
+    # /fd/0, NOT "-".
+    COPYFILE_DISABLE=1 tar -C "$LAGOM/.." -czf "$tmptar" "$(basename "$LAGOM")"
     ship "$tmptar" "$PREFIX/share/Lagom.tar.gz"
-    rc "cd $PREFIX/share && gunzip < Lagom.tar.gz | tar xf - && rm Lagom.tar.gz"
+    rc "cd $PREFIX/share && gunzip < Lagom.tar.gz | tar xf /fd/0 && rm Lagom.tar.gz"
     echo "  resources <- $LAGOM"
 else
     echo "  WARN: no built share/Lagom found; resources missing"

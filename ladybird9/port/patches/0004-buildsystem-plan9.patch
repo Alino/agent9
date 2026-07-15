@@ -344,6 +344,22 @@ index 3952280eb5..7817c7512e 100644
  elseif (APPLE)
      set(_possible_guis "AppKit" "Qt")
      set(_default_gui "AppKit")
+diff --git a/UI/cmake/ResourceFiles.cmake b/UI/cmake/ResourceFiles.cmake
+index 99d21fc6ab..b6bba481a8 100644
+--- a/UI/cmake/ResourceFiles.cmake
++++ b/UI/cmake/ResourceFiles.cmake
+@@ -1,6 +1,11 @@
+ set(FONTS
+     NotoEmoji.ttf
+     SerenitySans-Regular.ttf
++    # ladybird9: SerenitySans has no monospace; without a fixed-width family
++    # FontPlugin's VERIFY(m_default_fixed_width_font) aborts WebContent. Other
++    # platforms get one from fontconfig/system dirs; Plan 9 has none, so bundle
++    # DejaVu Sans Mono (its internal name is in the monospace fallback list).
++    DejaVuSansMono.ttf
+ )
+ list(TRANSFORM FONTS PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/fonts/")
+ 
 diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
 index caa5dadebd..0bc6ca3616 100644
 --- a/Utilities/CMakeLists.txt

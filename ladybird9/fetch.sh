@@ -42,3 +42,11 @@ if ls "$HERE"/port/patches/*.patch >/dev/null 2>&1; then
 		git apply --index "$p" || { echo "PATCH FAILED: $p" >&2; exit 1; }
 	done
 fi
+
+# Binary assets can't live in a source patch. Bundled fonts: Plan 9 has no
+# fontconfig and SerenitySans has no monospace, so ResourceFiles.cmake (patch
+# 0004) references DejaVuSansMono.ttf — drop it in after patching.
+if [ -d "$HERE/port/assets/fonts" ]; then
+	cp "$HERE"/port/assets/fonts/*.ttf "$VENDOR/ladybird/Base/res/fonts/"
+	echo "copied bundled fonts: $(ls "$HERE"/port/assets/fonts/)"
+fi
