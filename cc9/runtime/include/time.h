@@ -15,6 +15,10 @@ typedef void *locale_t;
 extern "C" {
 #endif
 time_t time(time_t *); clock_t clock(void);
+/* nanosleep lives in <time.h> per POSIX (it's implemented in pthread.c, which
+ * is why it was only ever declared in <pthread.h> — hosted code that sleeps
+ * without touching threads never saw it). */
+int nanosleep(const struct timespec *, struct timespec *);
 double difftime(time_t, time_t); time_t mktime(struct tm *);
 void tzset(void);
 char *asctime(const struct tm *); char *ctime(const time_t *);
