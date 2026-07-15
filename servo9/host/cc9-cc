@@ -1,0 +1,115 @@
+#!/bin/bash
+# cc9-cc / cc9-c++ — a cc(1)-shaped front end for the cc9 toolchain.
+#
+# cc9/host/cc9 is a one-shot "build this file and run it" driver; a configure
+# script needs a compiler it can pass arbitrary flags to (-c -o -I -D -E, and
+# link steps for conftest binaries). This is that compiler. Symlink/copy as
+# cc9-c++ (or invoke with argv[0] ending in ++) to get the C++ driver.
+#
+# Link steps produce a *SysV ELF*, not a Plan 9 a.out — configure only needs
+# link success, and elf2aout runs later on the real artifacts. Cross-compiling
+# means configure never tries to execute what it links.
+set -uo pipefail
+
+CC9="${CC9_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../cc9" && pwd)}"
+LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
+LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-thr/include/c++/v1}"
+LLD="${CC9_LLD:-$(brew --prefix lld 2>/dev/null)/bin/ld.lld}"
+INC="$CC9/runtime/include"
+LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
+SHIM="${CC9_SHIM_INC:-}"     # optional extra -isystem (per-port shims)
+
+case "${0##*/}" in
+  *++|*c++*|*cxx*) CXX=1 ;;
+  *) CXX=0 ;;
+esac
+
+# Target + ABI flags every cc9 TU needs. Kept identical to ssl9/gl9's proven set.
+# Include order is load-bearing: libc++'s own <ctype.h>/<math.h>/... must be
+# found BEFORE cc9's runtime headers, or libc++ #errors out. Hence LIBCXX and
+# any port shim precede $INC.
+FLAGS=(--target=x86_64-unknown-none -nostdlib
+       -femulated-tls -fno-pic -mno-red-zone -funwind-tables
+       -D__plan9__)
+
+if [ "$CXX" = 1 ]; then
+  DRIVER="$LLVM/clang++"
+  FLAGS+=(-nostdinc++ -isystem "$LIBCXX" -fexceptions -frtti
+          -D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME)
+else
+  DRIVER="$LLVM/clang"
+fi
+
+[ -n "$SHIM" ] && FLAGS+=(-isystem "$SHIM")
+FLAGS+=(-isystem "$INC")
+
+# Drop any caller-supplied target. cc-rs derives one from cargo's TARGET, which
+# for us is the custom triple `x86_64-unknown-plan9` — a name clang does not know,
+# and it would win over ours by appearing later on the command line. This wrapper
+# IS the plan9 target; the freestanding `none` triple plus cc9's runtime is what
+# that means in clang terms.
+argv=()
+skip_next=""
+for a in "$@"; do
+  if [ -n "$skip_next" ]; then skip_next=""; continue; fi
+  case "$a" in
+    --target=*) continue ;;
+    -target) skip_next=1; continue ;;
+    *) argv+=("$a") ;;
+  esac
+done
+set -- ${argv[@]+"${argv[@]}"}
+
+# Does this invocation link? (no -c/-E/-S and no -print-*/-dumpmachine query)
+links=1
+for a in "$@"; do
+  case "$a" in
+    -c|-E|-S|-print-*|-dumpmachine|-dumpversion|--version|-M|-MM) links=0 ;;
+  esac
+done
+
+if [ "$links" != 1 ]; then
+  exec "$DRIVER" "${FLAGS[@]}" "$@"
+fi
+
+# --- link path -------------------------------------------------------------
+# clang's driver can't link for --target=x86_64-unknown-none on a macOS host:
+# it falls back to the Darwin/gcc toolchain and emits -arch/-syslibroot. cc9's
+# own driver sidesteps this by invoking ld.lld directly; so do we. Split argv
+# into sources (compile first), objects/libs, and linker-relevant flags.
+srcs=(); objs=(); ldflags=(); out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "-o" ]; then out="$a"; prev=""; continue; fi
+  case "$a" in
+    -o) prev="-o" ;;
+    *.c|*.cc|*.cpp|*.cxx|*.C|*.m|*.mm) srcs+=("$a") ;;
+    *.o|*.a|*.lo) objs+=("$a") ;;
+    -l*|-L*) ldflags+=("$a") ;;
+    -Wl,*) ldflags+=("${a#-Wl,}") ;;
+    -*) ;;   # compile-only flags: already applied via FLAGS/CFLAGS below
+  esac
+done
+[ -n "$out" ] || out="a.out"
+
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+for s in ${srcs[@]+"${srcs[@]}"}; do
+  o="$tmp/$(basename "$s").o"
+  # Re-pass the original argv minus link-only bits so -D/-I/-std survive.
+  cargs=(); skip=""
+  for a in "$@"; do
+    if [ -n "$skip" ]; then skip=""; continue; fi
+    case "$a" in
+      -o) skip=1 ;;
+      -l*|-L*|-Wl,*) ;;
+      *.c|*.cc|*.cpp|*.cxx|*.C|*.o|*.a|*.lo) ;;
+      *) cargs+=("$a") ;;
+    esac
+  done
+  "$DRIVER" "${FLAGS[@]}" ${cargs[@]+"${cargs[@]}"} -c "$s" -o "$o" || exit $?
+  objs+=("$o")
+done
+
+exec "$LLD" -o "$out" ${objs[@]+"${objs[@]}"} \
+  --start-group "$LIB" "$LIBM" --end-group \
+  ${ldflags[@]+"${ldflags[@]}"} -T "$LDS" -static -nostdlib

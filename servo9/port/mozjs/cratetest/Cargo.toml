@@ -1,0 +1,26 @@
+[package]
+name = "mozjs-crate-test"
+version = "0.1.0"
+edition = "2021"
+
+# The gate: does the layer Servo actually imports build for plan9?
+# Servo's Cargo.toml line is:
+#   js = { package = "mozjs", version = "=0.18", default-features = false,
+#          features = ["intl", "libz-sys"] }
+# so match it exactly rather than a configuration Servo never uses.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+js = { package = "mozjs", version = "=0.18", default-features = false, features = ["intl", "libz-sys"] }
+
+[patch.crates-io]
+# Our patched SpiderMonkey (plan9 configure support, GC malloc-pages, JIT
+# reserve/commit, no-signal-handler wasm). mozjs pulls mozjs_sys from crates.io
+# by default, which would silently build the UNPATCHED engine.
+mozjs_sys = { path = "../../../_work/mozjs_sys" }
+# The libc crate has no plan9 target; pyo39 already grew a plan9 module.
+libc = { path = "../../../../pyo39/vendor/libc" }
+
+[profile.release]
+panic = "abort"

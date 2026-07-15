@@ -24,6 +24,15 @@ NPIX = W * H
 ALL = ["01_clear_color", "02_triangle", "03_shaded_triangle",
        "04_textured_quad", "05_instanced_quads", "06_depth_blend"]
 
+# Self-checking corpus programs: they judge themselves and print "<name> N/N PASS"
+# instead of writing a PPM, so there is no golden to diff — the pass/fail is in
+# their own output. They cover the paths a golden image cannot: these render to an
+# FBO (render-to-texture) rather than to the default framebuffer, which is what
+# surfman/WebRender actually do and what nothing in ALL ever exercised.
+# They need the EGL seam linked in, hence EXTRA_SRC below.
+SELFCHECK = ["07_fbo_readback", "08_fbo_big"]
+EXTRA_SRC = {n: ["port/plan9/egl/gl9egl.c"] for n in SELFCHECK}
+
 
 def vmrc(cmd, wait=12):
     try:
@@ -54,8 +63,9 @@ def serve():
 
 
 def link(name):
+    extra = [os.path.join(GL9, s) for s in EXTRA_SRC.get(name, [])]
     subprocess.run(["python3", os.path.join(GL9, "host", "build-gl9.py"),
-                    "link", os.path.join(CORPUS, name + ".c")],
+                    "link", os.path.join(CORPUS, name + ".c")] + extra,
                    check=True, capture_output=True, text=True)
     return os.path.join(OUT, name + ".aout")
 
@@ -90,6 +100,27 @@ def run(name):
     return "timeout"
 
 
+def run_selfcheck(name):
+    """A self-checking program: no PPM, no golden — its own last line is the verdict.
+
+    Kept separate from run() because that one waits for the glharness "SIG" marker,
+    which these never print, so it would sit through the whole 4-minute timeout."""
+    vmrc(f"rm -f /tmp/{name}.log")
+    vmrc(f"chmod +x /tmp/{name}.aout; GALLIUM_NOSSE=1; "
+         f"/tmp/{name}.aout >/tmp/{name}.log >[2=1] &", 8)
+    for _ in range(48):
+        log = vmrc(f"cat /tmp/{name}.log >[2]/dev/null", 12)
+        for line in log.splitlines():
+            # the summary line, e.g. "07_fbo_readback 6/6 PASS"
+            if line.startswith(name + " ") and (line.endswith("PASS") or line.endswith("FAIL")):
+                return ("pass" if line.endswith("PASS") else "fail"), line.strip()
+        if "fault" in log or "suicide" in log:
+            last = log.strip().splitlines()
+            return "fault", (last[-1] if last else "?")
+        time.sleep(5)
+    return "timeout", "?"
+
+
 def fetch_ppm(name):
     os.makedirs(CAP, exist_ok=True)
     dst = os.path.join(CAP, name + ".ppm")
@@ -118,7 +149,7 @@ def diff(name, cap):
 
 
 def main():
-    names = sys.argv[1:] or ALL
+    names = sys.argv[1:] or (ALL + SELFCHECK)
     serve()
     results = []
     for name in names:
@@ -128,6 +159,14 @@ def main():
         r = {"name": name, "size": size}
         if not transfer(name, size):
             r["status"] = "transfer_failed"; results.append(r); print("  transfer failed"); continue
+
+        if name in SELFCHECK:
+            st, detail = run_selfcheck(name)
+            r.update(kind="selfcheck", status=st, detail=detail)
+            results.append(r)
+            print("  " + detail)
+            continue
+
         st = run(name)
         if st != "ok":
             r["status"] = st; results.append(r); continue

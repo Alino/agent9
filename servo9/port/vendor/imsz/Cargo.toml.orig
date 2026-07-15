@@ -1,0 +1,30 @@
+[package]
+name = "imsz"
+description = "Get width and height from an image file reading as few bytes as possible."
+version = "0.4.1"
+authors = [
+    "Paulo Scardine <paulo@scardine.com.br>",
+    "Mathias Panzenböck <grosser.meister.morti@gmx.net>"
+]
+repository = "https://github.com/panzi/imsz"
+documentation = "https://panzi.github.io/imsz/imsz/"
+license = "MIT"
+edition = "2021"
+keywords = [ "image", "metadata" ]
+categories = [ "multimedia::images" ]
+exclude = [
+    "/testdata", "/gentest.py", "/tmp", ".*", "perf.data", "perf.data.old",
+    "c/doxygen-awesome-css", "c/Doxygen", "c/doxygen-msearchbox-fix.css",
+    "c/header.html", "c/target"
+]
+rust-version = "1.59"
+
+[lib]
+name = "imsz"
+path = "src/lib.rs"
+
+[profile.release]
+strip = "debuginfo"
+
+[dev-dependencies]
+clap = { version = "3.1.8", features = ["derive"] }

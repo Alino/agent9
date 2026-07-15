@@ -52,7 +52,7 @@ static int handoff_sem = 0;       /* child signals it has consumed the handoff *
  * dead entries — Plan 9 reuses pids, and a "kill" note aimed at a finished
  * thread's recycled pid murders an innocent process (this killed webfs and
  * rio's wsys srv during nvim sessions). */
-static struct { int used; int dead; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; int errno_v; } th_tab[MAXTH];
+static struct { int used; int dead; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; int errno_v; char errstr_v[160]; int errstr_errno_v; } th_tab[MAXTH];
 static int th_lock = 1;
 
 /* Per-thread errno slot, resolved by %rsp stack-range like cur_pid (lock-free,
@@ -66,6 +66,34 @@ int *cc9_thread_errno_slot(void){
 		if(!th_tab[i].used) continue;
 		__asm__ volatile("":::"memory");
 		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return &th_tab[i].errno_v;
+	}
+	return 0;
+}
+
+/* The errstr text that goes with that errno, resolved the same way.
+ *
+ * It has to be per-thread for the same reason errno is. It used to be one
+ * process-global buffer guarded by "the caller compares the stashed errno to the
+ * one it holds", which does not work: two unrelated failures on two threads
+ * routinely share an errno (ENOENT), the guard passes, and the caller prints a
+ * DIFFERENT thread's error text. Servo reported a missing font directory as
+ * "file does not exist: '.../reg.sqlite-wal'" — a real file, from another
+ * thread, named in an error that had nothing to do with it. A misleading message
+ * is worse than a vague one, because it sends the reader somewhere else. */
+/* Hands back the slot's capacity too: the buffer lives here but is written in
+ * fs.c, and a bare char* would leave its size duplicated in two translation
+ * units with nothing to keep them in step — one edit apart from overflowing the
+ * whole thread table. */
+char *cc9_thread_errstr_slot(int **eno_out, int *cap_out){
+	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
+	for(int i=0;i<MAXTH;i++){
+		if(!th_tab[i].used) continue;
+		__asm__ volatile("":::"memory");
+		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi){
+			if(eno_out) *eno_out = &th_tab[i].errstr_errno_v;
+			if(cap_out) *cap_out = (int)sizeof th_tab[i].errstr_v;
+			return th_tab[i].errstr_v;
+		}
 	}
 	return 0;
 }

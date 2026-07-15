@@ -1,0 +1,15 @@
+[package]
+name = "plan9-getrandom"
+version = "0.1.0"
+edition = "2021"
+
+# getrandom has no plan9 target and refuses to build ("target is not supported").
+# Its escape hatch is `--cfg getrandom_backend="custom"` plus a Rust symbol the
+# embedder provides. This crate is that symbol. Anything linking a final binary
+# for plan9 must depend on it, or the link fails with an undefined
+# __getrandom_v03_custom.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+getrandom = "0.4"

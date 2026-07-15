@@ -345,8 +345,28 @@ char *strerror(int e){
 	case 22: m="Invalid argument"; break;          case 24: m="Too many open files"; break;
 	case 28: m="No space left on device"; break;   case 32: m="Broken pipe"; break;
 	case 34: m="Numerical result out of range"; break;
+	/* Everything the runtime can actually RETURN needs a name here, or callers
+	 * surface "Unknown error 39" to users for an error we chose deliberately.
+	 * These are the rest of what fs.c's errstr table and net9.c hand back. */
+	case 18: m="Invalid cross-device link"; break; case 25: m="Inappropriate ioctl for device"; break;
+	case 36: m="File name too long"; break;        case 38: m="Function not implemented"; break;
+	case 39: m="Directory not empty"; break;       case 40: m="Too many levels of symbolic links"; break;
+	case 88: m="Socket operation on non-socket"; break;
+	case 89: m="Destination address required"; break;
+	case 90: m="Message too long"; break;          case 93: m="Protocol not supported"; break;
+	case 95: m="Operation not supported"; break;   case 97: m="Address family not supported by protocol"; break;
+	case 98: m="Address already in use"; break;    case 104: m="Connection reset by peer"; break;
+	case 106: m="Transport endpoint is already connected"; break;
+	case 107: m="Transport endpoint is not connected"; break;
+	case 110: m="Connection timed out"; break;     case 111: m="Connection refused"; break;
+	case 113: m="No route to host"; break;         case 115: m="Operation now in progress"; break;
 	}
-	if(m){ char*d=buf; while(*m)*d++=*m++; *d=0; return buf; }
+	/* Return the literal directly: it outlives any caller, needs no copy, and —
+	 * unlike the shared `buf` — cannot be torn by another thread calling strerror
+	 * at the same time. `buf` is only for the unknown-errno fallback, which is the
+	 * one case that has to be formatted. (The copy this replaces was also
+	 * unbounded, and several names below are longer than buf.) */
+	if(m) return (char *)m;
 	char *d=buf; const char*p="Unknown error "; while(*p)*d++=*p++;
 	d=utoa_((unsigned long long)(e<0?-e:e), d, 10); *d=0; return buf;
 }

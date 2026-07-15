@@ -1,0 +1,75 @@
+name: Rust
+
+on:
+  push:
+    branches-ignore:
+      - gh-readonly-queue/**
+      - main
+  pull_request:
+  merge_group:
+    branches: [main]
+  schedule:
+    # Runs at 04:30, every Saturday
+    - cron: "30 4 * * 6"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-22.04", "macos-latest"]
+        cargo-options: ["", '--features "dynamic_lib"']
+        include:
+          - os: "windows-latest"
+            cargo-options: '--features "egl"'
+          - os: "windows-latest"
+            cargo-options: '--features "build_dlls"'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - name: Install LLVM and Clang
+        if: ${{ !contains(matrix.os, 'macos') }}
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "20"
+      - name: Run tests
+        run: cargo test --verbose ${{ matrix.cargo-options }}
+
+  linux-cross-compile:
+    name: linux (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+    container: ghcr.io/servo/cross-${{ matrix.target }}:main
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: apt update && apt install -y libx11-dev
+      - run: cargo test --target ${{ matrix.target }}
+
+  build_result:
+    name: Result
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - "build"
+      - "linux-cross-compile"
+
+    steps:
+      - name: Mark the job as successful
+        run: exit 0
+      - name: Mark the job as unsuccessful
+        run: exit 1
+        if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}

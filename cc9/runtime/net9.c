@@ -510,3 +510,108 @@ const char *gai_strerror(int e) {
 	}
 	return "resolver error";
 }
+
+/* ---- sendmsg / recvmsg -----------------------------------------------------
+ *
+ * These were ENOSYS stubs in posix_llvm.c (Plan 9 has no cmsg, so the original
+ * shim refused outright). But socket2 — and therefore anything above it — uses
+ * them for ordinary VECTORED I/O, which /net does support: the msghdr's iovec
+ * array maps straight onto readv/writev, and msg_name onto sendto/recvfrom.
+ *
+ * What genuinely cannot work is ancillary data (msg_control): SCM_RIGHTS fd
+ * passing has no /net equivalent — Plan 9 passes channels via /srv, not over a
+ * connection. A caller asking for that gets EOPNOTSUPP rather than a silent
+ * drop, which would look like a lost fd at the far end.
+ */
+
+extern long readv(int, const struct iovec *, int);
+extern long writev(int, const struct iovec *, int);
+
+/* Total bytes across an iovec array, or -1 on overflow. */
+static long iov_total(const struct iovec *iov, int n) {
+	unsigned long t = 0;
+	for (int i = 0; i < n; i++) {
+		unsigned long l = iov[i].iov_len;
+		if (t + l < t) return -1;
+		t += l;
+	}
+	return (long)t;
+}
+
+long sendmsg(int fd, const struct msghdr *m, int flags) {
+	if (!m) { errno = EINVAL; return -1; }
+	if (m->msg_control && m->msg_controllen) {
+		/* Ancillary data (SCM_RIGHTS et al). Plan 9 passes channels through
+		 * /srv, not inside a connection; there is nothing to translate to. */
+		errno = EOPNOTSUPP;
+		return -1;
+	}
+	const struct iovec *iov = m->msg_iov;
+	int niov = m->msg_iovlen;
+	if (niov < 0 || (niov > 0 && !iov)) { errno = EINVAL; return -1; }
+
+	ns_ent *e = ns_get(fd);
+	if (!e) { errno = ENOTSOCK; return -1; }
+
+	/* Unconnected datagram with a destination: sendto needs one flat buffer,
+	 * because the /net header must precede the payload in a single write. */
+	if (m->msg_name && m->msg_namelen && e->type == SOCK_DGRAM && e->state != 3) {
+		long total = iov_total(iov, niov);
+		if (total < 0) { errno = EINVAL; return -1; }
+		char *tmp = malloc((unsigned long)total ? (unsigned long)total : 1);
+		if (!tmp) { errno = ENOMEM; return -1; }
+		long off = 0;
+		for (int i = 0; i < niov; i++) {
+			memcpy(tmp + off, iov[i].iov_base, iov[i].iov_len);
+			off += (long)iov[i].iov_len;
+		}
+		long r = sendto(fd, tmp, (unsigned long)total, flags,
+		                m->msg_name, m->msg_namelen);
+		free(tmp);
+		return r;
+	}
+
+	/* Connected (or stream): the iovec array is exactly writev's argument. */
+	return writev(fd, iov, niov);
+}
+
+long recvmsg(int fd, struct msghdr *m, int flags) {
+	if (!m) { errno = EINVAL; return -1; }
+	struct iovec *iov = m->msg_iov;
+	int niov = m->msg_iovlen;
+	if (niov < 0 || (niov > 0 && !iov)) { errno = EINVAL; return -1; }
+
+	/* No ancillary data is ever produced; say so rather than leave the
+	 * caller's controllen holding a stale value it might parse. */
+	m->msg_controllen = 0;
+	m->msg_flags = 0;
+
+	ns_ent *e = ns_get(fd);
+	if (!e) { errno = ENOTSOCK; return -1; }
+
+	/* Datagram where the caller wants the sender's address: recvfrom strips the
+	 * /net Udphdr for us, so read flat and scatter afterwards. */
+	if (m->msg_name && m->msg_namelen && e->type == SOCK_DGRAM && e->state != 3) {
+		long total = iov_total(iov, niov);
+		if (total < 0) { errno = EINVAL; return -1; }
+		char *tmp = malloc((unsigned long)total ? (unsigned long)total : 1);
+		if (!tmp) { errno = ENOMEM; return -1; }
+		socklen_t nl = m->msg_namelen;
+		long r = recvfrom(fd, tmp, (unsigned long)total, flags, m->msg_name, &nl);
+		if (r < 0) { free(tmp); return -1; }
+		m->msg_namelen = nl;
+		long off = 0, left = r;
+		for (int i = 0; i < niov && left > 0; i++) {
+			unsigned long take = iov[i].iov_len < (unsigned long)left
+			                   ? iov[i].iov_len : (unsigned long)left;
+			memcpy(iov[i].iov_base, tmp + off, take);
+			off += (long)take;
+			left -= (long)take;
+		}
+		free(tmp);
+		return r;
+	}
+
+	if (m->msg_name) m->msg_namelen = 0;
+	return readv(fd, iov, niov);
+}

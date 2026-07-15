@@ -1,0 +1,9 @@
+# Build output only — nothing here is source.
+_out/
+target/
+
+# The patched mozjs_sys working tree Cargo.toml's [patch] points at
+# (~1.4G: a full SpiderMonkey checkout + its build). The plan9 patches live as
+# edits inside it; too large to commit as-is. Rebuild: see the servo9 notes in
+# the port memory / mozjs harvest recipe.
+_work/

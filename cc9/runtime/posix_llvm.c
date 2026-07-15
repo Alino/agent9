@@ -788,8 +788,8 @@ int socketpair(int af, int type, int proto, int sv[2]) {
 	extern int pipe2(int[2], int);
 	return pipe2(sv, type & (0x1000|0x2000) /*SOCK_NONBLOCK|SOCK_CLOEXEC*/);
 }
-long sendmsg(int a, const void *m, int f) { (void)a;(void)m;(void)f; errno = 88; return -1; }
-long recvmsg(int a, void *m, int f) { (void)a;(void)m;(void)f; errno = 88; return -1; }
+/* sendmsg/recvmsg moved to net9.c and are REAL now (vectored I/O over /net;
+ * only ancillary data — SCM_RIGHTS — is refused, with EOPNOTSUPP). */
 
 /* ---- decorative termios (see include/termios.h) ---- */
 struct cc9_termios { unsigned int i, o, c, l; unsigned char cc[32]; unsigned int is, os; };

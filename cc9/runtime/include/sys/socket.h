@@ -26,6 +26,11 @@ typedef unsigned short sa_family_t;
 #define SO_OOBINLINE 10
 #define SO_LINGER    13
 #define SO_REUSEPORT 15
+/* Linux's values. /net has no per-socket timeout knob, so net9's setsockopt
+ * rejects these — declared because socket2 references them unconditionally.
+ * Keep in sync with pyo39/vendor/libc/src/plan9.rs. */
+#define SO_RCVTIMEO  20
+#define SO_SNDTIMEO  21
 #define SO_TYPE      3
 #define SCM_RIGHTS   1
 #define MSG_NOSIGNAL 0x4000

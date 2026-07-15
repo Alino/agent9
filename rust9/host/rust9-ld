@@ -35,12 +35,32 @@ while [ $# -gt 0 ]; do
     *rpath*) shift ;;                   # -rpath=/-rpath,/-Wl,-rpath,$ORIGIN,...: drop any form
     -z) shift 2 ;;                      # -z <keyword> (e.g. ,origin from rpath): irrelevant, static+plan9.ld
     -Wl,*) args+=("${1#-Wl,}"); shift ;;
+    # C++ crates (mozjs, mozangle, harfbuzz, fontsan, ...) emit -lstdc++ for the
+    # GNU C++ runtime. cc9's C++ runtime IS libcc9cxx.a (libc++ + libc++abi +
+    # libunwind), which we already put in the link group below — so drop the
+    # request rather than hunt for a libstdc++.a that does not and should not
+    # exist here.
+    -lstdc++|-lc++) shift ;;
+    # Likewise libm/libc/libpthread: cc9 provides these in libcc9cxx.a/libcc9m.a.
+    -lm|-lc|-lpthread|-ldl|-lrt) shift ;;
     *) args+=("$1"); shift ;;
   esac
 done
 [ -n "$out" ] || { echo "rust9-ld: no -o output in args" >&2; exit 2; }
 
+# Optional GL/EGL substrate (gl9: Mesa + the gl9egl seam). Opt-in via RUST9_GL9,
+# so nothing else that uses rust9-ld pays for it. Anything calling egl*/gl* —
+# servo9's surfman backend, for one — needs these in the link; they are static,
+# because Plan 9 has no dynamic linker.
+GL9_OBJS=()
+if [ -n "${RUST9_GL9:-}" ]; then
+  for f in "${RUST9_GL9}/gl9egl.app.o" "${RUST9_GL9}/libgl9mesa.a"; do
+    [ -f "$f" ] || { echo "rust9-ld: RUST9_GL9 set but $f missing" >&2; exit 2; }
+    GL9_OBJS+=("$f")
+  done
+fi
+
 elf="$out.elf"
 "$LLD" -o "$elf" "${args[@]}" -T "$LDS" -static -nostdlib \
-  --start-group "$SHIM_O" "$LIB" "$LIBM" --end-group
+  --start-group "$SHIM_O" ${GL9_OBJS[@]+"${GL9_OBJS[@]}"} "$LIB" "$LIBM" --end-group
 python3 "$ELF2AOUT" "$elf" "$out" >&2

@@ -9,8 +9,10 @@
  * Enough of EGL 1.4/1.5 for a glutin-style client: get display, init, choose one
  * RGBA8888/D24/S8 config, create context, create a window/pbuffer surface, make
  * current, swap, get-proc-address. Not implemented: multiple configs, shared
- * contexts across displays, pbuffer readback, EGLImage, sync objects. */
+ * contexts across displays, pbuffer readback, sync objects. EGLImage: only the
+ * EGL_GL_TEXTURE_2D_KHR form, and only as a handle — see eglCreateImageKHR. */
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GL/osmesa.h>
 #include <GL/gl.h>
 #include "gl9egl_platform.h"
@@ -20,13 +22,14 @@ extern void OSMesaGL9SetDamage(int x, int y, int w, int h);
 extern void OSMesaGL9ClearDamage(void);
 
 extern long write(int, const void *, long);
+extern void abort(void);
 extern void *malloc(unsigned long);
 extern void free(void *);
 extern void *memcpy(void *, const void *, unsigned long);
 extern void *memmove(void *, const void *, unsigned long);
 
 /* one process-wide display, one config. */
-struct gl9_ctx  { OSMesaContext os; };
+struct gl9_ctx  { OSMesaContext os; EGLint major, minor; };
 struct gl9_surf { int w, h, fd; unsigned char *buf; int window; };
 
 static int g_inited;
@@ -114,17 +117,59 @@ eglGetConfigAttrib(EGLDisplay dpy, EGLConfig cfg, EGLint attr, EGLint *val)
 	return EGL_TRUE;
 }
 
+/* Honours the requested version/profile instead of ignoring `attrs`.
+ *
+ * This used to be `(void)attrs` + OSMesaCreateContextExt, i.e. whatever OSMesa
+ * felt like giving. That silently lies to the client twice over: a request for a
+ * version we cannot provide (say GL 4.5) came back "successful" as a 3.3 context,
+ * and eglQueryContext then had nothing true to report. OSMesa's own contract is
+ * the EGL one — "we return a context version >= what you asked for ... otherwise
+ * null if the version/profile is not supported" — so passing the request through
+ * gets both the version and the failure right for free.
+ *
+ * Unspecified attributes keep EGL's defaults (major 1, compatibility profile),
+ * which OSMesa satisfies with the same context it always handed back. */
 EGLContext
 eglCreateContext(EGLDisplay dpy, EGLConfig cfg, EGLContext share,
 		 const EGLint *attrs)
 {
 	struct gl9_ctx *c;
 	OSMesaContext sh = share ? ((struct gl9_ctx *)share)->os : 0;
-	(void)dpy; (void)cfg; (void)attrs;
+	EGLint major = 1, minor = 0;          /* EGL defaults */
+	int profile = OSMESA_COMPAT_PROFILE;  /* EGL default is compatibility */
+	(void)dpy; (void)cfg;
+
+	for (const EGLint *a = attrs; a && *a != EGL_NONE; a += 2) {
+		switch (a[0]) {
+		/* EGL_CONTEXT_CLIENT_VERSION and EGL_CONTEXT_MAJOR_VERSION are the same
+		 * token (0x3098); the former is just the EGL 1.4 spelling. */
+		case EGL_CONTEXT_MAJOR_VERSION: major = a[1]; break;
+		case EGL_CONTEXT_MINOR_VERSION: minor = a[1]; break;
+		case EGL_CONTEXT_OPENGL_PROFILE_MASK:
+			profile = (a[1] & EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT)
+			        ? OSMESA_CORE_PROFILE : OSMESA_COMPAT_PROFILE;
+			break;
+		default: break;   /* debug/robustness flags: nothing to honour here */
+		}
+	}
+
 	c = malloc(sizeof *c);
 	if (!c) { set_err(EGL_BAD_ALLOC); return EGL_NO_CONTEXT; }
-	c->os = OSMesaCreateContextExt(OSMESA_RGBA, 24, 8, 0, sh);
+
+	const int osattrs[] = {
+		OSMESA_FORMAT,                OSMESA_RGBA,
+		OSMESA_DEPTH_BITS,            24,
+		OSMESA_STENCIL_BITS,          8,
+		OSMESA_ACCUM_BITS,            0,
+		OSMESA_PROFILE,               profile,
+		OSMESA_CONTEXT_MAJOR_VERSION, major,
+		OSMESA_CONTEXT_MINOR_VERSION, minor,
+		0
+	};
+	c->os = OSMesaCreateContextAttribs(osattrs, sh);
 	if (!c->os) { free(c); set_err(EGL_BAD_MATCH); return EGL_NO_CONTEXT; }
+	c->major = major;
+	c->minor = minor;
 	return (EGLContext)c;
 }
 
@@ -209,6 +254,106 @@ eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)
 	glViewport(0, 0, s->w, s->h);
 	cur_ctx = c;
 	cur_surf = s;
+	return EGL_TRUE;
+}
+
+/* The current-binding queries. EGL makes the current context per-thread; these
+ * report the process-wide binding that eglMakeCurrent above already keeps, so a
+ * second thread making current changes what the first one sees here.
+ * ponytail: single global binding, matching eglMakeCurrent. Make cur_ctx/cur_surf
+ * __thread if a client ever drives GL from more than one thread at a time. */
+EGLContext eglGetCurrentContext(void) { return (EGLContext)cur_ctx; }
+
+EGLDisplay
+eglGetCurrentDisplay(void)
+{
+	return cur_ctx ? GL9_DISPLAY : EGL_NO_DISPLAY;
+}
+
+EGLSurface
+eglGetCurrentSurface(EGLint readdraw)
+{
+	/* eglMakeCurrent binds draw to OSMesa and ignores read, so read and draw
+	 * are the same surface here; answer both the same way rather than claim a
+	 * separate read surface that does not exist. */
+	(void)readdraw;
+	return (EGLSurface)cur_surf;
+}
+
+/* EGLImage (EGL_KHR_image_base + EGL_KHR_gl_texture_2D_image), enough for
+ * surfman, which types these three as plain function pointers under the comment
+ * "ubiquitous extensions assumed to be present" — so a missing one is not a
+ * graceful fallback, it is a call through NULL.
+ *
+ * Only EGL_GL_TEXTURE_2D_KHR is supported, and for that target the EGLImage IS
+ * the GL texture: the handle is the texture name. That is exactly what the
+ * extension says the image is, so no bookkeeping is needed and destroy has
+ * nothing to free (the texture belongs to whoever created it). Texture names
+ * start at 1, so the handle is never NULL for a valid texture. */
+EGLImageKHR
+eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
+		  EGLClientBuffer buffer, const EGLint *attrs)
+{
+	(void)ctx; (void)attrs;   /* EGL_IMAGE_PRESERVED_KHR: we alias, never copy */
+	if(dpy != GL9_DISPLAY)            { set_err(EGL_BAD_DISPLAY);   return EGL_NO_IMAGE_KHR; }
+	if(target != EGL_GL_TEXTURE_2D_KHR){ set_err(EGL_BAD_PARAMETER); return EGL_NO_IMAGE_KHR; }
+	if(!buffer)                       { set_err(EGL_BAD_PARAMETER); return EGL_NO_IMAGE_KHR; }
+	return (EGLImageKHR)buffer;       /* the texture name, unchanged */
+}
+
+EGLBoolean
+eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image)
+{
+	(void)image;
+	if(dpy != GL9_DISPLAY){ set_err(EGL_BAD_DISPLAY); return EGL_FALSE; }
+	return EGL_TRUE;      /* the image held no state of its own */
+}
+
+/* GL_OES_EGL_image: re-point the bound texture at the image's storage.
+ *
+ * This one cannot be honoured. It must make the currently bound texture ALIAS
+ * another texture's storage, and desktop GL has no such operation before
+ * glTextureView/glCopyImageSubData (GL 4.x; softpipe here is 3.3). Copying
+ * instead would look right once and then silently go stale the next time the
+ * producer drew — a wrong frame is worse than a stopped process, and the
+ * function returns void so it cannot report failure to the caller.
+ *
+ * Nothing in a plain page reaches this: surfman only calls it from
+ * to_surface_texture, which Servo uses to composite WebGL/canvas surfaces as
+ * WebRender external images. If this fires, that is the feature that needs a
+ * real answer (make the consumer share the producer's context and hand back the
+ * producer's own texture, which for THIS image type is exactly `image`). */
+void
+glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image)
+{
+	static const char msg[] =
+	    "gl9egl: glEGLImageTargetTexture2DOES is unimplemented — GL 3.3 cannot "
+	    "alias texture storage, and copying would silently serve stale frames. "
+	    "See the comment in gl9egl.c.\n";
+	(void)target; (void)image;
+	write(2, msg, sizeof msg - 1);
+	abort();
+}
+
+EGLBoolean
+eglQueryContext(EGLDisplay dpy, EGLContext ctx, EGLint attr, EGLint *val)
+{
+	if (dpy != GL9_DISPLAY) { set_err(EGL_BAD_DISPLAY); return EGL_FALSE; }
+	if (!ctx)               { set_err(EGL_BAD_CONTEXT); return EGL_FALSE; }
+	if (!val)               return EGL_FALSE;
+	switch (attr) {
+	/* There is exactly one config (id 1, see eglGetConfigAttrib). */
+	case EGL_CONFIG_ID:             *val = 1; break;
+	case EGL_CONTEXT_CLIENT_TYPE:   *val = EGL_OPENGL_API; break;
+	/* EGL_CONTEXT_CLIENT_VERSION is the same token as EGL_CONTEXT_MAJOR_VERSION
+	 * and applies to OpenGL as well as ES, so report the version the context was
+	 * actually created with. (It answered 0 here, on the wrong belief that the
+	 * attribute was ES-only.) */
+	case EGL_CONTEXT_MAJOR_VERSION: *val = ((struct gl9_ctx *)ctx)->major; break;
+	case EGL_CONTEXT_MINOR_VERSION: *val = ((struct gl9_ctx *)ctx)->minor; break;
+	case EGL_RENDER_BUFFER:         *val = EGL_BACK_BUFFER; break;
+	default:                        set_err(EGL_BAD_ATTRIBUTE); return EGL_FALSE;
+	}
 	return EGL_TRUE;
 }
 
@@ -332,8 +477,68 @@ gl9egl_scroll(EGLSurface surf, int y0, int y1, int dy)
 	return 1;
 }
 
+/* eglGetProcAddress resolves gl9egl's OWN entry points before asking OSMesa.
+ *
+ * Forwarding straight to OSMesaGetProcAddress (as this used to) can only ever
+ * find GL functions: it knows nothing of EGL, so every eglFoo name came back
+ * NULL. Callers that look EGL up dynamically then get a null they may not check
+ * — surfman's EGL_EXTENSION_FUNCTIONS types eglCreateImageKHR as a plain fn
+ * pointer and calls it, which is a jump to 0. EGL 1.5 says this function
+ * resolves EGL, GL and extension entry points; now it does.
+ *
+ * The table is also how gl9egl's glEGLImageTargetTexture2DOES wins over Mesa's:
+ * OSMesa would happily hand back _mesa_EGLImageTargetTexture2DOES, which expects
+ * a Mesa EGLImage and would misread our handle (a bare GL texture name). Ours is
+ * checked first, so the honest failure is what callers get. */
+struct gl9_proc { const char *name; void *fn; };
+static const struct gl9_proc gl9_procs[] = {
+#define P(f) { #f, (void *)f },
+	P(eglBindAPI)
+	P(eglChooseConfig)
+	P(eglCreateContext)
+	P(eglCreateImageKHR)
+	P(eglCreatePbufferSurface)
+	P(eglCreateWindowSurface)
+	P(eglDestroyContext)
+	P(eglDestroyImageKHR)
+	P(eglDestroySurface)
+	P(eglGetConfigAttrib)
+	P(eglGetConfigs)
+	P(eglGetCurrentContext)
+	P(eglGetCurrentDisplay)
+	P(eglGetCurrentSurface)
+	P(eglGetDisplay)
+	P(eglGetError)
+	P(eglGetPlatformDisplay)
+	P(eglGetPlatformDisplayEXT)
+	P(eglGetProcAddress)
+	P(eglInitialize)
+	P(eglMakeCurrent)
+	P(eglQueryAPI)
+	P(eglQueryContext)
+	P(eglQueryString)
+	P(eglQuerySurface)
+	P(eglSwapBuffers)
+	P(eglSwapInterval)
+	P(eglTerminate)
+	P(glEGLImageTargetTexture2DOES)
+#undef P
+	{ 0, 0 }
+};
+
+static int gl9_streq(const char *a, const char *b)
+{
+	while(*a && *a == *b){ a++; b++; }
+	return *a == *b;
+}
+
 __eglMustCastToProperFunctionPointerType
 eglGetProcAddress(const char *name)
 {
+	if(!name) return 0;
+	for(const struct gl9_proc *p = gl9_procs; p->name; p++)
+		if(gl9_streq(p->name, name))
+			return (__eglMustCastToProperFunctionPointerType)p->fn;
+	/* Not ours — a GL entry point, which is OSMesa's to answer. */
 	return (__eglMustCastToProperFunctionPointerType)OSMesaGetProcAddress(name);
 }

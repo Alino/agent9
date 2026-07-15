@@ -23,6 +23,11 @@ extern void *malloc(size_t); extern void free(void *);
 extern void *memset(void *, int, size_t);
 extern size_t strlen(const char *);
 
+/* Defined below; declared here because open() (above them) must map its errno
+ * from the kernel's error string rather than guess. */
+int cc9_errno_from_errstr(void);
+int cc9_errno_from_errstr_or(int dflt);
+
 #define OTRUNC 16
 #define DMDIR  0x80000000UL
 
@@ -88,7 +93,13 @@ int open(const char *path, int flags, ...){
 			if(fd < 0) fd = n9_create(path, omode, perm);   /* absent -> create */
 		}
 	} else fd = n9_open(path, omode);
-	if(fd < 0){ errno = (flags & O_CREAT) ? EACCES : ENOENT; return -1; }
+	/* Map the real error rather than assert one. This used to be
+	 * `errno = (flags & O_CREAT) ? EACCES : ENOENT`, i.e. EVERY plain open that
+	 * failed claimed the file did not exist — a permission denial, a non-directory
+	 * component, or opening a directory for writing all came back ENOENT, and the
+	 * errstr was never stashed so the caller could not even see the real message.
+	 * Callers branch on this (std::fs, libc++ filesystem), so it has to be true. */
+	if(fd < 0){ errno = cc9_errno_from_errstr_or((flags & O_CREAT) ? EACCES : ENOENT); return -1; }
 	return (int)fd;
 }
 int openat(int dfd, const char *path, int flags, ...){ char b[1024]; return open(at_path(dfd,path,b,sizeof b), flags); }
@@ -99,11 +110,16 @@ extern long cc9_poll_read(int, void *, long);
 extern void cc9_poll_onclose(int);
 extern void cc9_net_onclose(int);
 int close(int fd){ cc9_poll_onclose(fd); cc9_net_onclose(fd); return n9_close(fd) < 0 ? -1 : 0; }
+/* EIO is the FALLBACK, not the answer. These carry socket traffic (net9.c reads
+ * and writes /net data fds through them), where the difference between a peer
+ * hangup (ECONNRESET) and a generic I/O error decides whether the caller retries,
+ * reports a clean disconnect, or gives up — and "interrupted" must surface as
+ * EINTR so retry loops actually retry. */
 long read(int fd, void *buf, size_t n){
 	if(cc9_poll_owned(fd)) return cc9_poll_read(fd, buf, (long)n);
-	long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=EIO; return r; }
+	long r=n9_pread(fd,buf,(long)n,-1); if(r<0)errno=cc9_errno_from_errstr_or(EIO); return r; }
 extern void cc9_trace(const char *, int, long);
-long write(int fd, const void *buf, size_t n){ long r=n9_pwrite(fd,buf,(long)n,-1); cc9_trace("write", fd, r); if(r<0)errno=EIO; return r; }
+long write(int fd, const void *buf, size_t n){ long r=n9_pwrite(fd,buf,(long)n,-1); cc9_trace("write", fd, r); if(r<0)errno=cc9_errno_from_errstr_or(EIO); return r; }
 long pread(int fd, void *buf, size_t n, long off){ return n9_pread(fd,buf,(long)n,off); }
 long pwrite(int fd, const void *buf, size_t n, long off){ return n9_pwrite(fd,buf,(long)n,off); }
 long lseek(int fd, long off, int whence){ long long r=0; if(n9_seek(&r,fd,off,whence)<0){errno=EIO;return -1;} return (long)r; }
@@ -123,19 +139,50 @@ static int cc9_contains(const char *h, const char *n){
  * truth and could instead be threaded into std::system_error::what() verbatim. */
 /* Last kernel errstr + the errno it mapped to, for io::Error message fidelity
  * (Rust's error_string shows the real Plan 9 string instead of "os error N").
- * Process-global like errno itself; a caller compares the stashed errno to the
- * one it holds so a stale string from another failure path can't mislabel. */
-static char cc9_last_errstr[160];
-static int cc9_last_errstr_errno = 0;
-const char *__n9_errstr_last(int *eno){ if(eno) *eno = cc9_last_errstr_errno; return cc9_last_errstr; }
-int cc9_errno_from_errstr(void){
+ *
+ * PER-THREAD, exactly like errno, via pthread.c's weak stack-range slot (a
+ * thread-free link leaves the symbol unsatisfied and uses the global below).
+ * It was process-global, on the theory that "a caller compares the stashed errno
+ * to the one it holds so a stale string can't mislabel". That does not hold: two
+ * unrelated failures on two threads share an errno all the time (ENOENT), the
+ * comparison passes, and the caller prints another thread's error text — Servo
+ * reported a missing font dir as "file does not exist: '.../reg.sqlite-wal'". */
+extern char *cc9_thread_errstr_slot(int **, int *) __attribute__((weak));
+static char cc9_global_errstr[160];
+static int cc9_global_errstr_errno = 0;
+/* Returns the calling thread's stash and, via cap_out, how big it is — the
+ * per-thread buffer is defined in pthread.c, so its size must travel with the
+ * pointer rather than be repeated here. */
+static char *cc9_errstr_buf(int **eno_out, int *cap_out){
+	if(cc9_thread_errstr_slot){
+		int *e = 0, cap = 0; char *b = cc9_thread_errstr_slot(&e, &cap);
+		if(b && cap > 0){ if(eno_out) *eno_out = e; *cap_out = cap; return b; }
+	}
+	if(eno_out) *eno_out = &cc9_global_errstr_errno;
+	*cap_out = (int)sizeof cc9_global_errstr;
+	return cc9_global_errstr;
+}
+const char *__n9_errstr_last(int *eno){
+	int *slot_eno, cap;
+	const char *buf = cc9_errstr_buf(&slot_eno, &cap);
+	if(eno) *eno = *slot_eno;
+	return buf;
+}
+/* `dflt` is what an unrecognised message maps to. It is a parameter because the
+ * right guess depends on the call: a failed open of an unknown-shaped error is
+ * most likely ENOENT, but a failed read/write is not — reporting a dead socket as
+ * "file not found" sends the caller somewhere useless. */
+int cc9_errno_from_errstr_or(int dflt){
 	/* errstr fills the buffer (kernel NUL-terminates) but its return value is not
 	 * the length — read the buffer directly. */
 	char e[160]; e[0]=0; e[sizeof e-1]=0;
 	n9_errstr(e, sizeof e - 1);
-	for(int i=0;i<(int)sizeof cc9_last_errstr;i++){ cc9_last_errstr[i]=e[i]; if(!e[i]) break; }
-	cc9_last_errstr[sizeof cc9_last_errstr - 1]=0;
-	int r = ENOENT;
+	int *stash_eno, cap;
+	char *stash = cc9_errstr_buf(&stash_eno, &cap);
+	int i = 0;
+	for(; i < cap - 1 && e[i]; i++) stash[i] = e[i];
+	stash[i] = 0;
+	int r = dflt;
 	if(e[0] == 0) ;
 	else if(cc9_contains(e, "permission")) r = EACCES;
 	else if(cc9_contains(e, "exists"))     r = EEXIST;
@@ -149,9 +196,10 @@ int cc9_errno_from_errstr(void){
 	else if(cc9_contains(e, "unreachable")) r = EHOSTUNREACH;
 	else if(cc9_contains(e, "address in use") || cc9_contains(e, "announce"))  r = EADDRINUSE;
 	else if(cc9_contains(e, "interrupted")) r = EINTR;
-	cc9_last_errstr_errno = r;
+	*stash_eno = r;
 	return r;
 }
+int cc9_errno_from_errstr(void){ return cc9_errno_from_errstr_or(ENOENT); }
 int stat(const char *path, struct stat *st){
 	unsigned char b[512]; long n=n9_stat(path,b,sizeof b);
 	if(n<0){ errno=cc9_errno_from_errstr(); return -1; } dir_to_stat(b,st); return 0;
@@ -163,7 +211,27 @@ int fstat(int fd, struct stat *st){
 int lstat(const char *path, struct stat *st){ return stat(path, st); }   /* no symlink follow distinction */
 int fstatat(int dfd, const char *path, struct stat *st, int flag){ (void)flag; char b[1024]; return stat(at_path(dfd,path,b,sizeof b), st); }
 
-int mkdir(const char *path, mode_t m){ long fd=n9_create(path, 0/*OREAD*/, DMDIR|(m&0777)); if(fd<0){ struct stat st; errno=(stat(path,&st)==0)?EEXIST:EACCES; return -1; } n9_close((int)fd); return 0; }
+/* The existence check has to come first. Plan 9's create(2) truncates an existing
+ * name rather than failing, and there is no exclusive-create mode: called with
+ * DMDIR on an existing regular file it wipes the file's contents and still
+ * reports success, so probing with create first would destroy the very file we
+ * are about to refuse to overwrite. POSIX wants EEXIST for an existing name
+ * anyway, so one stat serves both.
+ * ponytail: TOCTOU window between stat and create — Plan 9 gives no O_EXCL to
+ * close it, so this is the same race every Plan 9 mkdir carries.
+ *
+ * Failures otherwise map through errstr like the rest of this file. They used to
+ * be reported as EACCES unless the name existed, which quietly breaks every
+ * mkdir -p: create_dir_all (Rust) and mkdir -p only build a missing parent when
+ * mkdir says ENOENT — told "permission denied", they abandon the whole chain. */
+int mkdir(const char *path, mode_t m){
+	struct stat st;
+	if(stat(path, &st) == 0){ errno = EEXIST; return -1; }
+	long fd = n9_create(path, 0/*OREAD*/, DMDIR|(m&0777));
+	if(fd < 0){ errno = cc9_errno_from_errstr(); return -1; }
+	n9_close((int)fd);
+	return 0;
+}
 int mkdirat(int dfd, const char *path, unsigned int m){ char b[1024]; return mkdir(at_path(dfd,path,b,sizeof b),m); }
 
 extern long n9_wstat(const char *, unsigned char *, int);
@@ -207,8 +275,43 @@ int cc9_fset_mtime(int fd, unsigned long secs){
 int fchmodat(int d, const char *p, mode_t m, int f){ (void)f; char b[1024]; return chmod(at_path(d,p,b,sizeof b),m); }
 long pathconf(const char *p, int name){ (void)p; return name==4 ? 4096 : 255; }
 long fpathconf(int fd, int name){ (void)fd; return name==4 ? 4096 : 255; }
-int unlink(const char *path){ if(n9_remove(path)<0){errno=ENOENT;return -1;} return 0; }
-int rmdir(const char *path){ return unlink(path); }
+/* Not always ENOENT: Plan 9's remove reports "directory not empty" and
+ * "permission denied" too, and callers act on the difference — rmdir(2) is this
+ * same call, and remove_dir_all/std::filesystem key their recursion off
+ * ENOTEMPTY vs ENOENT. */
+int unlink(const char *path){ if(n9_remove(path)<0){ errno=cc9_errno_from_errstr(); return -1; } return 0; }
+/* Does this directory hold anything? A directory read yields concatenated Dir
+ * entries, so "no bytes" means "no entries". NB: this itself sets errstr, so
+ * callers must map their error BEFORE asking. */
+static int dir_has_entries(const char *path){
+	long fd = n9_open(path, 0 /*OREAD*/);
+	if(fd < 0) return 0;
+	unsigned char b[256];
+	long n = n9_pread((int)fd, b, sizeof b, -1);
+	n9_close((int)fd);
+	return n > 0;
+}
+
+/* rmdir(2), not just unlink: POSIX says a non-empty directory is ENOTEMPTY, and
+ * remove_dir_all / std::filesystem::remove_all branch on exactly that to decide
+ * whether to recurse or to treat the job as done.
+ *
+ * The file server's wording cannot be trusted for this — 9front's ramfs answers a
+ * non-empty remove with a flat "invalid operation", which the errstr table maps to
+ * its ENOENT default, i.e. "already gone". So work it out here instead: if the
+ * target is still a directory and still has entries, the removal failed because it
+ * is not empty, whatever the server chose to call it. */
+int rmdir(const char *path){
+	if(n9_remove(path) == 0) return 0;
+	int e = cc9_errno_from_errstr();   /* map first: the probe below clobbers errstr */
+	if(e != EACCES && e != EPERM){
+		struct stat st;
+		if(stat(path, &st) == 0 && S_ISDIR(st.st_mode) && dir_has_entries(path))
+			e = ENOTEMPTY;
+	}
+	errno = e;
+	return -1;
+}
 int unlinkat(int dfd, const char *path, int flag){ (void)flag; char b[1024]; return unlink(at_path(dfd,path,b,sizeof b)); }
 int remove(const char *path){ return unlink(path); }
 int chdir(const char *path){ return n9_chdir(path)<0 ? -1 : 0; }
@@ -490,26 +593,83 @@ int mkstemp(char *tmpl){
 	return -1;
 }
 
-/* writev/readv (sys/uio.h) — libuv's stream writes. writev loops each iov to
- * completion; readv fills only iov[0] (short reads are legal, callers loop). */
+/* writev/readv (sys/uio.h). Plan 9 has no scatter/gather syscall, so both stage
+ * through one buffer and do exactly ONE read/write.
+ *
+ * That single call is the point, not an optimisation. These started out serving
+ * libuv's stream writes, where "writev loops each iov" and "readv fills only
+ * iov[0], callers loop" are both defensible — a short read on a stream just means
+ * read again. net9.c's sendmsg/recvmsg now route socket I/O through them, and on
+ * a SOCK_DGRAM neither holds: one write per iovec turns a single datagram into N
+ * packets, and reading into only the first iovec truncates the datagram and drops
+ * the remainder, because the unread rest of a packet is discarded rather than
+ * queued. One syscall per call keeps a datagram a datagram.
+ *
+ * Returning short is still legal for a stream, and callers must still loop. */
 struct iovec { void *iov_base; size_t iov_len; };
-long writev(int fd, const struct iovec *iov, int n){
-	long total = 0;
+extern void *memcpy(void *, const void *, size_t);
+
+/* Total across the iovec array; reports how many are non-empty and the first such
+ * (the single-buffer fast path skips staging entirely). -1 on length overflow. */
+static long iov_span(const struct iovec *iov, int n, int *nonempty, int *first){
+	unsigned long t = 0;
+	*nonempty = 0; *first = -1;
 	for(int i = 0; i < n; i++){
-		const char *p = iov[i].iov_base;
-		size_t left = iov[i].iov_len;
-		while(left){
-			long w = write(fd, p, left);
-			if(w <= 0) return total ? total : w;
-			p += w; left -= (size_t)w; total += w;
+		unsigned long l = iov[i].iov_len;
+		if(!l) continue;
+		if(*first < 0) *first = i;
+		(*nonempty)++;
+		if(t + l < t) return -1;
+		t += l;
+	}
+	return (long)t;
+}
+
+long writev(int fd, const struct iovec *iov, int n){
+	if(n < 0 || (n > 0 && !iov)){ errno = EINVAL; return -1; }
+	int ne, first;
+	long total = iov_span(iov, n, &ne, &first);
+	if(total < 0){ errno = EINVAL; return -1; }
+	if(ne == 0) return 0;
+	if(ne == 1) return write(fd, iov[first].iov_base, iov[first].iov_len);
+
+	char *tmp = malloc((size_t)total);
+	if(!tmp){ errno = ENOMEM; return -1; }
+	long off = 0;
+	for(int i = 0; i < n; i++){
+		if(!iov[i].iov_len) continue;
+		memcpy(tmp + off, iov[i].iov_base, iov[i].iov_len);
+		off += (long)iov[i].iov_len;
+	}
+	long w = write(fd, tmp, (size_t)total);
+	free(tmp);
+	return w;
+}
+
+long readv(int fd, const struct iovec *iov, int n){
+	if(n < 0 || (n > 0 && !iov)){ errno = EINVAL; return -1; }
+	int ne, first;
+	long total = iov_span(iov, n, &ne, &first);
+	if(total < 0){ errno = EINVAL; return -1; }
+	if(ne == 0) return 0;
+	if(ne == 1) return read(fd, iov[first].iov_base, iov[first].iov_len);
+
+	char *tmp = malloc((size_t)total);
+	if(!tmp){ errno = ENOMEM; return -1; }
+	long r = read(fd, tmp, (size_t)total);
+	if(r > 0){
+		long off = 0, left = r;
+		for(int i = 0; i < n && left > 0; i++){
+			unsigned long take = iov[i].iov_len < (unsigned long)left
+			                   ? iov[i].iov_len : (unsigned long)left;
+			if(!take) continue;
+			memcpy(iov[i].iov_base, tmp + off, take);
+			off += (long)take;
+			left -= (long)take;
 		}
 	}
-	return total;
-}
-long readv(int fd, const struct iovec *iov, int n){
-	for(int i = 0; i < n; i++)
-		if(iov[i].iov_len) return read(fd, iov[i].iov_base, iov[i].iov_len);
-	return 0;
+	free(tmp);
+	return r;
 }
 
 /* mkdtemp — trailing XXXXXX replaced from /dev/random, then mkdir. */
@@ -530,7 +690,6 @@ char *mkdtemp(char *tpl){
 /* scandir/alphasort — over opendir/readdir, for libuv's uv_fs_scandir. */
 extern void *realloc(void *, size_t);
 extern int strcmp(const char *, const char *);
-extern void *memcpy(void *, const void *, size_t);
 extern void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
 int alphasort(const struct dirent **a, const struct dirent **b){
 	return strcmp((*a)->d_name, (*b)->d_name);

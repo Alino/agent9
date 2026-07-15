@@ -1,0 +1,19 @@
+[package]
+name = "mozjs-rust-shim"
+version = "0.1.0"
+edition = "2021"
+
+# The Rust half of SpiderMonkey. libjs_static.a leaves encoding_mem_* undefined:
+# mfbt's Latin1.h routes UTF-8/UTF-16/Latin1 conversion into the encoding_rs
+# crate, which mozjs_sys normally links because it is itself a Rust crate. This
+# staticlib supplies that half for the plan9 target.
+[lib]
+crate-type = ["staticlib"]
+path = "src/lib.rs"
+
+[dependencies]
+encoding_c = "0.9.8"
+encoding_c_mem = "0.2.6"
+
+[profile.release]
+panic = "abort"

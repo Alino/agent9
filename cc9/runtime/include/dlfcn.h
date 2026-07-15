@@ -6,6 +6,10 @@
 #define RTLD_NOW    2
 #define RTLD_LOCAL  0
 #define RTLD_GLOBAL 0x100
+/* "resolve only if already loaded". Nothing is ever loaded here (dlopen always
+ * fails), so this is a declaration for callers that pass it — ANGLE's
+ * system_utils_posix.cpp among them. */
+#define RTLD_NOLOAD 4
 #define RTLD_DEFAULT ((void *)0)
 #define RTLD_NEXT    ((void *)-1)
 typedef struct { const char *dli_fname; void *dli_fbase; const char *dli_sname; void *dli_saddr; } Dl_info;

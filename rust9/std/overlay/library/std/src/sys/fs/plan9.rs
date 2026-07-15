@@ -128,6 +128,18 @@ pub struct ReadDir {
     root: PathBuf,
 }
 
+// `dir` is a cc9 `DIR *`. The raw pointer makes ReadDir auto-!Send/!Sync, which
+// blocks tokio::fs (its ReadDir must cross threads to reach the blocking pool).
+// Upstream's unix backend has exactly this and does exactly this — see
+// `unsafe impl Send for DirStream` in library/std/src/sys/fs/unix.rs.
+//
+// SAFETY: the DIR is owned solely by this ReadDir (opened in readdir(), closed
+// in Drop, never aliased), so moving it between threads transfers sole
+// ownership. Sync holds because every method that touches `dir` takes &mut self:
+// a shared &ReadDir cannot reach the stream at all.
+unsafe impl Send for ReadDir {}
+unsafe impl Sync for ReadDir {}
+
 pub struct DirEntry {
     name: OsString,
     root: PathBuf,

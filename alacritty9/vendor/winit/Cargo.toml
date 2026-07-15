@@ -86,7 +86,11 @@ cfg_aliases = "0.2.1"
 [dependencies]
 bitflags = "2"
 cursor-icon = "1.1.0"
-dpi = { version = "0.1.1", path = "dpi" }
+# Use the crates.io dpi rather than the vendored path copy: a path dep bypasses
+# [patch.crates-io], so servo9 ended up with TWO dpi crates and
+# winit::dpi::PhysicalSize != dpi::PhysicalSize. The vendored copy carries no
+# plan9 changes, so nothing is lost.
+dpi = { version = "0.1" }
 rwh_04 = { package = "raw-window-handle", version = "0.4", optional = true }
 rwh_05 = { package = "raw-window-handle", version = "0.5.2", features = [
     "std",

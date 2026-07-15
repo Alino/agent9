@@ -1,9 +1,26 @@
 //! Networking on Plan 9 (9front) over the `/net` filesystem.
 //!
-//! Plan 9 has no BSD socket layer (cc9's `socket()` is a stub); networking is
-//! done by manipulating files under `/net`. This module speaks that protocol
-//! directly with raw open/read/write/close (provided by the cc9 runtime),
-//! mirroring plan9port's dial(2)/announce(2):
+//! STALE PREMISE — READ BEFORE EXTENDING THIS MODULE (2026-07-15):
+//! this was written when cc9's `socket()` was a stub, so it speaks `/net`
+//! directly. cc9 now has a REAL BSD socket layer (`runtime/net9.c`: socket,
+//! bind, listen, accept, connect, get/setsockopt, sendmsg, recvmsg,
+//! getaddrinfo; gate test `cc9/test/netgate.c`).
+//!
+//! That matters beyond tidiness. Here a TCP connection is TWO fds (`data` +
+//! `ctl`, and closing `ctl` hangs up), so this module can never honestly
+//! implement `std::os::fd`: `AsRawFd` could borrow `data`, but `IntoRawFd` and
+//! `FromRawFd` are undefinable — one fd cannot own the connection and `ctl`
+//! cannot be reconstructed from `data`. Without `std::os::fd` there is no
+//! socket2 and no mio, and therefore no tokio, no hyper, and no Servo network
+//! stack.
+//!
+//! Rewriting this on cc9's BSD sockets makes a socket ONE fd and unblocks all of
+//! that. It is the critical path for servo9 — see the servo9-port memory.
+//!
+//! Plan 9 has no BSD socket layer of its own; networking is done by manipulating
+//! files under `/net`. This module speaks that protocol directly with raw
+//! open/read/write/close (provided by the cc9 runtime), mirroring plan9port's
+//! dial(2)/announce(2):
 //!
 //!   TCP connect:  open /net/tcp/clone -> read conn number N ->
 //!                 write "connect host!port" to the ctl fd ->
@@ -31,19 +48,33 @@ use crate::sys::unsupported;
 use crate::time::Duration;
 
 unsafe extern "C" {
+    /// fd2path(2): ask an open fd for its own path. This is what lets a plan9
+    /// TcpStream be rebuilt from nothing but a raw fd — verified on 9front:
+    /// fd2path(data) == "/net/tcp/N/data".
+    ///
+    /// cc9 exposes the syscall under its own name (see cc9/runtime/fs.c:
+    /// `extern long n9_fd2path(int, char *, int)`), not the POSIX-ish one.
+    fn n9_fd2path(fd: i32, buf: *mut u8, nbuf: i32) -> isize;
     fn open(path: *const u8, flags: i32, ...) -> i32;
     fn close(fd: i32) -> i32;
     fn read(fd: i32, buf: *mut u8, n: usize) -> isize;
     fn write(fd: i32, buf: *const u8, n: usize) -> isize;
+    fn pread(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize;
 }
 
 const O_RDONLY: i32 = 0;
 const O_RDWR: i32 = 2;
 
 /// Owned Plan 9 file descriptor; closes on drop.
-struct Fd(i32);
+pub struct Fd(i32);
 
 impl Fd {
+    /// The raw descriptor. Only meaningful because a plan9 TcpStream is ONE fd
+    /// (see the note on TcpStream) — this is what `std::os::fd` hands out.
+    pub fn as_raw(&self) -> i32 {
+        self.0
+    }
+
     fn raw_read(&self, buf: &mut [u8]) -> io::Result<usize> {
         let r = unsafe { read(self.0, buf.as_mut_ptr(), buf.len()) };
         if r < 0 { Err(io::Error::last_os_error()) } else { Ok(r as usize) }
@@ -63,6 +94,25 @@ impl Fd {
     }
 }
 
+/// These are what make `std::os::fd` real for plan9: a TcpStream is ONE fd, so
+/// borrowing it as a `BorrowedFd` is meaningful and safe. os/fd/{raw,owned,net}.rs
+/// build every public impl on top of these.
+impl crate::os::fd::AsRawFd for Fd {
+    #[inline]
+    fn as_raw_fd(&self) -> crate::os::fd::RawFd {
+        self.0
+    }
+}
+
+impl crate::os::fd::AsFd for Fd {
+    #[inline]
+    fn as_fd(&self) -> crate::os::fd::BorrowedFd<'_> {
+        // SAFETY: self.0 is open for the lifetime of self (Fd closes on drop),
+        // and the borrow cannot outlive it.
+        unsafe { crate::os::fd::BorrowedFd::borrow_raw(self.0) }
+    }
+}
+
 impl Drop for Fd {
     fn drop(&mut self) {
         unsafe { close(self.0) };
@@ -78,12 +128,8 @@ fn open_path(path: &str, flags: i32) -> io::Result<Fd> {
     if fd < 0 { Err(io::Error::last_os_error()) } else { Ok(Fd(fd)) }
 }
 
-/// Read the leading decimal connection number from a freshly-cloned ctl file.
 /// The ctl read returns e.g. "         5" or "5"; take the first run of digits.
-fn read_conn_number(ctl: &Fd) -> io::Result<u32> {
-    let mut buf = [0u8; 64];
-    let n = ctl.raw_read(&mut buf)?;
-    let s = &buf[..n];
+fn parse_conn_number(s: &[u8]) -> io::Result<u32> {
     let mut num: u32 = 0;
     let mut seen = false;
     for &b in s {
@@ -99,6 +145,27 @@ fn read_conn_number(ctl: &Fd) -> io::Result<u32> {
     } else {
         Err(io::const_error!(io::ErrorKind::InvalidData, "bad /net ctl response"))
     }
+}
+
+/// Read the leading decimal connection number from a freshly-cloned ctl file.
+fn read_conn_number(ctl: &Fd) -> io::Result<u32> {
+    let mut buf = [0u8; 64];
+    let n = ctl.raw_read(&mut buf)?;
+    parse_conn_number(&buf[..n])
+}
+
+/// Same, for an fd we do NOT own (`Fd` would close it on drop).
+///
+/// pread at offset 0 rather than read: the ctl file answers with the connection
+/// number at offset 0 however often it is asked, so this stays repeatable and
+/// leaves the caller's file offset alone.
+fn read_conn_number_borrowed(fd: i32) -> io::Result<u32> {
+    let mut buf = [0u8; 64];
+    let r = unsafe { pread(fd, buf.as_mut_ptr(), buf.len(), 0) };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    parse_conn_number(&buf[..r as usize])
 }
 
 /// Format a SocketAddr the way `/net` wants it: "address!port".
@@ -165,14 +232,87 @@ fn parse_bang_addr(s: &str) -> Option<SocketAddr> {
 ////////////////////////////////////////////////////////////////////////////////
 
 pub struct TcpStream {
+    /// The ONLY fd. This used to also hold the ctl fd, on the belief that
+    /// "closing ctl hangs it up". That is FALSE — measured on 9front: the
+    /// connection survives close(ctl) and data keeps working. dial(2) does
+    /// exactly this (a nil cfdp closes ctl, returning only the data fd).
+    ///
+    /// It matters because one fd is what makes `std::os::fd` definable for
+    /// plan9 — and socket2/mio/tokio, hence every Rust network stack, are
+    /// written entirely in those types.
+    ///
+    /// NB: a *listener* is different — there ctl IS the announcement and must
+    /// be held (see TcpListener below).
     data: Fd,
-    ctl: Fd, // keep the connection open (closing ctl hangs it up)
     conn: u32,
-    peer: SocketAddr,
     ttl: Ttl,
 }
 
+/// Ask an fd which /net connection it belongs to. This is the whole reason a
+/// plan9 socket can round-trip through a bare integer: fd2path(2) returns e.g.
+/// "/net/tcp/9/data" or "/net/tcp/9/ctl", and the conn number is right there.
+/// Verified live on 9front.
+fn conn_of_fd(fd: i32) -> io::Result<u32> {
+    let mut buf = [0u8; 256];
+    let r = unsafe { n9_fd2path(fd, buf.as_mut_ptr(), buf.len() as i32) };
+    if r < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let path = core::str::from_utf8(&buf[..end])
+        .map_err(|_| io::const_error!(io::ErrorKind::InvalidData, "fd2path: not utf8"))?;
+    // /net/<proto>/<conn>/<file>
+    let mut it = path.rsplit('/');
+    let _file = it.next();
+    if let Some(n) = it.next().and_then(|n| n.parse::<u32>().ok()) {
+        return Ok(n);
+    }
+    // A freshly cloned fd reports the path it was WALKED to — "/net/tcp/clone" —
+    // which carries no connection number (measured on 9front, see
+    // cc9/test/clonepath.c). This is the state mio hands us: it creates the
+    // socket, wraps it, and dials afterwards. The number is what reading the ctl
+    // file returns, which is how every Plan 9 dialer learns it.
+    if path.ends_with("/clone") {
+        return read_conn_number_borrowed(fd);
+    }
+    Err(io::const_error!(io::ErrorKind::InvalidInput, "fd is not under /net"))
+}
+
 impl TcpStream {
+    /// Rebuild a TcpStream from a bare fd — what `std::os::fd::FromRawFd` needs.
+    ///
+    /// Possible only because a plan9 connection is ONE fd plus a conn directory
+    /// that the fd can name: fd2path(2) gives "/net/tcp/N/data" (or ".../ctl"),
+    /// and N is the whole identity. Takes ownership of `fd`.
+    ///
+    /// # Safety
+    /// `fd` must be an open fd under /net that nothing else owns.
+    /// Rebuild from a bare fd by asking fd2path(2) which /net connection it names.
+    ///
+    /// Deliberately accepts any file in the conn directory, not just `data`, and
+    /// does not require a peer. mio's TcpStream::connect() creates the socket,
+    /// wraps it with from_raw_fd, and dials only afterwards — so at this point the
+    /// fd is still the clone/ctl fd of an unconnected conn dir. Demanding
+    /// ".../data" here rejected that legitimate caller; the conn number is what we
+    /// actually need, and it is in the path either way.
+    pub unsafe fn from_raw_fd_plan9(fd: i32) -> io::Result<TcpStream> {
+        let conn = conn_of_fd(fd)?;
+        Ok(TcpStream { data: Fd(fd), conn, ttl: Ttl::new() })
+    }
+
+    /// The single underlying fd. Named `socket()` because that is what
+    /// `os/fd/net.rs`'s generic impls call.
+    pub fn socket(&self) -> &Fd {
+        &self.data
+    }
+
+    /// Reopen this connection's ctl. The conn directory outlives ctl (it is kept
+    /// alive by `data`), so ctl is always recoverable: from the cached conn
+    /// number here, or from a bare fd via fd2path(2).
+    fn ctl(&self) -> io::Result<Fd> {
+        open_path(&format!("/net/tcp/{}/ctl", self.conn), O_RDWR)
+    }
+
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<TcpStream> {
         let mut last = None;
         for a in addr.to_socket_addrs()? {
@@ -189,7 +329,9 @@ impl TcpStream {
         let conn = read_conn_number(&ctl)?;
         ctl.write_all(format!("connect {}", plan9_addr(addr)).as_bytes())?;
         let data = open_path(&format!("/net/tcp/{conn}/data"), O_RDWR)?;
-        Ok(TcpStream { data, ctl, conn, peer: *addr, ttl: Ttl::new() })
+        // Drop ctl: the connection is up and `data` keeps the conn dir alive.
+        drop(ctl);
+        Ok(TcpStream { data, conn, ttl: Ttl::new() })
     }
 
     pub fn connect_timeout(addr: &SocketAddr, _: Duration) -> io::Result<TcpStream> {
@@ -256,8 +398,21 @@ impl TcpStream {
         false
     }
 
+    /// Read from /net/tcp/N/remote rather than cache at construction: the file is
+    /// the truth, and a TcpStream can exist before it has a peer at all — mio's
+    /// connect() wraps the socket fd and dials afterwards, so a cached peer would
+    /// have to be invented for a socket that is not connected yet.
+    ///
+    /// An un-dialled conn dir has a remote of `::!0` / `0.0.0.0!0`, which parses
+    /// perfectly well into a SocketAddr — so it has to be rejected explicitly, or
+    /// peer_addr() reports `[::]:0` for a socket with no peer instead of the
+    /// NotConnected the caller is entitled to.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.peer)
+        let peer = read_endpoint("tcp", self.conn, "remote")?;
+        if peer.ip().is_unspecified() && peer.port() == 0 {
+            return Err(io::const_error!(io::ErrorKind::NotConnected, "socket is not connected"));
+        }
+        Ok(peer)
     }
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
         read_endpoint("tcp", self.conn, "local")
@@ -265,7 +420,7 @@ impl TcpStream {
 
     pub fn shutdown(&self, _: Shutdown) -> io::Result<()> {
         // Writing "hangup" to the ctl closes the connection both ways.
-        self.ctl.write_all(b"hangup").map(|_| ())
+        self.ctl()?.write_all(b"hangup").map(|_| ())
     }
 
     pub fn duplicate(&self) -> io::Result<TcpStream> {
@@ -292,7 +447,7 @@ impl TcpStream {
         Ok(false)
     }
     pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-        self.ttl.set(&self.ctl, ttl)
+        self.ttl.set(&self.ctl()?, ttl)
     }
     pub fn ttl(&self) -> io::Result<u32> {
         self.ttl.get()
@@ -307,7 +462,11 @@ impl TcpStream {
 
 impl fmt::Debug for TcpStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TcpStream(/net/tcp/{} -> {})", self.conn, self.peer)
+        match self.peer_addr() {
+            Ok(peer) => write!(f, "TcpStream(/net/tcp/{} -> {})", self.conn, peer),
+            // No peer yet (or the conn dir went away): say so rather than invent one.
+            Err(_) => write!(f, "TcpStream(/net/tcp/{})", self.conn),
+        }
     }
 }
 
@@ -318,11 +477,26 @@ impl fmt::Debug for TcpStream {
 pub struct TcpListener {
     ctl: Fd,
     conn: u32,
-    local: SocketAddr,
     ttl: Ttl,
 }
 
 impl TcpListener {
+    /// Rebuild from a bare fd. Unlike TcpStream, a listener's fd is its ctl —
+    /// the announcement — so that is what fd2path resolves here.
+    ///
+    /// # Safety
+    /// `fd` must be an open /net announce ctl fd that nothing else owns.
+    pub unsafe fn from_raw_fd_plan9(fd: i32) -> io::Result<TcpListener> {
+        let conn = conn_of_fd(fd)?;
+        Ok(TcpListener { ctl: Fd(fd), conn, ttl: Ttl::new() })
+    }
+
+    /// The fd os/fd/net.rs's generic impls hand out. NB: unlike TcpStream, a
+    /// listener legitimately keeps its ctl — that fd IS the announcement.
+    pub fn socket(&self) -> &Fd {
+        &self.ctl
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
         let a = addr
             .to_socket_addrs()?
@@ -330,13 +504,33 @@ impl TcpListener {
             .ok_or_else(|| io::const_error!(io::ErrorKind::InvalidInput, "no addresses"))?;
         let ctl = open_path("/net/tcp/clone", O_RDWR)?;
         let conn = read_conn_number(&ctl)?;
-        // "announce *!port" listens on all local interfaces at the given port.
-        ctl.write_all(format!("announce *!{}", a.port()).as_bytes())?;
-        Ok(TcpListener { ctl, conn, local: a, ttl: Ttl::new() })
+        // Announce the address that was actually asked for. "*" (all interfaces)
+        // is only right for an unspecified bind address — hardcoding it, as this
+        // did, quietly ignored `bind(("10.0.2.15", 0))` and listened everywhere;
+        // socket_addr() then reports an unspecified local address, which Plan 9
+        // will not route to ("no route"), so connecting to your own local_addr()
+        // fails even though the listener is up.
+        //
+        // Port 0 still means "/net picks a free one" — hence socket_addr reads the
+        // conn dir rather than echoing back what we asked for.
+        let target = if a.ip().is_unspecified() {
+            format!("*!{}", a.port())
+        } else {
+            plan9_addr(&a)
+        };
+        ctl.write_all(format!("announce {target}").as_bytes())?;
+        Ok(TcpListener { ctl, conn, ttl: Ttl::new() })
     }
 
+    /// Read /net/tcp/N/local rather than echo back the bind address.
+    ///
+    /// Caching the requested address broke the commonest pattern there is:
+    /// `bind((host, 0))` announces an ephemeral port, and this then reported port
+    /// **0** — so anything that binds to 0 and connects to its own local_addr()
+    /// (every test server, and plenty of real ones) got "connection refused".
+    /// The conn directory knows the port that was actually assigned; ask it.
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        Ok(self.local)
+        read_endpoint("tcp", self.conn, "local")
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
@@ -345,8 +539,17 @@ impl TcpListener {
         let lctl = open_path(&format!("/net/tcp/{}/listen", self.conn), O_RDWR)?;
         let m = read_conn_number(&lctl)?;
         let data = open_path(&format!("/net/tcp/{m}/data"), O_RDWR)?;
-        let peer = read_endpoint("tcp", m, "remote").unwrap_or(self.local);
-        Ok((TcpStream { data, ctl: lctl, conn: m, peer, ttl: Ttl::new() }, peer))
+        // The accepted connection's peer is in its own conn dir. If that cannot be
+        // read the connection is unusable, so fail rather than substitute an
+        // address that is not the peer (this used to fall back to the listener's
+        // own address, i.e. claim the client was us).
+        let peer = read_endpoint("tcp", m, "remote")?;
+        // Same as connect: the accepted connection's ctl (here, the fd returned
+        // by opening .../listen) is not load-bearing — `data` keeps conn dir M
+        // alive, and TcpStream::ctl() reopens it on demand. Verified on 9front
+        // for a dialed connection; the accepted case has the same structure.
+        drop(lctl);
+        Ok((TcpStream { data, conn: m, ttl: Ttl::new() }, peer))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
@@ -374,7 +577,10 @@ impl TcpListener {
 
 impl fmt::Debug for TcpListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "TcpListener(/net/tcp/{} @ {})", self.conn, self.local)
+        match self.socket_addr() {
+            Ok(local) => write!(f, "TcpListener(/net/tcp/{} @ {})", self.conn, local),
+            Err(_) => write!(f, "TcpListener(/net/tcp/{})", self.conn),
+        }
     }
 }
 
@@ -416,6 +622,28 @@ pub struct UdpSocket {
 }
 
 impl UdpSocket {
+    /// Rebuild from a bare fd. `socket()` hands out the DATA fd, so that is what
+    /// comes back here; ctl is reopened from the conn number fd2path gives us.
+    ///
+    /// # Safety
+    /// `fd` must be an open /net/udp data fd that nothing else owns.
+    pub unsafe fn from_raw_fd_plan9(fd: i32) -> io::Result<UdpSocket> {
+        let conn = conn_of_fd(fd)?;
+        let ctl = open_path(&format!("/net/udp/{conn}/ctl"), O_RDWR)?;
+        Ok(UdpSocket {
+            ctl,
+            data: Fd(fd),
+            conn,
+            peer: Mutex::new(None),
+            ttl: Ttl::new(),
+        })
+    }
+
+    /// The fd os/fd/net.rs's generic impls hand out.
+    pub fn socket(&self) -> &Fd {
+        &self.data
+    }
+
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<UdpSocket> {
         let a = addr
             .to_socket_addrs()?

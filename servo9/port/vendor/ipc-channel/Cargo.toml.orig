@@ -1,0 +1,77 @@
+[package]
+name = "ipc-channel"
+version = "0.22.0"
+description = "A multiprocess drop-in replacement for Rust channels"
+authors = ["The Servo Project Developers"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/servo/ipc-channel"
+edition = "2021"
+# Keep this in sync with the msrv_build job in CI.
+# This version may be `<=`, but not higher than the MSRV in the main servo project.
+rust-version = "1.86.0"
+
+[[bench]]
+name = "platform"
+harness = false
+
+[[bench]]
+name = "ipc"
+harness = false
+
+[[bench]]
+name = "ipc_receiver_set"
+harness = false
+
+[[bench]]
+name = "ipc_shared_mem"
+harness = false
+
+[[bench]]
+name = "struct_ipc"
+harness = false
+
+[features]
+default = []
+force-inprocess = []
+async = ["dep:futures-core", "dep:futures-channel"]
+win32-trace = []
+enable-slow-tests = []
+
+[dependencies]
+crossbeam-channel = "0.5"
+futures-channel = { version = "0.3.32", optional = true }
+futures-core = { version = "0.3.32", optional = true }
+libc = "0.2.162"
+postcard = {version = "1.1", default-features = false, features = ["use-std"]}
+serde_core = "1.0"
+thiserror = "2.0.12"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(any(target_os = "linux", target_os = "openbsd", target_os = "freebsd", target_os = "illumos"))'.dependencies]
+mio = { version = "1.0", default-features = false, features = ["os-ext"] }
+rustc-hash = "2.1"
+tempfile = "3.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rand = "0.9"
+
+[dev-dependencies]
+serde = { version = "1.0", features = ["rc"] }
+crossbeam-utils = "0.8"
+futures-test = "0.3"
+static_assertions = "1.1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.9.2"
+
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_Memory",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+]

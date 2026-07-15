@@ -57,6 +57,11 @@ typedef void (*__sighandler_t)(int);
 #define SA_NODEFER   0x40000000
 
 typedef struct { int si_signo, si_code, si_errno; pid_t si_pid; uid_t si_uid; void *si_addr; int si_status; } siginfo_t;
+/* si_code values for SIGSEGV. Plan 9 reports faults as notes (text strings), not
+ * siginfo, so nothing here ever populates si_code — these exist because portable
+ * code compares against them (ANGLE's PosixPageFaultHandler). Linux's values. */
+#define SEGV_MAPERR 1
+#define SEGV_ACCERR 2
 struct sigaction {
   union { __sighandler_t sa_handler; void (*sa_sigaction)(int, siginfo_t *, void *); };
   sigset_t sa_mask;
