@@ -12,7 +12,7 @@ CC9="$(cd "$(dirname "$0")/.." && pwd)"
 LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 LLD="${CC9_LLD:-$(brew --prefix lld)/bin/ld.lld}"
 LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-thr/include/c++/v1}"
-INC="$CC9/runtime/include"; LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
+INC="$CC9/runtime/include"; LIB="${CC9_LIBCC9CXX:-$CC9/lib/libcc9cxx.a}"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
 RUNE="-D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE -D_LIBCPP_HAS_CLOCK_GETTIME -femulated-tls -funwind-tables -fno-pic"   # libc++'s own ctype table (minimal platform)
 
 cmd="${1:-}"; src="${2:-}"

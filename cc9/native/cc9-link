@@ -7,7 +7,7 @@ set -euo pipefail
 CC9="$(cd "$(dirname "$0")/.." && pwd)"
 LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 LLD="${CC9_LLD:-$(brew --prefix lld)/bin/ld.lld}"
-LDS="$CC9/test/plan9.ld"; LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"
+LDS="$CC9/test/plan9.ld"; LIB="${CC9_LIBCC9CXX:-$CC9/lib/libcc9cxx.a}"; LIBM="$CC9/lib/libcc9m.a"
 
 out=""; inputs=()
 while [ $# -gt 0 ]; do
