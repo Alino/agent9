@@ -74,6 +74,7 @@ extern "C" {
 int socket(int, int, int);
 int bind(int, const struct sockaddr *, socklen_t);
 int listen(int, int);
+#define AF_LOCAL AF_UNIX   /* BSD spelling (LibCore/LocalServer) */
 int accept(int, struct sockaddr *, socklen_t *);
 int accept4(int, struct sockaddr *, socklen_t *, int);
 int connect(int, const struct sockaddr *, socklen_t);
