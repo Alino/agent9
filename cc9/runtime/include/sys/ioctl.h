@@ -5,6 +5,8 @@
 struct winsize { unsigned short ws_row, ws_col, ws_xpixel, ws_ypixel; };
 #define TIOCSWINSZ 0x5414
 #define TIOCGWINSZ 0x5413
+#define FIONBIO    0x5421   /* set/clear O_NONBLOCK via ioctl (maps to fcntl) */
+#define FIONREAD   0x541B
 #ifdef __cplusplus
 extern "C" {
 #endif

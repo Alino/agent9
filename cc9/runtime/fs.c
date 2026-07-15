@@ -356,6 +356,11 @@ int ioctl(int fd, unsigned long req, ...){
 	if(gpu9_ioctl != 0 && ((req >> 8) & 0xff) == 0x64 /* DRM_IOCTL_BASE 'd' */)
 		return gpu9_ioctl(fd, req, arg);
 	(void)fd;
+	if(req == 0x5421 /*FIONBIO*/){
+		extern int fcntl(int, int, ...);
+		int on = arg ? *(int *)arg : 0;
+		return fcntl(fd, 4 /*F_SETFL*/, on ? 0x1000 /*O_NONBLOCK*/ : 0);
+	}
 	if(req == 0x5413 /*TIOCGWINSZ*/){
 		struct { unsigned short r, c, xp, yp; } *ws = arg;
 		int rows = env_num("LINES"), cols = env_num("COLS");
@@ -460,6 +465,12 @@ struct statvfs;
 int utimes(const char *p, const struct timeval *t){
 	if(!t) return 0;
 	return cc9_set_mtime(p, (unsigned long)t[1].tv_sec);
+}
+/* legacy POSIX spelling (see include/utime.h); Plan 9 wstat only sets mtime */
+struct utimbuf { long actime; long modtime; };
+int utime(const char *p, const struct utimbuf *t){
+	if(!t) return 0;
+	return cc9_set_mtime(p, (unsigned long)t->modtime);
 }
 int utimensat(int d, const char *p, const struct timespec *t, int f){
 	(void)f; char b[1024];

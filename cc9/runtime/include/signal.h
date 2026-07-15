@@ -8,6 +8,7 @@
 typedef int sig_atomic_t;
 typedef unsigned long sigset_t;
 typedef void (*__sighandler_t)(int);
+typedef __sighandler_t sighandler_t;   /* glibc spelling (LibCore/System.h) */
 #define SIG_DFL ((__sighandler_t)0)
 #define SIG_IGN ((__sighandler_t)1)
 #define SIG_ERR ((__sighandler_t)-1)

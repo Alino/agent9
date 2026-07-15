@@ -75,6 +75,7 @@ int socket(int, int, int);
 int bind(int, const struct sockaddr *, socklen_t);
 int listen(int, int);
 int accept(int, struct sockaddr *, socklen_t *);
+int accept4(int, struct sockaddr *, socklen_t *, int);
 int connect(int, const struct sockaddr *, socklen_t);
 long send(int, const void *, unsigned long, int);
 long recv(int, void *, unsigned long, int);

@@ -244,6 +244,19 @@ int listen(int fd, int backlog) {
 	return 0;
 }
 
+int accept4(int fd, struct sockaddr *sa, socklen_t *salen, int flags) {
+	extern int accept(int, struct sockaddr *, socklen_t *);
+	extern int fcntl(int, int, ...);
+	int nfd = accept(fd, sa, salen);
+	if (nfd >= 0 && flags) {
+		if (flags & 0x1000 /*SOCK_NONBLOCK == O_NONBLOCK here*/)
+			fcntl(nfd, 4 /*F_SETFL*/, 0x1000);
+		if (flags & 0x2000 /*SOCK_CLOEXEC*/)
+			fcntl(nfd, 2 /*F_SETFD*/, 1 /*FD_CLOEXEC*/);
+	}
+	return nfd;
+}
+
 int accept(int fd, struct sockaddr *sa, socklen_t *salen) {
 	ns_ent *e = ns_get(fd);
 	if (!e || e->state != 2) { errno = e ? EINVAL : ENOTSOCK; return -1; }
