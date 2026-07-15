@@ -1,0 +1,11 @@
+</$objtype/mkfile
+BIN=/$objtype/bin
+
+TARG=gpu9
+OFILES=gpu9cmd.$O gpu9lib.$O
+HFILES=gpu9.h
+
+</sys/src/cmd/mkone
+
+# the driver library + the command live in gpu9/{lib,cmd}; mkone wants them here,
+# so the install recipe copies them in (see gpu9/README.md for the pac9 story).
