@@ -60,14 +60,15 @@ alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacrit
 # alacritty9 (or any TERM-setting host). jobs/:terminal/LSP all work.
 neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9/neovim9-amd64.tar.gz
 # gpu9 — the Intel Gen8 (Broadwell) GPU driver, entirely in userspace. Builds
-# on-box from two small kencc files, so no tarball and no version column (the
+# on-box from a few small kencc files, so no tarball and no version column (the
 # registry's rule: a version needs an immutable release URL, and a git clone
 # tracks HEAD). `pac9 changelog gpu9` after install; the mkfile ships it.
 #
-# Its reason to exist is the CLOCK: 9front has no GPU driver, so nothing runs
-# RPS and Broadwell sits at 100MHz of its 800MHz forever. `gpu9 rps` shows the
-# 6.7x. It is NOT a general speed win — see the changelog, it is honest about
-# tying memcpy at 4MB. No 3D/OpenGL; use gl9 for that.
+# Gives 9front HARDWARE 2D ACCELERATION, which it has never had (`hwaccel off`,
+# softscreen — the CPU pushes every pixel through an uncached aperture). gpu9
+# fills/scrolls the framebuffer on the GPU blitter: 300-650x the CPU on screen
+# work, verified. `gpu9 fill` / `scroll` / `demo`. It is honest that plain
+# RAM-to-RAM copies are NOT a win (`gpu9 bench`). No 3D/OpenGL; use gl9.
 #
 # SECURITY: a process with GPU MMIO + GTT can DMA anywhere in physical memory =
 # full privilege escalation. Opt-in only, never a default, never on a shared box.

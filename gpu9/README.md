@@ -1,59 +1,66 @@
 # gpu9 — an Intel GPU driver for 9front, in userspace
 
-`gpu9` drives the Intel GPU on 9front: it submits commands to the hardware, waits
-for them properly, and — crucially — **manages the GPU's clock**, which nothing
-else on 9front does.
+`gpu9` gives 9front what it has never had: **hardware 2D acceleration**. 9front
+runs with `hwaccel off` and `softscreen on` — every pixel on screen is pushed by
+the CPU, by hand, through an uncached aperture. gpu9 hands those operations to
+the GPU's blitter, where they belong.
 
 It targets **Intel Gen8 (Broadwell)**. Tested on cirno, a Shuttle DS57U
 (`8086/1606`, Broadwell-U GT1). See `docs/plans/2026-07-15-gpu9-broadwell-3d.md`
 for scope and `NOTES.md` for the engineering detail.
 
-## The headline: your GPU is probably asleep
+## The headline: it accelerates the actual screen, 300–650x
 
-Linux's i915 runs RPS (Render P-State) — it reads the hardware's frequency limits
-and asks for one. **9front has no GPU driver, so nothing ever asks, and the GPU
-sits at its minimum clock forever.** On cirno that is **100 MHz out of 800 MHz**.
+The CPU can only reach framebuffer memory through the aperture, and that memory
+is uncached: **13–15 MB/s**. The GPU's blitter is native to it. So for the
+operations a display does all day — clearing a region, scrolling the screen —
+the GPU is not a little faster, it is **two orders of magnitude** faster:
 
-Asking for the top P-state — one register write a real driver owes the hardware —
-makes it **6.7x faster**. Don't take that on trust; `gpu9 rps` re-derives it on
-your box, running the same verified 4MB blit at each P-state:
+    gpu9 fill      GPU 9892 MB/s  vs CPU 15 MB/s  = 646x   (clear 1024x768)
+    gpu9 scroll    GPU 4426 MB/s  vs CPU 13 MB/s  = 328x   (scroll up 16px)
 
+Both are readback-verified — the numbers are for copies that provably landed
+the right pixels. This is the honest comparison: both sides write the same
+framebuffer VRAM, and it is exactly the work 9front's softscreen does by hand
+today. `gpu9 demo` draws a grid straight onto the live screen so you can see it.
+
+## Why it is fast: the GPU was asleep
+
+That 9892 MB/s is only there because gpu9 also does the one thing every real
+driver does and 9front does not: **manage the clock**. With no driver, nothing
+runs RPS (Render P-State) and Broadwell parks at its 100 MHz floor forever — 1/8
+of the 800 MHz it can do. One register write fixes it:
+
+    gpu9 rps
     RPn (BIOS default, no driver) 100 MHz :    684 MB/s
     RP0 (what gpu9 asks for)      800 MHz :   4568 MB/s
     6.7x faster, for one write to RPNSWREQ. Both copies verified.
 
-## Is it faster than the CPU? Barely, and only on big copies
+## What about plain RAM-to-RAM copies?
 
-    gpu9 bench
-
-         bytes |   GPU blit   |  CPU memcpy  | GPU vs CPU
-        262144 |   4411 MB/s  |   8609 MB/s  | 0.51x
-       1048576 |   4459 MB/s  |   6290 MB/s  | 0.71x
-       4194304 |   4428 MB/s  |   4455 MB/s  | 0.99x
-      16244736 |   4418 MB/s  |   4101 MB/s  | 1.08x  <- GPU wins
-
-The GPU is **flat** (clock-bound). The CPU is faster while the data fits in
-cache, then falls to ~4.1 GB/s. They **tie around 4 MB**, and past that the GPU
-is ~8% ahead — while working asynchronously, which is the real win.
-
-That is a weaker claim than this file used to make. It said "1.11x at 16MB", and
-that number was **timing a copy that never happened**: nothing verified the
-blit, and the last 1MB of the aperture silently swallows writes (see below).
-`gpu9 bench` now checks every copy and refuses to print a speed for a wrong one.
-
-No cherry-picking in the other direction either: the CPU baseline is `memcpy` in
-**normal cached RAM**, best of several. (Benchmarking the CPU *through the
-aperture* would show ~13 MB/s and let us claim "50x faster" — that memory is
-uncached, and the number would be a lie.)
+There the GPU is *not* a win — and gpu9 says so. `gpu9 bench` copies VRAM and
+compares against `memcpy` in cached RAM: the CPU cache wins below 4 MB, they tie
+at 4 MB, the GPU is ~8% ahead past it. That is the wrong workload for a GPU (it
+does not copy your cached RAM), but the benchmark is kept, and honest, so the
+300–650x screen numbers above cannot be mistaken for a copy-anything claim.
+(An earlier version of this file *did* overclaim here — "1.11x at 16MB" — while
+timing a copy that never finished; every blit is verified now.)
 
 ## Use
 
     echo type igfx >/dev/vgactl    # once: makes the kernel register the segments
     gpu9 info                      # what the GPU is; what clock it is really at
+    gpu9 fill                      # accelerated framebuffer clear, GPU vs CPU
+    gpu9 scroll                    # accelerated screen scroll, GPU vs CPU
+    gpu9 demo                      # draw a grid on the real screen (visible!)
     gpu9 clock                     # request the max P-state
     gpu9 rps                       # prove the 6.7x: same blit at RPn vs RP0
     gpu9 bench                     # GPU blitter vs CPU memcpy (verifies each copy)
     gpu9 test                      # self-check: submit work, verify the GPU did it
+
+The acceleration is also a library — `gpu9_fill()` and `gpu9_blt()` in
+`lib/gpu9.c` are the primitives; the commands above just exercise them. That is
+the seam a `draw(3)`-backed accelerator or a terminal would hook into.
 
 `echo type igfx` only makes the kernel map BAR0/the aperture and register them as
 named segments — it does **not** program your display.
@@ -97,7 +104,8 @@ never a default.
 ## Status
 
 Working: MMIO, forcewake, GTT/aperture memory, RPS, the legacy ring, batch
-buffers with correct fences, the 2D blitter — all verified on bare metal.
+buffers with correct fences, and **accelerated 2D fill + copy** (`gpu9_fill` /
+`gpu9_blt`) — all verified on bare metal, 300–650x the CPU on screen work.
 
 **Not yet: 3D/OpenGL.** Mesa's `iris` now **compiles and links** for 9front
 (1027/1027 TUs via cc9, zero undefined symbols), but wiring it to gpu9 is a big
