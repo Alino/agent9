@@ -143,13 +143,9 @@ the VM.
 
 ## Don't
 
-- Don't propose Rust ports. No Plan 9 target for rustc.
-- Don't propose Python in the runtime. Python 3 isn't ported.
 - Don't bring Linuxisms into the C (epoll, pthreads, signalfd). Plan 9
   has threads(2), channels, alt(), 9P, rfork. Use them.
 - Don't malloc/free. Use mallocz, sysfatal, the libthread proc model.
-- Don't propose nvim/vim. Use acme, or `9vim` (a port that exists but
-  is mostly a curiosity).
 
 ## See also
 
