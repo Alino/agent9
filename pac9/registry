@@ -1,9 +1,16 @@
 # pac9 curated package registry.
-# Columns are TAB-separated:  name<TAB>url<TAB>subdir<TAB>recipe<TAB>deps
+# Columns are TAB-separated:  name<TAB>url<TAB>subdir<TAB>recipe<TAB>deps<TAB>version
 #   subdir  '.' = repo root
 #   recipe  '-' = default detection (mk install if the mkfile has that target)
 #   deps    optional 5th column: space-separated package names installed
 #           first if not already present (omit or '-' for none)
+#   version optional 6th column: the current version. If given, the release URL
+#           MUST embed it (…/download/<pkg>-v<version>/…) so the URL is immutable
+#           — a tag you can overwrite is not a version. Enables `pac9 outdated`
+#           and `pac9 upgrade`. Entries without one still work; they read as '-'
+#           and upgrade only via an explicit `pac9 install`.
+#           NB: to give a version you MUST give deps too ('-' if none) — a blank
+#           5th column would make the 6th ambiguous.
 # Unknown names fall through to being treated as a git URL, so this file
 # only needs entries for packages that want a short name or a custom build.
 #
@@ -14,7 +21,7 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 # sys/lib/...), record its file list, and unpack it at /. These build from
 # vendored upstream that isn't cloneable, so we ship built artifacts.
 # (zig9 is a host-only cross-compiler — not installable on 9front, not listed.)
-python9	-	.	tarball https://github.com/Alino/agent9/releases/download/py/python9-amd64.tar.gz
+python9	-	.	tarball https://github.com/Alino/agent9/releases/download/python9/python9-amd64.tar.gz
 node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node/node9-amd64.tar.gz
 # cc9: on-box C++ toolchain (cc -> clang -> ld.lld -> elf2aout). Self-contained.
 cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9/cc9-amd64.tar.gz
@@ -53,3 +60,8 @@ vts	https://github.com/Alino/agent9	src/vts	-
 vtwin	https://github.com/Alino/agent9	src/vtwin	-
 xena-panel	https://github.com/Alino/agent9	src/xena-panel	-
 launcher	https://github.com/Alino/agent9	src/launcher	-
+# hermes9 — the NousResearch hermes-agent for 9front. Ships the site bundle +
+# launcher only; the interpreter (Python 3.11 with ssl/sqlite/zlib/pydantic-core/
+# jiter built in) + stdlib come from the python9 package (5th-column dep).
+# After install: set $MINIMAX_KEY or write /usr/glenda/hermes9/minimax.key, then `hermes`.
+hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9/hermes9-amd64.tar.gz	python9

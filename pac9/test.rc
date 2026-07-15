@@ -48,6 +48,49 @@ if(test -d /tmp/pac9tf) fail 'file-manifest uninstall left the empty dir'
 if(test -f /sys/lib/pac9/files/pac9tb) fail 'file list not removed'
 if(grep -s '^pac9tb ' $man) fail 'pac9tb still in manifest'
 
+# --- versions ---
+# The registry's optional 6th column. rc drops empty fields when splitting, so
+# the field COUNT is what resolve keys on: 3 = bare, 4 = deps, 5 = deps+version.
+# These cases are exactly where that can go wrong, so cover all three shapes.
+vout=/tmp/pac9ver.out
+rm -f $vout
+echo 'pac9v1'^$tab^'-'^$tab^'.'^$tab^'echo v >'^$vout^$tab^'-'^$tab^'0.2.0' >>$reg
+echo 'pac9v2'^$tab^'-'^$tab^'.'^$tab^'echo v >'^$vout^$tab^'-'^$tab^'1.0.0' >>$reg
+
+# a versioned install must record its version in the manifest (4th field)
+pac9 install pac9v1
+if(! test -f $vout) fail 'versioned recipe did not run'
+if(! grep -s '^pac9v1 .* 0.2.0$' $man) fail 'manifest did not record the version'
+if(! pac9 list | grep -s 'pac9v1	0.2.0') fail 'list does not show the version'
+
+# installed 0.2.0 vs registry 0.2.0 -> current, must NOT be outdated
+if(pac9 outdated | grep -s '^pac9v1') fail 'current package reported outdated'
+
+# pin the manifest back a version -> now it must be outdated, and upgrade fixes it
+awk '$1!=n' 'n=pac9v1' $man >$man.tmp
+mv $man.tmp $man
+echo 'pac9v1 - - 0.1.0' >>$man
+if(! pac9 outdated | grep -s '^pac9v1') fail 'stale package not reported outdated'
+pac9 upgrade pac9v1
+if(! grep -s '^pac9v1 .* 0.2.0$' $man) fail 'upgrade did not record the new version'
+if(pac9 outdated | grep -s '^pac9v1') fail 'still outdated after upgrade'
+
+# an UNVERSIONED package must never be reported outdated: with no version on
+# either side there is nothing to compare, and nagging a reinstall would be a lie
+echo 'pac9u1 - - ' >>$man
+if(pac9 outdated | grep -s '^pac9u1') fail 'unversioned package reported outdated'
+
+# changelog: present -> printed; absent -> non-zero exit
+mkdir -p /sys/lib/pac9/changelog
+echo 'hello changelog' >/sys/lib/pac9/changelog/pac9v1
+if(! pac9 changelog pac9v1 | grep -s 'hello changelog') fail 'changelog not printed'
+if(pac9 changelog pac9nope >[2]/dev/null) fail 'missing changelog should fail'
+rm -f /sys/lib/pac9/changelog/pac9v1
+
+pac9 uninstall pac9v1
+awk '$1!=n' 'n=pac9u1' $man >$man.tmp
+mv $man.tmp $man
+
 mv $reg.bak $reg
-rm -f $tout $dout
+rm -f $tout $dout $vout
 echo PASS

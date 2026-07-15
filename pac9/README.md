@@ -7,14 +7,33 @@ pac9 install netsurf              # curated short name
 pac9 install vts vtwin            # several at once
 pac9 install pi9                  # pulls in its deps (vts, vtwin) too
 pac9 install https://host/repo    # any git repo
-pac9 list
+pac9 list                         # name, version, source
 pac9 uninstall netsurf
 pac9 update                       # refresh the registry (and pac9 itself)
+pac9 outdated                     # registry version != installed version
+pac9 upgrade [name...]            # reinstall what moved (all, if unnamed)
+pac9 changelog gl9                # what changed in the version you have
 ```
 
 The registry is a local file, so a box only sees packages published before it
 installed pac9 — run `pac9 update` when a name gives "bad uri" or you know a
-new package shipped.
+new package shipped. `update` refreshes the *registry*; `upgrade` refreshes your
+*packages*.
+
+## Versions
+
+A registry entry may carry a 6th column: its current version. When it does, the
+release URL embeds that version, so **the URL is immutable** — a tag you can
+overwrite is not a version: the same URL would quietly serve different bytes, and
+nobody could pin a build or roll one back. pac9 records the version it installed,
+which is what lets `list`, `outdated` and `upgrade` mean anything.
+
+Entries without a version still work; they read as `-` and upgrade only via an
+explicit `pac9 install`. Nothing that has no version on both sides is ever
+reported outdated — with nothing to compare, saying so would be a guess.
+
+Versioned packages ship a `CHANGELOG` (at `/sys/lib/pac9/changelog/<name>`), so
+`pac9 changelog <name>` works offline and answers "why would I upgrade?".
 
 ## How it works
 

@@ -2,9 +2,12 @@
 # pac9 — a package manager for 9front.
 #
 #   pac9 install <name|git-url>...  clone -> build -> install package(s)
-#   pac9 list                       show what's installed
+#   pac9 list                       show what's installed (with versions)
 #   pac9 uninstall <name>           remove a package (best-effort)
 #   pac9 update                     refresh the registry (and pac9 itself)
+#   pac9 outdated                   registry version != installed version
+#   pac9 upgrade [<name>...]        reinstall those whose version changed
+#   pac9 changelog <name>           what changed in the installed version
 #
 # install takes any number of packages. A registry entry may name
 # dependencies (5th column); those are installed first if not already
@@ -20,10 +23,19 @@
 # lets uninstall delete exactly those files (a plain `rm bin/<name>` can't,
 # since e.g. python9's tarball installs `python`, not `python9`).
 #
+# Versions: a registry entry MAY carry a 6th column, the current version, and
+# its release URL should embed that version so the URL is immutable (a tag you
+# can overwrite is not a version — the same URL would silently serve different
+# bytes, and nobody could pin or roll back). pac9 records the installed version
+# in the manifest, so `list`/`outdated`/`upgrade` can compare. Entries without a
+# version still work and read as '-' (unversioned/grandfathered); they upgrade
+# only via an explicit `pac9 install`.
+#
 # Runtime state:
-#   /sys/lib/pac9/registry   curated  name<tab>url<tab>subdir<tab>recipe<tab>deps
-#   /sys/lib/pac9/installed  manifest  name url srcdir  (one line per pkg)
+#   /sys/lib/pac9/registry   curated  name<tab>url<tab>subdir<tab>recipe<tab>deps<tab>version
+#   /sys/lib/pac9/installed  manifest  name url srcdir version  (one line per pkg)
 #   /sys/lib/pac9/files/<name>  file list unpacked by a tarball package
+#   /sys/lib/pac9/changelog/<name>  shipped by the package's tarball
 #   $home/src/pac9/<name>/   cached clone (reused on re-install)
 
 reg=/sys/lib/pac9/registry
@@ -39,29 +51,39 @@ fn usage {
 	echo '       pac9 list' >[1=2]
 	echo '       pac9 uninstall <name>' >[1=2]
 	echo '       pac9 update' >[1=2]
+	echo '       pac9 outdated' >[1=2]
+	echo '       pac9 upgrade [<name>...]' >[1=2]
+	echo '       pac9 changelog <name>' >[1=2]
 	exit usage
 }
 
-# resolve <arg> -> sets $name $url $subdir $recipe $deps
+# resolve <arg> -> sets $name $url $subdir $recipe $deps $version
 # registry hit wins; otherwise <arg> is a git URL and we default the rest.
+# NB: rc drops empty fields when splitting, so a trailing empty column just
+# shortens the list -> 3 = no deps/version, 4 = deps only, 5 = deps + version.
+# An entry that wants a version MUST therefore give deps as '-', not blank.
 fn resolve {
 	arg=$1
 	entry=()
 	deps=()
+	version=-
 	if(test -f $reg){
 		oif=$ifs
 		ifs=$nl
-		entry=`{awk 'BEGIN{FS="\t"} $1==a{print $2; print $3; print $4; print $5; exit}' 'a='^$arg $reg}
+		entry=`{awk 'BEGIN{FS="\t"} $1==a{print $2; print $3; print $4; print $5; print $6; exit}' 'a='^$arg $reg}
 		ifs=$oif
 	}
-	if(~ $#entry 3 || ~ $#entry 4){
+	if(~ $#entry 3 || ~ $#entry 4 || ~ $#entry 5){
 		name=$arg
 		url=$entry(1)
 		subdir=$entry(2)
 		recipe=$entry(3)
 		# 5th column is a space-separated dep list; re-split it into words
-		if(~ $#entry 4 && ! ~ $entry(4) -)
-			deps=`{echo $entry(4)}
+		if(~ $#entry 4 || ~ $#entry 5)
+			if(! ~ $entry(4) -)
+				deps=`{echo $entry(4)}
+		if(~ $#entry 5)
+			version=$entry(5)
 	}
 	if not {
 		url=$arg
@@ -69,6 +91,27 @@ fn resolve {
 		subdir=.
 		recipe=-
 	}
+}
+
+# registry_version <name> -> the registry's version for <name> ('-' if none)
+fn registry_version {
+	rv=-
+	if(test -f $reg)
+		rv=`{awk 'BEGIN{FS="\t"} $1==a{print ($6==""?"-":$6); exit}' 'a='^$1 $reg}
+	if(~ $#rv 0)
+		rv=-
+	echo $rv
+}
+
+# installed_version <name> -> version recorded at install ('-' if unknown, e.g.
+# a manifest written before versions existed)
+fn installed_version {
+	iv=-
+	if(test -f $manifest)
+		iv=`{awk '$1==n{print ($4==""?"-":$4); exit}' 'n='^$1 $manifest}
+	if(~ $#iv 0)
+		iv=-
+	echo $iv
 }
 
 # installed_p <name> -> true (exit 0) if the package is in the manifest
@@ -201,8 +244,11 @@ fn install_one {
 		awk '$1!=n' 'n='^$name $manifest >$manifest.tmp
 		mv $manifest.tmp $manifest
 	}
-	echo $name $url $dir >>$manifest
-	echo 'pac9: installed '$name
+	echo $name $url $dir $version >>$manifest
+	if(~ $version -)
+		echo 'pac9: installed '$name
+	if not
+		echo 'pac9: installed '$name' '$version
 }
 
 fn cmd_install {
@@ -219,7 +265,67 @@ fn cmd_list {
 		echo 'pac9: nothing installed'
 		exit
 	}
-	awk '{print $1"\t"$2}' $manifest
+	# name, version ('-' for pre-versioning installs), source
+	awk '{print $1"\t"($4==""?"-":$4)"\t"$2}' $manifest
+}
+
+# outdated -> print "<name> <installed> <registry>" for each package whose
+# registry version differs from what's installed. Unversioned either side is
+# skipped: with no version to compare, "outdated" is unanswerable — saying
+# nothing beats guessing and nagging a reinstall of a package that is current.
+fn outdated_list {
+	if(! test -f $manifest)
+		exit
+	for(n in `{awk '{print $1}' $manifest}){
+		iv=`{installed_version $n}
+		rv=`{registry_version $n}
+		if(! ~ $iv - && ! ~ $rv - && ! ~ $iv $rv)
+			echo $n $iv $rv
+	}
+}
+
+fn cmd_outdated {
+	out=`{outdated_list}
+	if(~ $#out 0){
+		echo 'pac9: everything is current'
+		exit ''
+	}
+	outdated_list | awk '{print $1"\t"$2"\t->\t"$3}'
+}
+
+fn cmd_upgrade {
+	if(~ $#* 0){
+		# no names: upgrade everything the registry says has moved
+		names=`{outdated_list | awk '{print $1}'}
+		if(~ $#names 0){
+			echo 'pac9: everything is current'
+			exit ''
+		}
+	}
+	if not
+		names=$*
+	for(p in $names){
+		iv=`{installed_version $p}
+		rv=`{registry_version $p}
+		if(~ $iv $rv && ! ~ $rv -){
+			echo 'pac9: '$p' is already '$rv
+		}
+		if not {
+			echo 'pac9: upgrading '$p' '$iv' -> '$rv
+			@{ install_one $p }
+		}
+	}
+}
+
+fn cmd_changelog {
+	if(~ $#* 0) usage
+	f=/sys/lib/pac9/changelog/$1
+	if(test -f $f){
+		cat $f
+		exit ''
+	}
+	echo 'pac9: no changelog shipped for '$1 >[1=2]
+	exit nochangelog
 }
 
 fn cmd_uninstall {
@@ -310,6 +416,12 @@ case uninstall remove
 	cmd_uninstall $*
 case update
 	cmd_update $*
+case outdated
+	cmd_outdated $*
+case upgrade
+	cmd_upgrade $*
+case changelog
+	cmd_changelog $*
 case *
 	usage
 }
