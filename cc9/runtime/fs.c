@@ -550,6 +550,8 @@ int putenv(char *s){
  * a NULL-terminated "name=value" array from /env. getenv() still reads /env
  * directly (authoritative); this is only for code that walks `environ`. */
 char **environ = 0;
+char *secure_getenv(const char *n){ extern char *getenv(const char *); return getenv(n); }  /* no setuid on Plan 9 */
+int clearenv(void){ if(environ) environ[0] = 0; return 0; }
 void __cc9_build_environ(void){
 	/* ponytail: 512-entry cap; /env rarely holds more. Grow if it ever does. */
 	static char *tab[512];

@@ -25,6 +25,10 @@ int abs(int); long labs(long); long long llabs(long long);
 div_t div(int, int); ldiv_t ldiv(long, long); lldiv_t lldiv(long long, long long);
 int atoi(const char *); long atol(const char *); long long atoll(const char *); double atof(const char *);
 char *getenv(const char *); int setenv(const char *, const char *, int); int unsetenv(const char *);
+/* glibc extensions LibCore expects: no setuid notion on Plan 9, so
+ * secure_getenv is plain getenv; clearenv empties the environ table. */
+char *secure_getenv(const char *);
+int clearenv(void);
 int putenv(char *);
 int system(const char *);
 void qsort(void *, size_t, size_t, int (*)(const void *, const void *));
