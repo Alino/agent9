@@ -1,0 +1,14 @@
+#!/bin/rc
+# zig9 native launcher for 9front. Install as /rc/bin/zig; a.out at
+# /amd64/bin/zig9, lib tree at /sys/lib/zig9/lib (build.py --libtar).
+#
+# The CBE-built compiler does not reliably pick up ZIG_LIB_DIR from the
+# environment, so inject the lib + global-cache dirs as flags right after the
+# subcommand (this is exactly how the compile path is driven in testing).
+# ponytail: version/env/help/fmt don't compile and reject these flags, so pass
+# them through untouched; every compiling subcommand accepts both flags.
+if(~ $1 version env help fmt targets libc)
+	exec /amd64/bin/zig9 $*
+sub=$1
+shift
+exec /amd64/bin/zig9 $sub --zig-lib-dir /sys/lib/zig9/lib --global-cache-dir $home/lib/zig9-cache $*

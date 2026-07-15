@@ -1,0 +1,904 @@
+--- a/lib/std/os/plan9.zig	2026-07-14 20:50:41
++++ b/lib/std/os/plan9.zig	2026-07-15 05:01:45
+@@ -94,6 +94,7 @@
+     OVERFLOW,
+     LOOP,
+     TXTBSY,
++    ILSEQ,
+ 
+     pub fn init(r: usize) E {
+         const signed_r: isize = @bitCast(r);
+@@ -109,6 +110,25 @@
+     _ = syscall_bits.syscall2(.ERRSTR, @intFromPtr(&errstr_buf), ERRMAX);
+     return std.mem.span(@as([*:0]u8, @ptrCast(&errstr_buf)));
+ }
++
++// zig9: Plan 9 syscalls return -1 and set an error *string*, not a POSIX errno.
++// std.posix.errno() expects a small negative -errno. Map the common errstr
++// phrases to the errno the shared std.fs code branches on (EEXIST for
++// makePath, ENOENT for open-missing, etc.) and return it as a small negative
++// value. Anything unrecognized becomes -EIO (a real, in-range errno) rather
++// than 0 (which errno() would read as success). // ponytail: substring match,
++// not the full errstr table — covers what the compiler's fs paths need.
++pub fn errnoNeg() usize {
++    const s = errstr();
++    const e: isize = if (containsAny(s, "already exists")) -@as(isize, @intFromEnum(E.EXIST)) else if (containsAny(s, "exist")) blk: {
++        // "does not exist" / "not found" -> ENOENT; bare "exists" -> EEXIST
++        break :blk if (containsAny(s, "not exist") or containsAny(s, "no such")) -@as(isize, @intFromEnum(E.NOENT)) else -@as(isize, @intFromEnum(E.EXIST));
++    } else if (containsAny(s, "does not exist") or containsAny(s, "no such") or containsAny(s, "not found")) -@as(isize, @intFromEnum(E.NOENT)) else if (containsAny(s, "is a directory")) -@as(isize, @intFromEnum(E.ISDIR)) else if (containsAny(s, "permission")) -@as(isize, @intFromEnum(E.PERM)) else if (containsAny(s, "not a directory")) -@as(isize, @intFromEnum(E.NOTDIR)) else -@as(isize, @intFromEnum(E.IO));
++    return @bitCast(e);
++}
++fn containsAny(haystack: []const u8, needle: []const u8) bool {
++    return std.mem.indexOf(u8, haystack, needle) != null;
++}
+ pub const Plink = anyopaque;
+ pub const Tos = extern struct {
+     /// Per process profiling
+@@ -175,9 +195,14 @@
+ // zig9: more std.posix surface so std.fs / the default test runner compile.
+ pub const ino_t = u64;
+ pub const IOV_MAX = 1024;
+-// Plan 9 has no flock(2) (it uses exclusive-open / DMEXCL). Declaring it as void
+-// makes std's `have_flock = @TypeOf(system.flock) != void` evaluate false.
+-pub const flock = {};
++// Plan 9 has no flock(2) (it uses exclusive-open / DMEXCL). A no-op success:
++// the native compiler is a single builder per box, so advisory locks are moot.
++// ponytail: no-op lock; switch to DMEXCL opens if concurrent builds ever matter.
++pub fn flock(fd: i32, operation: i32) usize {
++    _ = fd;
++    _ = operation;
++    return 0;
++}
+ // Plan 9 has no mmap; these stubs only let std.posix's `system.MAP`/`PROT`
+ // aliases resolve (mmap itself is never reachable on plan9).
+ pub const MAP = packed struct(u32) { _: u32 = 0 };
+@@ -211,12 +236,579 @@
+     var i: usize = 0;
+     while (i < count) : (i += 1) {
+         const n = write(fd, iov[i].base, iov[i].len);
++        if (@as(isize, @bitCast(n)) < 0) return n;
++        total += n;
++        if (n != iov[i].len) break;
++    }
++    return total;
++}
++
++// No readv(2) on Plan 9 — emulate over read(2), stopping on error/short read.
++pub fn readv(fd: i32, iov: [*]const std.posix.iovec, count: usize) usize {
++    var total: usize = 0;
++    var i: usize = 0;
++    while (i < count) : (i += 1) {
++        const n = read(fd, iov[i].base, iov[i].len);
++        if (@as(isize, @bitCast(n)) < 0) return n;
++        total += n;
++        if (n != iov[i].len) break;
++    }
++    return total;
++}
++
++// zig9: the std.posix surface the compiler's own runtime uses on plan9 —
++// enough for std.fs stat/rename/dir-walk, getcwd, and std.time clocks.
++// getrandom stays void so posix's `@TypeOf(system.getrandom) != void` guard is
++// false (that path is linux/libc-only). posix.getrandom gets a dedicated plan9
++// arm that calls readRandom below.
++pub const getrandom = {};
++
++// zig9: entropy from /dev/random (9front). Backs posix.getrandom, which
++// std.crypto.random seeds from — needed by std.fs.AtomicFile's random temp
++// names (the compiler's builtin.zig writeFile goes through AtomicFile).
++pub fn readRandom(buffer: []u8) usize {
++    const fd = openMode("/dev/random", 0, 0);
++    if (@as(isize, @bitCast(fd)) < 0) return @bitCast(@as(isize, -1));
++    defer _ = close(@intCast(fd));
++    var off: usize = 0;
++    while (off < buffer.len) {
++        const n = read(@intCast(fd), buffer.ptr + off, buffer.len - off);
++        const sn: isize = @bitCast(n);
++        if (sn <= 0) return @bitCast(@as(isize, -1));
++        off += @intCast(n);
++    }
++    return 0;
++}
++pub const pid_t = i32;
++pub const gid_t = u32;
++pub const pollfd = extern struct { fd: i32, events: i16, revents: i16 };
++pub const POLL = struct {
++    pub const IN: i16 = 0x001;
++    pub const PRI: i16 = 0x002;
++    pub const OUT: i16 = 0x004;
++    pub const ERR: i16 = 0x008;
++    pub const HUP: i16 = 0x010;
++    pub const NVAL: i16 = 0x020;
++};
++pub const rlim_t = u64;
++pub const rlimit_resource = enum(c_int) { STACK = 0, NOFILE = 1, _ };
++pub const rlimit = extern struct { cur: rlim_t, max: rlim_t };
++pub const RLIM = struct {
++    pub const INFINITY: rlim_t = ~@as(rlim_t, 0);
++};
++// Plan 9 has no rlimits; report "infinity" so callers that try to raise a limit
++// (e.g. raiseFileDescriptorLimit) treat it as already unlimited and no-op.
++pub fn getrlimit(resource: rlimit_resource, rl: *rlimit) usize {
++    _ = resource;
++    rl.* = .{ .cur = RLIM.INFINITY, .max = RLIM.INFINITY };
++    return 0;
++}
++pub fn setrlimit(resource: rlimit_resource, rl: *const rlimit) usize {
++    _ = resource;
++    _ = rl;
++    return 0;
++}
++
++// Plan 9 DUP(2) has dup2 semantics natively: dup(old, new) returns new.
++pub fn dup2(old: i32, new: i32) usize {
++    return syscall_bits.syscall2(.DUP, @bitCast(@as(isize, old)), @bitCast(@as(isize, new)));
++}
++pub fn dup(old: i32) usize {
++    return syscall_bits.syscall2(.DUP, @bitCast(@as(isize, old)), @bitCast(@as(isize, -1)));
++}
++
++pub const RFPROC: usize = 16;
++pub const RFNOWAIT: usize = 64;
++pub const RFFDG: usize = 4;
++pub const RFREND: usize = 8192;
++pub const RFNAMEG: usize = 1;
++pub const RFENVG: usize = 2;
++pub const RFNOTEG: usize = 8;
++pub const RFMEM: usize = 32;
++pub const RFCFDG: usize = 4096;
++
++pub fn rfork(flags: usize) usize {
++    return syscall_bits.syscall1(.RFORK, flags);
++}
++
++// POSIX fork() ~= rfork(RFPROC|RFFDG|RFREND): new proc, copied fd table, no
++// shared memory. Returns child pid to parent, 0 to child. Used only by the
++// shared Child.spawnPosix path; the plan9 Child arm (patch for zig build)
++// calls rfork directly.
++pub fn fork() usize {
++    return rfork(RFPROC | RFFDG | RFREND);
++}
++
++pub fn pipe(fds: *[2]i32) usize {
++    return syscall_bits.syscall1(.PIPE, @intFromPtr(fds));
++}
++// pipe2 declared void so posix's `@TypeOf(system.pipe2) != void` guard is false
++// (plan9 has no flags on pipe; posix falls back to system.pipe).
++pub const pipe2 = {};
++
++pub fn exec(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) usize {
++    return syscall_bits.syscall2(.EXEC, @intFromPtr(path), @intFromPtr(argv));
++}
++pub fn await_(buf: [*]u8, n: usize) usize {
++    return syscall_bits.syscall2(.AWAIT, @intFromPtr(buf), n);
++}
++
++pub fn fchdir(dirfd: i32) usize {
++    var buf: [std.fs.max_path_bytes]u8 = undefined;
++    const rc = fd2path(dirfd, &buf, buf.len);
++    if (@as(isize, @bitCast(rc)) < 0) return @bitCast(@as(isize, -1));
++    return chdir(@ptrCast(&buf));
++}
++
++// zig9: Plan 9 has one owner per namespace and no POSIX uid/gid/pgid mutation;
++// these exist only so the shared Child.spawnPosix path compiles. The plan9
++// Child arm (native `zig build`) does not call them.
++pub fn setreuid(ruid: uid_t, euid: uid_t) usize {
++    _ = ruid;
++    _ = euid;
++    return 0;
++}
++pub fn setregid(rgid: gid_t, egid: gid_t) usize {
++    _ = rgid;
++    _ = egid;
++    return 0;
++}
++pub fn setpgid(pid: pid_t, pgid: pid_t) usize {
++    _ = pid;
++    _ = pgid;
++    return 0;
++}
++
++pub const FD_CLOEXEC = 1;
++pub const F = struct {
++    pub const GETFD = 1;
++    pub const SETFD = 2;
++    pub const GETFL = 3;
++    pub const SETFL = 4;
++};
++// Plan 9 has no fcntl(2). CLOEXEC maps to the OCEXEC open bit; there is no
++// runtime toggle, so this reports success without doing anything.
++pub fn fcntl(fd: i32, cmd: i32, arg: usize) usize {
++    _ = fd;
++    _ = cmd;
++    _ = arg;
++    return 0;
++}
++pub const F_OK: c_int = 0;
++pub const X_OK: c_int = 1;
++pub const W_OK: c_int = 2;
++pub const R_OK: c_int = 4;
++pub const SEEK = struct {
++    pub const SET = 0;
++    pub const CUR = 1;
++    pub const END = 2;
++};
++// POSIX file-type bits, synthesized in Stat.mode from the Plan 9 qid/DMDIR.
++pub const S = struct {
++    pub const IFMT = 0o170000;
++    pub const IFIFO = 0o010000;
++    pub const IFCHR = 0o020000;
++    pub const IFDIR = 0o040000;
++    pub const IFBLK = 0o060000;
++    pub const IFREG = 0o100000;
++    pub const IFLNK = 0o120000;
++    pub const IFSOCK = 0o140000;
++    pub fn ISDIR(m: mode_t) bool {
++        return m & IFMT == IFDIR;
++    }
++    pub fn ISREG(m: mode_t) bool {
++        return m & IFMT == IFREG;
++    }
++    pub fn ISCHR(m: mode_t) bool {
++        return m & IFMT == IFCHR;
++    }
++    pub fn ISBLK(m: mode_t) bool {
++        return m & IFMT == IFBLK;
++    }
++    pub fn ISFIFO(m: mode_t) bool {
++        return m & IFMT == IFIFO;
++    }
++    pub fn ISLNK(m: mode_t) bool {
++        return m & IFMT == IFLNK;
++    }
++    pub fn ISSOCK(m: mode_t) bool {
++        return m & IFMT == IFSOCK;
++    }
++};
++
++// zig9: resolve a dirfd-relative path to an absolute path (Plan 9 has no *at
++// syscalls; every dir-relative op joins the dir's fd2path with the sub-path).
++// Returns the absolute path written into `buf`, NUL-terminated.
++pub fn resolveAt(dirfd: i32, path: [*:0]const u8, buf: []u8) ?[:0]u8 {
++    const sub = std.mem.span(path);
++    if (dirfd == AT.FDCWD or (sub.len > 0 and sub[0] == '/')) {
++        if (sub.len + 1 > buf.len) return null;
++        @memcpy(buf[0..sub.len], sub);
++        buf[sub.len] = 0;
++        return buf[0..sub.len :0];
++    }
++    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
++    const rc = fd2path(dirfd, &dir_buf, dir_buf.len);
++    if (@as(isize, @bitCast(rc)) < 0) return null;
++    const dir = std.mem.span(@as([*:0]u8, @ptrCast(&dir_buf)));
++    var fba = std.heap.FixedBufferAllocator.init(buf);
++    const a = fba.allocator();
++    const joined = std.fs.path.joinZ(a, &.{ dir, sub }) catch return null;
++    return joined;
++}
++
++pub fn unlinkat(dirfd: i32, path: [*:0]const u8, flags: u32) usize {
++    _ = flags; // Plan 9 remove(2) deletes files and empty dirs alike
++    var buf: [std.fs.max_path_bytes]u8 = undefined;
++    const abs = resolveAt(dirfd, path, &buf) orelse return @bitCast(@as(isize, -1));
++    return remove(abs.ptr);
++}
++
++pub fn mkdirat(dirfd: i32, path: [*:0]const u8, mode: mode_t) usize {
++    var buf: [std.fs.max_path_bytes]u8 = undefined;
++    const abs = resolveAt(dirfd, path, &buf) orelse return @bitCast(@as(isize, -@as(isize, @intFromEnum(E.NAMETOOLONG))));
++    // DMDIR (0x80000000) | perms, opened OREAD; create(2) makes the directory.
++    const perm: usize = 0x80000000 | @as(usize, @intCast(mode & 0o777));
++    const fd = create(abs.ptr, 0, perm);
++    if (@as(isize, @bitCast(fd)) < 0) {
++        // Capture the create() errno BEFORE the stat probe below overwrites
++        // errstr. create() over an existing name reports "is a directory"/
++        // "exists"; report EEXIST so std.fs.makePath treats it as present.
++        const create_errno = errnoNeg();
++        var st: Stat = .{};
++        if (@as(isize, @bitCast(stat(abs.ptr, &st))) == 0) return @bitCast(@as(isize, -@as(isize, @intFromEnum(E.EXIST))));
++        return create_errno;
++    }
++    _ = close(@intCast(fd));
++    return 0;
++}
++
++pub fn faccessat(dirfd: i32, path: [*:0]const u8, mode: u32, flags: u32) usize {
++    _ = mode;
++    _ = flags;
++    var buf: [std.fs.max_path_bytes]u8 = undefined;
++    const abs = resolveAt(dirfd, path, &buf) orelse return @bitCast(@as(isize, -1));
++    var st: Stat = .{};
++    return stat(abs.ptr, &st);
++}
++
++pub fn renameat(old_dirfd: i32, old_path: [*:0]const u8, new_dirfd: i32, new_path: [*:0]const u8) usize {
++    // Plan 9 rename = wstat the name field; it can only rename within the same
++    // directory (no move across dirs). Resolve both, require equal parents.
++    var obuf: [std.fs.max_path_bytes]u8 = undefined;
++    var nbuf: [std.fs.max_path_bytes]u8 = undefined;
++    const oabs = resolveAt(old_dirfd, old_path, &obuf) orelse return @bitCast(@as(isize, -1));
++    const nabs = resolveAt(new_dirfd, new_path, &nbuf) orelse return @bitCast(@as(isize, -1));
++    // Plan 9 rename = wstat name-change, SAME directory only. Report XDEV for a
++    // cross-dir move so std can fall back to copy+delete (see renameTmpIntoCache).
++    const odir = std.fs.path.dirname(oabs) orelse "/";
++    const ndir = std.fs.path.dirname(nabs) orelse "/";
++    if (!std.mem.eql(u8, odir, ndir)) return @bitCast(@as(isize, -@as(isize, @intFromEnum(E.XDEV))));
++    // zig9: under the CBE (native compiler) build, defer the same-dir case to
++    // cc9's proven rename() from n9libc — it does the Twstat name-change AND the
++    // POSIX remove-existing-target-then-retry that Plan 9 wstat-rename requires
++    // (bare wstat refuses if the target exists). The hand-rolled Twstat below
++    // works for the a.out cross path but is flakier across fs servers.
++    if (builtin.zig_backend == .stage2_c) {
++        const cc9_rename = @extern(*const fn ([*:0]const u8, [*:0]const u8) callconv(.c) c_int, .{ .name = "rename" });
++        const rc = cc9_rename(oabs.ptr, nabs.ptr);
++        return if (rc < 0) @bitCast(@as(isize, -@as(isize, @intFromEnum(E.EXIST)))) else 0;
++    }
++    const newname = std.fs.path.basename(nabs);
++    // Plan 9 names are bounded by NAMEMAX (28) / at most 255; a name that won't
++    // fit the Twstat buffer is not a valid target.
++    if (newname.len > 207) return @bitCast(@as(isize, -@as(isize, @intFromEnum(E.NAMETOOLONG))));
++    // Twstat: only the name field is set, everything else "don't touch".
++    // body_len counts the bytes AFTER the leading size[2]: 39 fixed fields
++    // (type..length) + name[2+len] + empty uid/gid/muid (2 each).
++    var st: [256]u8 = [_]u8{0} ** 256;
++    const namelen: u16 = @intCast(newname.len);
++    const body_len: u16 = 39 + 2 + namelen + 6;
++    std.mem.writeInt(u16, st[0..2], body_len, .little);
++    @memset(st[2..41], 0xff); // type..length (39 bytes) = no-change
++    std.mem.writeInt(u16, st[41..43], namelen, .little);
++    @memcpy(st[43 .. 43 + namelen], newname);
++    // uid/gid/muid empty strings (count 0) already zeroed
++    const rc = wstat(oabs.ptr, &st, body_len + 2);
++    return if (@as(isize, @bitCast(rc)) < 0) errnoNeg() else 0;
++}
++
++pub fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:null]const ?[*:0]const u8) usize {
++    _ = envp; // Plan 9 exec shares the /env group; no envp argument
++    return syscall_bits.syscall2(.EXEC, @intFromPtr(path), @intFromPtr(argv));
++}
++
++// Reaped waitmsgs for children other than the one being waited on. Plan 9's
++// AWAIT can't re-deliver a status, so stash mismatches here (mirrors cc9's ztab).
++// ponytail: fixed 8-slot table; a build with >8 concurrent orphaned children
++// would drop the 9th — fine for the compiler's spawn pattern, grow if needed.
++var zombie_pid: [8]pid_t = [_]pid_t{0} ** 8;
++var zombie_status: [8]u32 = undefined;
++
++// Decode one AWAIT waitmsg: "pid utime stime rtime 'status'". The status field
++// is rc-quoted (%q): a clean exit is '' (empty quoted string), NOT literally
++// empty. Matches cc9's cc9_wait_decode (posix_llvm.c).
++fn decodeWait(msg: []const u8, out_status: *u32) ?pid_t {
++    var it = std.mem.tokenizeScalar(u8, msg, ' ');
++    const wpid_s = it.next() orelse return null;
++    const wpid = std.fmt.parseInt(pid_t, wpid_s, 10) catch return null;
++    _ = it.next(); // utime
++    _ = it.next(); // stime
++    _ = it.next(); // rtime
++    var st = it.rest();
++    if (st.len != 0 and st[0] == '\'') st = st[1..]; // skip opening quote
++    // '' or end -> clean exit 0. All-digits -> that exit code (Zig's plan9 exit
++    // writes a decimal status for nonzero). Anything else -> report as a signal.
++    if (st.len == 0 or st[0] == '\'') {
++        out_status.* = 0;
++    } else if (std.fmt.parseInt(u8, std.mem.sliceTo(st, '\''), 10)) |code| {
++        out_status.* = @as(u32, code) << 8; // WIFEXITED, WEXITSTATUS=code
++    } else |_| {
++        out_status.* = @intFromEnum(E.@"2BIG"); // non-zero TERMSIG -> WIFSIGNALED
++        out_status.* = 6; // SIGABRT-ish
++    }
++    return wpid;
++}
++
++pub fn waitpid(pid: pid_t, status: *u32, flags: u32) usize {
++    // Serve a previously-stashed status for this pid first.
++    if (pid > 0) for (&zombie_pid, &zombie_status) |*zp, *zs| {
++        if (zp.* == pid) {
++            zp.* = 0;
++            status.* = zs.*;
++            return @intCast(pid);
++        }
++    };
++    var buf: [256]u8 = undefined;
++    while (true) {
++        const rc = syscall_bits.syscall2(.AWAIT, @intFromPtr(&buf), buf.len);
++        const n: isize = @bitCast(rc);
++        if (n < 0) return @bitCast(@as(isize, -1));
++        var st: u32 = 0;
++        const wpid = decodeWait(buf[0..@intCast(n)], &st) orelse continue;
++        if (pid > 0 and wpid != pid) {
++            // Not ours: stash it so a later waitpid(wpid) finds it.
++            for (&zombie_pid, &zombie_status) |*zp, *zs| {
++                if (zp.* == 0) {
++                    zp.* = wpid;
++                    zs.* = st;
++                    break;
++                }
++            }
++            if ((flags & 1) != 0) return 0; // WNOHANG: don't block re-reading
++            continue;
++        }
++        status.* = st;
++        return @intCast(wpid);
++    }
++}
++
++pub const nfds_t = u64;
++
++// POSIX wait-status decoders. The plan9 Child arm (zig9) recovers exit codes
++// from await(2) text and never builds these ints, but posix.zig references the
++// type unconditionally, so provide the conventional encoding.
++pub const W = struct {
++    pub fn EXITSTATUS(s: u32) u8 {
++        return @intCast((s & 0xff00) >> 8);
++    }
++    pub fn TERMSIG(s: u32) u32 {
++        return s & 0x7f;
++    }
++    pub fn STOPSIG(s: u32) u32 {
++        return EXITSTATUS(s);
++    }
++    pub fn IFEXITED(s: u32) bool {
++        return TERMSIG(s) == 0;
++    }
++    pub fn IFSTOPPED(s: u32) bool {
++        return (s & 0xff) == 0x7f;
++    }
++    pub fn IFSIGNALED(s: u32) bool {
++        return (((s & 0x7f) + 1) >> 1) > 0;
++    }
++};
++
++// Plan 9 signalling is note(2) via /proc/<pid>/note; std.posix.kill only needs
++// to compile for the shared Child code (the plan9 Child arm signals directly).
++pub fn kill(pid: pid_t, sig: u8) usize {
++    _ = sig;
++    var buf: [64]u8 = undefined;
++    const path = std.fmt.bufPrintZ(&buf, "/proc/{d}/note", .{pid}) catch return @bitCast(@as(isize, -1));
++    const fd = openMode(path.ptr, 1, 0); // OWRITE
++    if (@as(isize, @bitCast(fd)) < 0) return @bitCast(@as(isize, -1));
++    _ = write(@intCast(fd), "kill", 4);
++    _ = close(@intCast(fd));
++    return 0;
++}
++
++// Truncate via wstat setting the length field; a Twstat with every other field
++// "don't touch" (0xff / empty). // ponytail: builds the minimal 9P stat inline;
++// only length is set, all other fields left as no-change sentinels.
++pub fn ftruncate(fd: i32, length: u64) usize {
++    // Twstat setting only length: body = 39 fixed fields + 4 empty strings (8).
++    var st: [49]u8 = [_]u8{0} ** 49;
++    const body_len: u16 = 39 + 8; // 47
++    std.mem.writeInt(u16, st[0..2], body_len, .little);
++    @memset(st[2..33], 0xff); // type..mtime (31 bytes) = "don't touch"
++    std.mem.writeInt(u64, st[33..41], length, .little);
++    // name/uid/gid/muid empty strings (count 0) already zeroed at 41..49
++    const rc = syscall_bits.syscall3(.FWSTAT, @bitCast(@as(isize, fd)), @intFromPtr(&st), body_len + 2);
++    return if (@as(isize, @bitCast(rc)) < 0) errnoNeg() else 0;
++}
++
++// No pwritev(2) — emulate over pwrite, advancing the offset per iovec.
++pub fn pwritev(fd: i32, iov: [*]const std.posix.iovec_const, count: usize, offset: isize) usize {
++    var total: usize = 0;
++    var off = offset;
++    var i: usize = 0;
++    while (i < count) : (i += 1) {
++        const n = pwrite(fd, iov[i].base, iov[i].len, off);
+         if (@as(isize, @bitCast(n)) < 0) return n;
+         total += n;
++        off += @intCast(n);
+         if (n != iov[i].len) break;
+     }
+     return total;
++}
++
++pub const clockid_t = enum(i32) { REALTIME = 0, MONOTONIC = 1, _ };
++
++// Decoded stat. Field names match what std.fs.File.Stat.fromPosix reads
++// (ino/size/mode + atime()/mtime()/ctime()).
++pub const Stat = extern struct {
++    ino: u64 = 0,
++    size: u64 = 0,
++    mode: mode_t = 0,
++    atim: timespec = .{},
++    mtim: timespec = .{},
++    pub fn atime(self: @This()) timespec {
++        return self.atim;
++    }
++    pub fn mtime(self: @This()) timespec {
++        return self.mtim;
++    }
++    pub fn ctime(self: @This()) timespec {
++        // Plan 9 has no ctime; reuse mtime.
++        return self.mtim;
++    }
++};
++
++// Offsets within a 9P2000 stat message (leading size[2] included).
++const stat_qidtype = 8;
++const stat_qidpath = 13;
++const stat_mode = 21;
++const stat_atime = 25;
++const stat_mtime = 29;
++const stat_length = 33;
++
++fn decodeStat(wire: []const u8, st: *Stat) void {
++    const p9mode = std.mem.readInt(u32, wire[stat_mode..][0..4], .little);
++    const is_dir = (wire[stat_qidtype] & 0x80) != 0 or (p9mode & 0x80000000) != 0;
++    st.* = .{
++        .ino = std.mem.readInt(u64, wire[stat_qidpath..][0..8], .little),
++        .size = std.mem.readInt(u64, wire[stat_length..][0..8], .little),
++        .mode = @intCast((if (is_dir) @as(u32, S.IFDIR) else @as(u32, S.IFREG)) | (p9mode & 0o777)),
++        .atim = .{ .sec = @intCast(std.mem.readInt(u32, wire[stat_atime..][0..4], .little)), .nsec = 0 },
++        .mtim = .{ .sec = @intCast(std.mem.readInt(u32, wire[stat_mtime..][0..4], .little)), .nsec = 0 },
++    };
+ }
++
++pub fn fstat(fd: i32, st: *Stat) usize {
++    var buf: [512]u8 = undefined;
++    const rc = syscall_bits.syscall3(.FSTAT, @bitCast(@as(isize, fd)), @intFromPtr(&buf), buf.len);
++    if (@as(isize, @bitCast(rc)) < 0) return errnoNeg();
++    decodeStat(&buf, st);
++    return 0;
++}
++
++pub fn stat(path: [*:0]const u8, st: *Stat) usize {
++    var buf: [512]u8 = undefined;
++    const rc = syscall_bits.syscall3(.STAT, @intFromPtr(path), @intFromPtr(&buf), buf.len);
++    if (@as(isize, @bitCast(rc)) < 0) return errnoNeg();
++    decodeStat(&buf, st);
++    return 0;
++}
++
++pub fn fstatat(dirfd: i32, path: [*:0]const u8, st: *Stat, flags: u32) usize {
++    _ = flags;
++    if (dirfd == AT.FDCWD) return stat(path, st);
++    var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
++    var total_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
++    const rc = fd2path(dirfd, &dir_path_buf, std.fs.max_path_bytes);
++    if (@as(isize, @bitCast(rc)) < 0) return rc;
++    var fba = std.heap.FixedBufferAllocator.init(&total_path_buf);
++    const alloc = fba.allocator();
++    const dir_path = std.mem.span(@as([*:0]u8, @ptrCast(&dir_path_buf)));
++    const total = std.fs.path.join(alloc, &.{ dir_path, std.mem.span(path) }) catch unreachable;
++    const total_z = alloc.dupeZ(u8, total) catch unreachable;
++    return stat(total_z.ptr, st);
++}
++
++pub fn lseek(fd: i32, offset: i64, whence: i32) i64 {
++    var ret: i64 = 0;
++    const rc = syscall_bits.syscall4(.SEEK, @intFromPtr(&ret), @bitCast(@as(isize, fd)), @bitCast(offset), @bitCast(@as(isize, whence)));
++    if (@as(isize, @bitCast(rc)) < 0) return @bitCast(@as(isize, -1));
++    return ret;
++}
++
++pub fn remove(path: [*:0]const u8) usize {
++    const rc = syscall_bits.syscall1(.REMOVE, @intFromPtr(path));
++    return if (@as(isize, @bitCast(rc)) < 0) errnoNeg() else 0;
++}
++
++pub fn chdir(path: [*:0]const u8) usize {
++    return syscall_bits.syscall1(.CHDIR, @intFromPtr(path));
++}
++
++pub fn wstat(path: [*:0]const u8, edir: [*]const u8, nedir: usize) usize {
++    return syscall_bits.syscall3(.WSTAT, @intFromPtr(path), @intFromPtr(edir), nedir);
++}
++
++pub fn getcwd(buf: [*]u8, size: usize) usize {
++    const fd = openMode(".", 0, 0);
++    if (@as(isize, @bitCast(fd)) < 0) return @bitCast(@as(isize, -1));
++    const rc = fd2path(@intCast(fd), buf, size);
++    _ = close(@intCast(fd));
++    if (@as(isize, @bitCast(rc)) < 0) return @bitCast(@as(isize, -1));
++    return 0;
++}
++
++// Wall clock via /dev/bintime (8 bytes big-endian ns since the Unix epoch) —
++// same source cc9's clock_gettime uses. Plan 9 has no separate monotonic
++// clock; the compiler only needs coarse elapsed time (Progress/Cache).
++pub fn nanosleep(req: *const timespec, rem: ?*timespec) usize {
++    if (rem) |r| r.* = .{};
++    const ms: usize = @intCast(@divTrunc(req.sec, 1) * 1000 + @divTrunc(req.nsec, 1_000_000));
++    return syscall_bits.syscall1(.SLEEP, ms);
++}
++
++// zig9: Plan 9 has no poll(2). std.io.Poller gets a real plan9 arm (patch 19);
++// this exists so posix.poll compiles and, in the rare direct call, reports
++// every requested fd immediately ready for its wanted events (reads then block
++// as usual). // ponytail: no true readiness test; single-fd blocking read is
++// the real mechanism used by evalZigProcess.
++pub fn poll(fds: [*]pollfd, n: nfds_t, timeout: i32) usize {
++    _ = timeout;
++    var i: usize = 0;
++    while (i < n) : (i += 1) {
++        fds[i].revents = fds[i].events;
++    }
++    return n;
++}
++
++pub fn clock_gettime(clk: clockid_t, ts: *timespec) usize {
++    _ = clk;
++    const fd = openMode("/dev/bintime", 0, 0);
++    if (@as(isize, @bitCast(fd)) < 0) return @bitCast(@as(isize, -1));
++    var b: [8]u8 = undefined;
++    const n = read(@intCast(fd), &b, 8);
++    _ = close(@intCast(fd));
++    if (@as(isize, @bitCast(n)) < 8) return @bitCast(@as(isize, -1));
++    const ns = std.mem.readInt(u64, &b, .big);
++    ts.* = .{ .sec = @intCast(ns / std.time.ns_per_s), .nsec = @intCast(ns % std.time.ns_per_s) };
++    return 0;
++}
+ pub const SIG = struct {
+     /// hangup
+     pub const HUP = 1;
+@@ -277,6 +869,10 @@
+ };
+ pub const AT = struct {
+     pub const FDCWD = -100; // we just make up a constant; FDCWD and openat don't actually exist in plan9
++    // zig9: flags the shared std.fs code passes; Plan 9's remove(2) deletes a
++    // directory the same as a file, so REMOVEDIR is just a marker unlinkat reads.
++    pub const REMOVEDIR = 0x200;
++    pub const SYMLINK_NOFOLLOW = 0x100;
+ };
+ // TODO implement sigaction
+ // right now it is just a shim to allow using start.zig code
+@@ -355,14 +951,39 @@
+     return syscall_bits.syscall4(.PREAD, @bitCast(@as(isize, fd)), @intFromPtr(buf), count, @bitCast(offset));
+ }
+ 
+-pub fn open(path: [*:0]const u8, flags: u32) usize {
+-    return syscall_bits.syscall2(.OPEN, @intFromPtr(path), @bitCast(@as(isize, flags)));
++// zig9: matches posix's `system.open(path, flags: O, perm)` (3-arg) so openZ
++// resolves. Internal callers use openMode with a raw u32 flag word.
++pub fn open(path: [*:0]const u8, flags: O, perm: mode_t) usize {
++    return openMode(path, @bitCast(flags), perm);
+ }
+ 
+-pub fn openat(dirfd: i32, path: [*:0]const u8, flags: u32, _: mode_t) usize {
+-    // we skip perms because only create supports perms
++/// zig9: POSIX open semantics over the Plan 9 OPEN/CREATE pair. CREAT has no
++/// Plan 9 open bit: plain CREAT means open-if-exists else create (the OPEN is
++/// tried first because Plan 9's create(2) truncates an existing file, which
++/// POSIX CREAT without TRUNC must not); CREAT|EXCL goes straight to CREATE
++/// with OEXCL. // ponytail: open-then-create is racy vs a concurrent creator;
++/// good enough for a compiler's own files.
++pub fn openMode(path: [*:0]const u8, flags: u32, perm: mode_t) usize {
++    const o: O = @bitCast(flags);
++    const kernel_flags: u32 = flags & OPEN_MODE_MASK;
++    if (o.CREAT) {
++        if (!o.EXCL) {
++            const rc = syscall_bits.syscall2(.OPEN, @intFromPtr(path), @bitCast(@as(isize, kernel_flags)));
++            if (@as(isize, @bitCast(rc)) >= 0) return rc;
++        }
++        const crc = syscall_bits.syscall3(.CREATE, @intFromPtr(path), @bitCast(@as(isize, kernel_flags)), @intCast(perm & 0o777));
++        return if (@as(isize, @bitCast(crc)) < 0) errnoNeg() else crc;
++    }
++    const rc = syscall_bits.syscall2(.OPEN, @intFromPtr(path), @bitCast(@as(isize, kernel_flags)));
++    return if (@as(isize, @bitCast(rc)) < 0) errnoNeg() else rc;
++}
++
++// zig9: posix.openatZ passes flags as the packed `O` struct (like every other
++// target's system.openat), so accept O and bitcast to the raw u32 openMode uses.
++pub fn openat(dirfd: i32, path: [*:0]const u8, flags: O, perm: mode_t) usize {
++    const uflags: u32 = @bitCast(flags);
+     if (dirfd == AT.FDCWD) { // openat(AT_FDCWD, ...) == open(...)
+-        return open(path, flags);
++        return openMode(path, uflags, perm);
+     }
+     var dir_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+     var total_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+@@ -374,7 +995,7 @@
+     const total_path = std.fs.path.join(alloc, &.{ dir_path, std.mem.span(path) }) catch unreachable; // the allocation shouldn't fail because it should not exceed max_path_bytes
+     fba.reset();
+     const total_path_z = alloc.dupeZ(u8, total_path) catch unreachable; // should not exceed max_path_bytes + 1
+-    return open(total_path_z.ptr, flags);
++    return openMode(total_path_z.ptr, uflags, perm);
+ }
+ 
+ pub fn fd2path(fd: i32, buf: [*]u8, nbuf: usize) usize {
+@@ -413,16 +1034,35 @@
+ };
+ 
+ pub const O = packed struct(u32) {
+-    access: AccessMode,
++    // zig9: POSIX-named so the generic std.fs/posix paths (`.ACCMODE = .RDWR,
++    // .CREAT = true, ...`) compile unchanged. Bits 0-6 and 12 are the real
++    // Plan 9 open-mode bits (OREAD..ORCLOSE, OEXCL) passed raw to the kernel;
++    // POSIX ACCMODE happens to share the same 2-bit encoding. CREAT has no
++    // Plan 9 open bit (creation is the separate CREATE syscall) — it lives in
++    // an unused bit that open()/openat() strip and act on.
++    ACCMODE: AccessMode = .RDONLY,
+     _2: u2 = 0,
+     TRUNC: bool = false,
+     CEXEC: bool = false,
+     RCLOSE: bool = false,
+     _7: u5 = 0,
+     EXCL: bool = false,
+-    _: u19 = 0,
++    _13: u3 = 0,
++    CREAT: bool = false,
++    // zig9: no-op flags the generic std.fs paths set. Plan 9 has no symlinks
++    // (NOFOLLOW), no O_CLOEXEC (fds are per-rfork), no LARGEFILE. They live in
++    // bits above OPEN_MODE_MASK (0x107f), so openMode strips them before the
++    // syscall — present only so the shared fs code compiles and runs.
++    NOFOLLOW: bool = false,
++    CLOEXEC: bool = false,
++    DIRECTORY: bool = false,
++    NONBLOCK: bool = false,
++    _: u11 = 0,
+ };
+ 
++/// The bits of O that the Plan 9 OPEN/CREATE syscalls actually understand.
++const OPEN_MODE_MASK: u32 = 0x107f;
++
+ pub const ExecData = struct {
+     pub extern const etext: anyopaque;
+     pub extern const edata: anyopaque;
+--- a/lib/std/posix.zig	2026-07-14 20:50:41
++++ b/lib/std/posix.zig	2026-07-15 00:36:32
+@@ -596,6 +596,12 @@
+ pub fn getrandom(buffer: []u8) GetRandomError!void {
+     if (native_os == .windows) {
+         return windows.RtlGenRandom(buffer);
++    }
++    if (native_os == .plan9) {
++        // zig9: entropy from /dev/random (the linux/libc getrandom paths below
++        // don't exist on plan9).
++        if (@as(isize, @bitCast(std.os.plan9.readRandom(buffer))) < 0) return error.Unexpected;
++        return;
+     }
+     if (builtin.link_libc and @TypeOf(system.arc4random_buf) != void) {
+         system.arc4random_buf(buffer.ptr, buffer.len);
+--- a/lib/std/fs/Dir.zig	2026-07-14 20:50:41
++++ b/lib/std/fs/Dir.zig	2026-07-15 05:00:15
+@@ -581,6 +581,73 @@
+             self.cookie = std.os.wasi.DIRCOOKIE_START;
+         }
+     },
++    // zig9: reading a directory fd on Plan 9 returns an integral number of
++    // 9P2000 machine-independent stat entries. Each is little-endian:
++    //   size[2] type[2] dev[4] qid.type[1] qid.vers[4] qid.path[8] mode[4]
++    //   atime[4] mtime[4] length[8] name[s] uid[s] gid[s] muid[s]
++    // where s = count[2] + bytes and size counts everything after it.
++    .plan9 => struct {
++        dir: Dir,
++        buf: [8192]u8,
++        index: usize,
++        end_index: usize,
++        first_iter: bool,
++        name_buf: [512]u8,
++
++        const Self = @This();
++        pub const Error = IteratorError;
++
++        // byte offsets within a stat entry (leading size[2] included)
++        const off_qidtype = 8;
++        const off_name = 41; // 2+2+4+13+4+4+4+8
++
++        pub fn next(self: *Self) Error!?Entry {
++            while (true) {
++                if (self.index >= self.end_index) {
++                    if (self.first_iter) {
++                        posix.lseek_SET(self.dir.fd, 0) catch {};
++                        self.first_iter = false;
++                    }
++                    const rc = posix.system.read(self.dir.fd, &self.buf, self.buf.len);
++                    const n: isize = @bitCast(rc);
++                    if (n < 0) return error.Unexpected;
++                    if (n == 0) return null;
++                    self.index = 0;
++                    self.end_index = @intCast(n);
++                }
++                const entry = self.buf[self.index..self.end_index];
++                // Bounds-guard the 9P2000 stat entry: a directory read returns an
++                // integral number of entries, but a truncated/garbage entry must
++                // not read past the buffer or overflow name_buf. Plan 9 read never
++                // splits an entry, so a short tail means end of this batch.
++                if (entry.len < off_name + 2) return null;
++                const size = mem.readInt(u16, entry[0..2], .little);
++                if (size + 2 > entry.len) return null;
++                self.index += size + 2;
++
++                var name_len: usize = mem.readInt(u16, entry[off_name..][0..2], .little);
++                // Clamp to the bytes actually present in this entry and to name_buf.
++                const avail = (size + 2) -| (off_name + 2);
++                if (name_len > avail) name_len = avail;
++                if (name_len > self.name_buf.len) name_len = self.name_buf.len;
++                const name_src = entry[off_name + 2 ..][0..name_len];
++                @memcpy(self.name_buf[0..name_len], name_src);
++                const name = self.name_buf[0..name_len];
++
++                if (mem.eql(u8, name, ".") or mem.eql(u8, name, "..")) continue;
++
++                const qid_type = entry[off_qidtype];
++                const kind: Entry.Kind = if (qid_type & 0x80 != 0) .directory else .file;
++                return Entry{ .name = name, .kind = kind };
++            }
++        }
++
++        pub fn reset(self: *Self) void {
++            self.index = 0;
++            self.end_index = 0;
++            self.first_iter = true;
++        }
++    },
+     else => @compileError("unimplemented"),
+ };
+ 
+@@ -639,9 +706,17 @@
+         .wasi => return Iterator{
+             .dir = self,
+             .cookie = std.os.wasi.DIRCOOKIE_START,
++            .index = 0,
++            .end_index = 0,
++            .buf = undefined,
++        },
++        .plan9 => return Iterator{
++            .dir = self,
+             .index = 0,
+             .end_index = 0,
+             .buf = undefined,
++            .first_iter = first_iter_start_value,
++            .name_buf = undefined,
+         },
+         else => @compileError("unimplemented"),
+     }
+@@ -852,14 +927,6 @@
+         .wasi => .{
+             .read = flags.mode != .write_only,
+             .write = flags.mode != .read_only,
+-        },
+-        // zig9: plan9's O struct names its access-mode field `access`, not `ACCMODE`.
+-        .plan9 => .{
+-            .access = switch (flags.mode) {
+-                .read_only => .RDONLY,
+-                .write_only => .WRONLY,
+-                .read_write => .RDWR,
+-            },
+         },
+         else => .{
+             .ACCMODE = switch (flags.mode) {
+--- a/lib/std/fs/get_app_data_dir.zig	2026-07-14 20:50:41
++++ b/lib/std/fs/get_app_data_dir.zig	2026-07-14 20:52:20
+@@ -53,6 +53,15 @@
+                 else => return error.AppDataDirUnavailable,
+             }
+         },
++        .plan9 => {
++            // zig9: Plan 9 convention is per-app data under $home/lib/<app>.
++            // cc9's crt0 surfaces /env as environ, so getenv works; `home` is
++            // the native name, HOME kept as a fallback.
++            const home_dir = posix.getenv("home") orelse posix.getenv("HOME") orelse {
++                return error.AppDataDirUnavailable;
++            };
++            return fs.path.join(allocator, &[_][]const u8{ home_dir, "lib", appname });
++        },
+         else => @compileError("Unsupported OS"),
+     }
+ }
+--- a/lib/std/os.zig	2026-07-15 05:05:15
++++ b/lib/std/os.zig	2026-07-14 22:45:25
+@@ -82,6 +82,8 @@
+         .solaris,
+         .illumos,
+         .freebsd,
++        // zig9: Plan 9's fd2path(2) is precisely canonical-path-of-a-handle.
++        .plan9,
+         => true,
+ 
+         .dragonfly => os.version_range.semver.max.order(.{ .major = 6, .minor = 0, .patch = 0 }) != .lt,
+@@ -235,6 +237,13 @@
+             const len = mem.indexOfScalar(u8, out_buffer[0..], 0) orelse max_path_bytes;
+             return out_buffer[0..len];
+         },
++        .plan9 => {
++            // zig9: fd2path(2) returns the canonical path of an open fd directly.
++            const rc = std.os.plan9.fd2path(fd, out_buffer.ptr, max_path_bytes);
++            if (@as(isize, @bitCast(rc)) < 0) return error.FileNotFound;
++            const len = mem.indexOfScalar(u8, out_buffer[0..], 0) orelse max_path_bytes;
++            return out_buffer[0..len];
++        },
+         else => unreachable, // made unreachable by isGetFdPathSupportedOnTarget above
+     }
+ }

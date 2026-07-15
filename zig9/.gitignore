@@ -5,3 +5,6 @@ test/_out/
 # Python harness caches
 __pycache__/
 *.pyc
+
+# Native-compiler build artifacts (zig2.c ~213MB, a.outs, logs)
+port/plan9/native/_out/

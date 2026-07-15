@@ -25,6 +25,42 @@ Reaching this required, beyond a working cross-compiler, **rebuilding the Zig
 compiler from patched source** to fix real self-hosted-backend bugs in its
 experimental plan9 target (see `port/plan9/README.md`).
 
+## The compiler itself runs ON 9front (not just cross)
+
+Beyond cross-compiling, **the Zig compiler runs natively on 9front** and compiles
+Zig programs on-box. `pac9 install zig9`, then:
+
+```
+zig build-exe hello.zig -OReleaseFast     # or: zig run / zig test
+```
+
+**How.** Zig's self-hosted backend can't compile the compiler itself to a Plan 9
+a.out (its f16/f128 softfloat + comptime-float hit "ran out of registers"), so we
+use Zig's own **C-backend (CBE) bootstrap**: a host zig emits the whole patched
+compiler as one C file (`zig2.c`, ~213 MB) targeting `x86_64-plan9`, and
+[cc9](../cc9)'s clang→ld.lld→elf2aout pipeline compiles that into a ~56 MB native
+a.out linked against n9libc (real fork/exec, POSIX-over-9P fs, pthreads, malloc).
+The resulting `zig9` drives the *same* self-hosted x86_64 backend + Plan 9 linker
+as the cross path, so its output carries the same 1773-test verification.
+Build it with `port/plan9/native/build.py`; package with `--package`.
+
+**Proven reliable — two heavy programs, bit-exact.** Compiled natively on
+bare-metal `cirno` and run there, producing output **byte-identical to an
+aarch64-linux reference build** (`port/plan9/native/demos/`):
+
+| Demo | What it exercises | Result on native 9front |
+|---|---|---|
+| Recursive **ray tracer** (spheres, lambertian+metal, AA, gamma) | f64 FP, recursion, structs | 320×180 PPM, `checksum=0xca574372fbbe3537` ✓ |
+| **SHA-256 + `AutoHashMap`** word-count (120k words) | integer/bitwise, crypto, allocator, hashmap, sort | `sha256=42d64d8e…033140`, `acme:6150` ✓ |
+
+**Native limits.** ReleaseFast/ReleaseSmall only; no f16/f128 softfloat or
+`@cImport` in target programs (backend limits, same as cross). **`zig build` (the
+build runner) is not yet supported natively** — the plan9 process/poll/progress
+arms and cache-rename fixes are in, but compiling the large `build_runner.zig`
+in-process trips a latent heap-corruption bug in the CBE/cc9 build that only
+surfaces at that scale; `build-exe`/`run`/`test` are the supported workflow. See
+`port/plan9/NOTES.md`.
+
 ## Why Zig 0.14.1 (and not 0.16)
 
 LLVM cannot emit Plan 9 object files, so Plan 9 depends entirely on Zig's

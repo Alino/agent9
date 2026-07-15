@@ -1,0 +1,68 @@
+--- a/src/main.zig	2026-07-14 20:50:41
++++ b/src/main.zig	2026-07-15 04:11:14
+@@ -171,6 +171,50 @@
+ var debug_allocator: std.heap.DebugAllocator(.{
+     .stack_trace_frames = build_options.mem_leak_frames,
+ }) = .init;
++
++// zig9: on plan9 the single-threaded build uses DebugAllocator, which (safety
++// off in ReleaseSmall) hands back reused, non-zeroed memory. The host build uses
++// SmpAllocator; the difference exposes a latent uninitialized-field read in the
++// compiler as non-deterministic garbage (a phantom error count). Zero every
++// fresh allocation so such reads are deterministically 0, matching the host's
++// effectively-zero fresh pages. Thin wrapper over a backing allocator.
++const ZeroAllocator = struct {
++    backing: std.mem.Allocator,
++    fn allocator(self: *ZeroAllocator) std.mem.Allocator {
++        return .{ .ptr = self, .vtable = &.{
++            .alloc = alloc,
++            .resize = resize,
++            .remap = remap,
++            .free = free,
++        } };
++    }
++    // zig9diag: set to 0xAA to POISON fresh memory instead of zeroing — makes the
++    // latent uninitialized-field read deterministic for bisection. 0 = the fix.
++    const fill: u8 = 0;
++    fn alloc(ctx: *anyopaque, len: usize, a: std.mem.Alignment, ra: usize) ?[*]u8 {
++        const self: *ZeroAllocator = @ptrCast(@alignCast(ctx));
++        const p = self.backing.rawAlloc(len, a, ra) orelse return null;
++        @memset(p[0..len], fill);
++        return p;
++    }
++    fn resize(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, new_len: usize, ra: usize) bool {
++        const self: *ZeroAllocator = @ptrCast(@alignCast(ctx));
++        if (!self.backing.rawResize(buf, a, new_len, ra)) return false;
++        if (new_len > buf.len) @memset(buf.ptr[buf.len..new_len], fill);
++        return true;
++    }
++    fn remap(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, new_len: usize, ra: usize) ?[*]u8 {
++        const self: *ZeroAllocator = @ptrCast(@alignCast(ctx));
++        const p = self.backing.rawRemap(buf, a, new_len, ra) orelse return null;
++        if (new_len > buf.len) @memset(p[buf.len..new_len], fill);
++        return p;
++    }
++    fn free(ctx: *anyopaque, buf: []u8, a: std.mem.Alignment, ra: usize) void {
++        const self: *ZeroAllocator = @ptrCast(@alignCast(ctx));
++        self.backing.rawFree(buf, a, ra);
++    }
++};
++var zero_allocator: ZeroAllocator = undefined;
+ 
+ pub fn main() anyerror!void {
+     crash_report.initialize();
+@@ -185,6 +229,14 @@
+                 break :gpa .{ std.heap.c_allocator, false };
+             }
+             break :gpa .{ std.heap.raw_c_allocator, false };
++        }
++        // zig9: SmpAllocator asserts !single_threaded (per-thread state), and the
++        // plan9 native compiler is a single-threaded build. DebugAllocator over
++        // the sbrk page_allocator is the proven plan9 heap (behavior suite);
++        // skip its leak-check deinit (is_debug=false) — the process is exiting.
++        if (builtin.single_threaded) {
++            zero_allocator = .{ .backing = debug_allocator.allocator() };
++            break :gpa .{ zero_allocator.allocator(), false };
+         }
+         break :gpa switch (builtin.mode) {
+             .Debug, .ReleaseSafe => .{ debug_allocator.allocator(), true },

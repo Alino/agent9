@@ -409,3 +409,302 @@ runtime (1773 tests). Running std's *own* blocks is the remaining, separate suit
 - The self-hosted backend's safety-mode codegen also panics, so plan9 needs
   `-OReleaseSmall`/`-OReleaseFast`; `-mcpu=x86_64_v2` gives `roundsd` so
   `@floor`/`@ceil` need no libm extern.
+
+## Native compiler ON 9front — the CBE + cc9 route (2026-07-15, WIP)
+
+Goal: run `zig` itself on 9front, not just cross-compile to it. The self-hosted
+backend can't compile the compiler to a.out (its own f16/f128 softfloat +
+u128/comptime-float paths hit "ran out of registers"), so this takes Zig's
+**official CBE bootstrap**: emit the whole compiler as C, compile that with cc9.
+
+### Pipeline (built, works end-to-end for small programs)
+`port/plan9/native/build.py`:
+1. host `vendor/zig-host/zig build-exe -ofmt=c -OReleaseSmall -fsingle-threaded
+   -target x86_64-plan9` over the patched tree → **zig2.c (~213 MB)** +
+   `compiler_rt.c`. (`build-obj` for compiler_rt.) config in `native/config.zig`
+   (= bootstrap.c's, `dev=.core`, `have_llvm=false`, + `mem_leak_frames=0`).
+2. cc9 clang (`--target=x86_64-unknown-none -nostdlib -femulated-tls -fno-pic
+   -mno-red-zone -D__plan9__ -isystem cc9/runtime/include -I vendor/zig/lib`) →
+   objects; `-O0` for zig2.c (**-O1/-O2 OOM host clang on the 213 MB TU**; -O0 =
+   19 s, 3.3 GB, 64 MB .o). ld.lld + `cc9/test/plan9.ld` + libcc9cxx/libcc9m +
+   `native/zig9syscall.s` (generic SysV→Plan9 thunk) + `native/zig9compat.c`
+   (`zig9_tos()` accessor) → elf2aout → **zig9.aout (~56 MB)**.
+3. Ship: `build.py --libtar` (lib/ minus libc/libcxx/…, ~5 MB gz) → `/sys/lib/zig9`;
+   hget the a.out (56 MB — byte-writer too slow, use `http.server` + `hget`).
+
+### Patches added
+- **15-cbe-plan9-entry** (start.zig + os/plan9/x86_64.zig): under
+  `object_format==.c`, export a C `main` (CBE can't emit the naked `_start`);
+  init `std.os.plan9.tos` from cc9's `zig9_tos()`, wire `environ`. And route the
+  four `syscallN` shims through `zig9_syscall` for `stage2_c` (clang rejects the
+  inline-asm clobber list). ofmt==c-guarded → **zero effect on the a.out path.**
+- **16-plan9-native-runtime** (os/plan9.zig, fs/Dir.zig, get_app_data_dir.zig,
+  os.zig): the std.posix/std.fs surface the compiler's own runtime needs —
+  `getcwd`, `Stat`+`fstat`/`stat`/`fstatat` (9P2000 decode), `openMode` (POSIX
+  O over OPEN/CREATE), `mkdirat`/`unlinkat`/`renameat` (wstat name-change,
+  same-dir), `rename`, dir `Iterator` (9P entry decode), `lseek`, clocks via
+  `/dev/bintime`, `poll`(fake), `rfork`/`exec`/`pipe`/`dup2`/`await`/`fork`,
+  `Child` spawnPosix-path stubs, `errnoNeg` (errstr→errno), `getFdPath` via
+  fd2path. Mostly additive + plan9-guarded.
+- **17-plan9-single-threaded-gpa** (main.zig): SmpAllocator asserts
+  `!single_threaded`; the native build is `-fsingle-threaded`, so pick
+  DebugAllocator (the proven plan9 heap).
+
+### Status: compiler builds, runs, dispatches — crashes in AstGen worker
+`zig9.aout` runs on the QEMU VM: argv works, core-command dispatch works
+(non-core `version`/`env`/`fmt`/`ast-check` correctly panic via `dev.check`,
+whose message lands in Plan 9's **exit-status string** — invisible to `>[2=1]`,
+seen via `echo $status`). `build-exe` gets all the way into `comp.update`.
+**Verified working in isolation via CBE+cc9 probes** (deliver.py + `/tmp/cc9bin
+>[2=1]`): raw+std stdout, argv, native target resolution, `cleanExit`, 56 MB
+file reads, 200k-op DebugAllocator stress, **and full `Ast.parse` + `AstGen.
+generate` of std/mem.zig (33257 ZIR insts).**
+
+**The crash** (checkpoint-bisected with raw-`write(2)` probes to a file — listen1
+only flushes network output on process *exit*, so a faulting proc shows nothing
+over the socket; redirect fd2 to a file and `cat` it): reaches
+`performAllTheWork` → **`astgen phase`** then faults (proc goes `Broken`, ~205 MB
+resident). NOT stack overflow (1 GB stack via `-DCC9_STACK_BYTES` didn't help),
+NOT the allocator, NOT AstGen computation itself (all proven working standalone).
+So it's in the **astgen worker machinery** — `workerUpdateFile` +
+`@import` path resolution + Zcu file/import-table management + WaitGroup — that
+wraps AstGen, not AstGen's parse/lower. Next: per-file probes inside
+`workerUpdateFile` (getSource vs import-resolution vs Zcu integration), or a
+standalone reproducer that drives `@import` resolution through the plan9
+`openat`/`realpath` arms.
+
+### Debugging-on-9front gotchas learned
+- **listen1 drops** `;`/`&&` chains, `{...}`, most multi-line input, `rc script`
+  invocations, and `&`+`$apid`. Reliable: ONE command per nc; env via single
+  `VAR=val cmd` prefix (one assignment) OR flags (`--zig-lib-dir`,
+  `--global-cache-dir`); file-redirect for probe output (`>[2]/tmp/log`) then
+  `cat` separately — network output is buffered until process exit.
+- Reliable output for a fresh a.out: `deliver.py` (byte-writer) materializes
+  `/tmp/cc9bin`, then `/tmp/cc9bin >[2=1]` merges stderr. (56 MB is too big for
+  the byte-writer → hget.)
+- A faulted proc stays `Broken` (205 MB here); acid attaches but the elf2aout
+  symbol table doesn't match its expectations (`image does not match text`,
+  `lstk()` "syntax error near PC") — raw fault PC extraction still TODO.
+- cc9 default stack is 256 MB (`CC9_STACK_BYTES`, crt0.c:323, `#ifndef`); rebuild
+  crt0.c with `-DCC9_STACK_BYTES=…` and link it FIRST (`-z muldefs`) to change it.
+
+### Regression note
+The cross a.out path (corpus 13/13, behavior 1773/0) is validated with the
+**docker-built patched backend**, NOT `vendor/zig-host` (which lacks the src
+backend patches — `zig-host` cross-building hashmap hits the pre-patch
+`store: [direct]` panic; that's expected, not a regression). A full
+behavior-suite re-run with the rebuilt patched zig + patches 15-17 is the
+pending regression gate; patches 15/17 are ofmt==c/single-threaded-guarded and
+16 is additive plan9 arms, so no a.out-path change is expected.
+
+## Native compiler — MAJOR advance (2026-07-15 continued): full compile pipeline runs
+
+Picked the AstGen-worker crash apart and drove the native compiler MUCH further.
+`build-exe hello.zig` on the QEMU VM now runs the **entire front-to-back pipeline**:
+dispatch → cache dir setup → **builtin.zig generation** → **AstGen of the whole std
+library** (~500 files, ~35 MB ZIR cache written) → **Sema** → **codegen** (the
+self-hosted x86_64 backend emitting machine code ON 9front) → **processExports**.
+Confirmed by checkpoint probes reaching `performAllTheWork DONE` + `processExports
+done`. Only the very last mile — collecting errors + the linker flush — doesn't
+complete yet.
+
+### Bugs found + fixed to get here (each isolated with a CBE+cc9 smoke, then fixed)
+- **getrandom** (patch 16): `std.crypto.random` (used by `std.fs.AtomicFile`'s
+  random temp names, which `Builtin.writeFile` uses to write builtin.zig) seeds
+  from `posix.getrandom`, which I'd stubbed `void` → it panicked. Fix: read
+  `/dev/random` (`os/plan9.zig readRandom` + a `posix.getrandom` plan9 arm). This
+  was THE AstGen-phase crash (in `workerUpdateBuiltinZigFile` → `populateFile`).
+- **renameat** (patch 16): the hand-rolled Twstat rename is flaky across the 9P
+  server (works at 2-level paths, fails "is a directory" at 1-level — cause never
+  fully pinned; message is byte-identical to cc9's `build_wstat`). Under the CBE
+  build, defer the same-dir case to cc9's proven `rename()` from n9libc; report
+  clean XDEV for cross-dir so std can fall back to copy.
+- **cross-directory rename** (patch 18): `renameTmpIntoCache` moves
+  `tmp/<rand>` → `o/<hex>` — a CROSS-DIR rename, which Plan 9 CANNOT do (wstat only
+  renames a leaf in place). My errno mapping made it retry forever. Fix: a plan9
+  arm (`plan9MoveTree`) that recursively copies then deletes, using ONLY primitives
+  proven to work on 9P — hand-rolled recursion because **`std.fs.Dir.walk` and
+  `deleteTree` misbehave on plan9** (deleteTree fails mid-tree; walk mis-drove the
+  copy). `plan9RmTree`/`plan9CopyTree` use openDir/iterate/makePath/copyFile/
+  deleteFile/deleteDir, all individually smoke-verified.
+
+### The remaining blocker: a non-deterministic phantom error
+After codegen+exports, `anyErrors(comp)` (→ `getAllErrorsAlloc().errorMessageCount()`)
+returns a **non-deterministic** count: sometimes >0 (→ updateModule early-returns,
+skipping flush → no binary), sometimes 0. A second `getAllErrorsAlloc` in
+buildOutputType then finds 0 errors, so nothing is rendered — hence the earlier
+"exits silently, no binary, no error text". The cross-compile of the same
+hello.zig with the same patched lib succeeds with **zero** errors, so these are
+phantom. Non-determinism = **uninitialized memory** — almost certainly a CBE/cc9
+miscompilation of some compiler struct (a field Zig assumes zero-init that the
+C lowering + cc9's DebugAllocator leaves garbage), OR an uninitialized field in
+the error-tracking state (`failed_analysis`/`failed_files`/the ErrorBundle).
+Next: dump `failed_analysis`/`failed_files` counts + `misc_failures` in the FIRST
+`getAllErrorsAlloc`; or bisect the CBE miscompile (build zig2.c at -O1 once the
+host-OOM is worked around, to see if optimization changes the non-determinism).
+
+### Debugging technique that cracked it
+The listen1 buffering (network output only flushes on process exit) hid
+everything. The winning loop: **fd2→file probes** (`>[2]/tmp/log`, `cat`
+separately) for the running compiler; and for every suspected op, a **standalone
+CBE+cc9 smoke** (`build.py --smoke X.zig` + `deliver.py` + `/tmp/cc9bin >[2=1]`)
+that reproduces just that op in a 1 MB binary — dozens of these (fs_smoke,
+atomicfile_smoke, cache_smoke, movetree_smoke, ccrename_smoke, …) each cost
+seconds and pinned a bug that would've cost a ~5-min full rebuild to find.
+
+## ★ NATIVE COMPILE WORKS (2026-07-15) — a Zig compiler inside 9front built + ran a program
+
+`zig build-exe hello.zig` running natively on the 9front QEMU VM produced
+`/usr/glenda/hello` (4061-byte Plan 9 a.out), which then **ran and printed
+"native zig9 built this"**. The full self-hosted x86_64 backend + Plan9 linker,
+driven by the CBE+cc9-built `zig` binary, compiled a real program end-to-end ON
+THE BOX. This is the "compiler inside plan9" milestone.
+
+**The phantom-error root cause + the fix (patch 17):** the non-deterministic
+error count came from an **uninitialized-field read** in the compiler that the
+allocator choice exposes. The host build uses SmpAllocator (fresh pages ~ zero);
+the plan9 single-threaded build uses DebugAllocator, which (safety off in
+ReleaseSmall) reuses freed memory **non-zeroed** → the uninit read returns
+garbage → phantom errors → `anyErrors` true → flush skipped → empty/no binary.
+Fix: a `ZeroAllocator` wrapper (main.zig) that `@memset(0)`s every fresh
+allocation, making those reads deterministically 0 (matching the host). With it,
+the compile completes and emits a working binary.
+
+**RELIABLE after the grown-tail fix:** the residual non-determinism WAS the
+`ZeroAllocator` not zeroing the newly-exposed bytes on a growing `resize`/`remap`
+(an ArrayList grows, the compiler reads the new tail before writing it). Zeroing
+`[old_len..new_len]` on grow made it deterministic: 3/3 consecutive hello builds
++ a separate `compute.zig` (loop summing 1..100 -> "compute OK: sum=5050") all
+succeed, each producing a working a.out. Remaining: it's slow on TCG (~2-4 min/
+compile); the underlying compiler still has a latent uninit-field read (masked by
+the zeroing wrapper) worth finding for upstream; then corpus 13/13 natively
+(Phase 5), `zig build` (Phase 6), pac9 release (Phase 7).
+
+## Phase 5 acceptance (2026-07-15)
+
+**Native compile — diverse programs compile ON 9front and run correctly:**
+- `hello.zig` (raw plan9.write) -> "native zig9 built this" (3/3 reliable)
+- `compute.zig` (loop 1..100) -> "compute OK: sum=5050"
+- `01_arith.zig` -> "ok 01_arith (43)" (16854 B)
+- `06_alloc.zig` -> "ok 06_alloc" (17776 B; ArrayList/heap)
+- `10_hashmap.zig` -> "ok 10_hashmap" (33758 B; AutoHashMap — needs backend
+  patch 04, which the native compiler carries in its source)
+- `12_comptime.zig` -> "ok 12_comptime" (comptime eval)
+Each ~3 min on the TCG-emulated VM (the full 13-file corpus run is time-bound
+there; better on cirno bare metal). rc wrapper at native/z.rc — note the
+`-mcpu=x86_64_v2` arg MUST be quoted (`'-mcpu=...'`) because rc treats a bare `=`
+as a syntax error, and pass the lib dir via `--zig-lib-dir` FLAG (the ZIG_LIB_DIR
+env var doesn't reach the CBE compiler through rc's /env).
+
+**Cross regression (patches 15-18 must not break the verified a.out path):**
+docker-rebuilt patched compiler + patched lib -> `run_corpus.py qemu` = **13/13
+pass**, `run_behavior.py qemu` (full) = **1773 pass / 0 fail / 0 crash / 291 skip, 115/119 files** — EXACTLY the committed baseline (a first run read 1543 due to VM-contention output truncation; a clean re-run confirmed 1773). The lib/std
+arms are additive/plan9-guarded and the src changes (ZeroAllocator, plan9MoveTree)
+are single-threaded/plan9-guarded, so the ELF/self-hosted cross path is unchanged.
+
+## Code review + fixes (2026-07-15)
+
+An adversarial review (cross-checked against cc9's proven n9syscall.s/fs.c/
+posix_llvm.c) verified the core is correct — the syscall thunk's arg marshaling,
+all 9P2000 stat offsets, the Twstat body-length math, the `O` packed-struct bit
+layout, `openMode`'s open-then-create data-loss avoidance, and patch 15's
+tos/environ init. It found real bugs behind larger inputs, now FIXED:
+
+- **waitpid reported every clean child as exit 1** (would break `zig build`/
+  `std.process.Child`): Plan 9 AWAIT rc-quotes the status, so a clean exit is `''`
+  not empty. Rewrote to skip the opening quote, treat `''`/empty as 0, parse a
+  decimal code (Zig's plan9 exit writes decimal), else map to a signal — mirrors
+  cc9's `cc9_wait_decode`. Also added an 8-slot zombie table + WNOHANG handling so
+  waiting on one child doesn't discard another's (un-redeliverable) status.
+- **Dir iterator could overflow name_buf / read OOB** on a long or garbage 9P
+  name: added bounds guards (entry fits the buffer; name_len clamped to the
+  entry's remaining bytes AND to name_buf).
+- **plan9RmTree deleted while iterating** (breaks past the 8 KB read batch) and
+  **openDir succeeds on regular files** on Plan 9: rewrote the cache-move helpers
+  to stat for file-vs-dir and to snapshot all entry names before any delete.
+- **plan9MoveTree was non-atomic**: added an errdefer that removes a half-written
+  `o/<hash>` on copy failure, so a later run can't treat a truncated tree as a
+  valid cache hit.
+- a.out-path `renameat` Twstat buffer: reject names > 207 (NAMETOOLONG) instead
+  of overflowing the 256-byte stack buffer.
+
+Left as documented limitations: the ZeroAllocator masks (doesn't root-cause) the
+latent uninitialized-field read; `clock_gettime(MONOTONIC)` returns wall time
+(compiler timing only); several error wrappers return a generic errno on failure
+(callers check success/failure, not the specific errno).
+
+## Heavy demos — native codegen proven bit-exact (2026-07-15)
+
+Two non-trivial programs compiled by `zig9` **natively on bare-metal cirno**
+(`build-exe -OReleaseFast`) and run there, both producing output **byte-identical
+to an `aarch64-linux-musl` reference** (built with `vendor/zig-host`, run in the
+`zig9build` docker — use aarch64, NOT x86_64: Apple-Silicon docker's Rosetta
+overflows bss on the x86_64 build). Sources in `native/demos/`:
+- `raytrace.zig` — recursive ray tracer (spheres, lambertian+metal, AA, gamma) →
+  172815-byte PPM (=15 B header + 320·180·3), `checksum=0xca574372fbbe3537`.
+- `sha_wordcount.zig` — SHA-256 + `AutoHashMap` word-count over 120k PCG words →
+  `sha256=42d64d8e…033140`, top `acme:6150`.
+Both checksums matched the reference exactly → the CBE+cc9 compiler's self-hosted
+x86_64 codegen is correct across FP, integer/bitwise/crypto, and allocator/hashmap
+paths, not just the corpus.
+
+## `zig build` natively — infra done, blocked by a latent heap-OOB
+
+`zig build` needs the self-hosted backend to compile the whole `build_runner.zig`
+(the std.Build system) *in-process*, which stresses the compiler far past any
+corpus program. Implemented and shipped:
+- `lib/std/process/Child.zig` `spawnPlan9` — rfork(RFPROC|RFFDG|RFREND) + pipe +
+  dup2 + `/bin/<name>` exec, no CLOEXEC/errpipe (Plan 9 has none); wait via the
+  fixed rc-quoted-status `waitpid`.
+- `lib/std/io.zig` `pollPlan9` — blocking-read poller for `evalZigProcess`'s
+  stdout/stderr pipes (Plan 9 has no poll(2)).
+- `lib/std/Progress.zig` — `.plan9` added to `have_ipc = false` (kills the
+  `ZIG_PROGRESS` fd-inheritance path).
+- `src/main.zig` `cmdBuild` — force the build runner to ReleaseSmall +
+  single_threaded + strip on plan9 (the backend panics in safety modes;
+  `Thread.spawn` is a compile-error).
+
+Then a cascade of latent bugs, each fixed, each moving the failure deeper (debug
+loop: hget the binary, run a `.rc` probe redirecting to files, symbolize the fault
+PC with `llvm-symbolizer --obj=_out/zig9big.elf 0x<pc>` — elf2aout preserves vaddrs):
+1. `error.RenameAcrossMountPoints` — `Package.Fetch.renameTmpIntoCache`
+   (`main.zig:7435`, the `dependencies.zig` cache move) does a cross-dir tmp→o
+   rename Plan 9 wstat can't do, and wasn't routed through Compilation's
+   `plan9MoveTree`. Fixed: plan9 branch + copy+delete helpers in `Fetch.zig`
+   (the circular import forbids sharing Compilation's copy).
+2. `getOffset: [ds:0xNNNN]` panic — `CodeGen.getOffset` (`arch/x86_64`) had
+   `else => panic` on a `.memory` MCValue (the `[ds:0x..]` is `MCValue.format`).
+   Added `.memory`/`.indirect` to the `.load_symbol,.load_frame` arm (materialize
+   pointer→register_offset). Also hardened `Plan9.zig` `seeNav` to allocate
+   `got_index` on the found-existing path (`getOffsetTableAddress`'s `.?` is UB
+   with safety off). LLVM elides these dead paths on the cross build → 1773 never
+   hit them; the self-hosted backend does not, so they shipped latent.
+3. GP fault in `SbrkAllocator.free` — the std sbrk page allocator corrupts its
+   free-list under the runner compile's heavy alloc load. Fixed systemically by
+   backing the plan9 single-threaded compiler heap with **cc9's malloc/free**
+   (n9libc — the heap that runs rustc/CPython) via a hand-rolled `Cc9Allocator`
+   (`main.zig`), still wrapped by ZeroAllocator for the uninit-read fix.
+4. After 1-3 the fault became a **null-deref inside cc9 `malloc_u`**
+   (`fault read addr=0x8` — a null `Header.s.ptr` in the K&R free-list) = an **OOB
+   write in the compiler corrupts the heap** at build_runner scale. This is THE
+   remaining blocker: worse than the known uninit *read* (it's an OOB *write*), and
+   not tractable to root-cause blind — no ASAN on the CBE/cc9 path, ~2 min/probe on
+   cirno, and it triggers only on a compile far larger than any corpus program.
+
+**Verdict:** `build-exe`/`run`/`test` is the supported native workflow (proven,
+incl. the two bit-exact heavy demos). `zig build` is one latent-corruption bug
+away; pinning it needs a sanitizer-instrumented CBE build. The four fixes above are
+additive / plan9-guarded (Cc9Allocator + Fetch are plan9-only; getOffset/seeNav are
+additive backend improvements, validated correct by the two bit-exact demos which
+were compiled by the fixed binary) — re-run the 1773 cross regression before
+treating getOffset/seeNav as permanent.
+
+## Packaging (Phase 7)
+
+`build.py --package` assembles `_out/zig9-amd64.tar.gz` (`amd64/bin/zig9`,
+`sys/lib/zig9/lib/…`, `rc/bin/zig`). The `rc/bin/zig` wrapper injects
+`--zig-lib-dir /sys/lib/zig9/lib --global-cache-dir $home/lib/zig9-cache` after the
+subcommand — the CBE-built compiler does not reliably read `ZIG_LIB_DIR` from the
+environment, and the compile path was always driven by the flag. Fresh-install
+tested end-to-end on the QEMU VM (extract at `/` → `zig build-exe hello.zig` →
+runs). Registry row added; `pac9 install zig9`.

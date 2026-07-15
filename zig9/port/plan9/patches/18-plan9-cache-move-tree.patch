@@ -1,0 +1,92 @@
+--- a/src/Compilation.zig	2026-07-15 05:05:15
++++ b/src/Compilation.zig	2026-07-15 05:01:20
+@@ -2417,7 +2417,7 @@
+                 break :w .no;
+             };
+ 
+-            renameTmpIntoCache(comp.local_cache_directory, tmp_dir_sub_path, o_sub_path) catch |err| {
++            renameTmpIntoCache(comp.gpa, comp.local_cache_directory, tmp_dir_sub_path, o_sub_path) catch |err| {
+                 return comp.setMiscFailure(
+                     .rename_results,
+                     "failed to rename compilation results ('{}{s}') into local cache ('{}{s}'): {s}",
+@@ -2544,11 +2544,80 @@
+ // then delete the source, using only primitives proven to work on plan9
+ // (openDir/iterate/makePath/copyFile/deleteFile/deleteDir). std.fs.Dir.walk and
+ // deleteTree misbehave on plan9's 9P fs, so recursion is hand-rolled.
++// Collect an iterable dir's entry names up front. Plan 9 directory reads return
++// entries in ~8 KB batches and re-reading after a modification (delete) skips or
++// repeats entries, so a delete/recurse pass MUST snapshot names before touching
++// the dir. Caller frees the returned names + list.
++fn plan9DirNames(gpa: std.mem.Allocator, d: std.fs.Dir) std.ArrayListUnmanaged([]u8) {
++    var names: std.ArrayListUnmanaged([]u8) = .{};
++    var it = d.iterate();
++    while (it.next() catch null) |e| {
++        const dup = gpa.dupe(u8, e.name) catch continue;
++        names.append(gpa, dup) catch {
++            gpa.free(dup);
++        };
++    }
++    return names;
++}
++fn plan9FreeNames(gpa: std.mem.Allocator, names: *std.ArrayListUnmanaged([]u8)) void {
++    for (names.items) |nm| gpa.free(nm);
++    names.deinit(gpa);
++}
++fn plan9RmTree(gpa: std.mem.Allocator, parent: std.fs.Dir, name: []const u8) void {
++    // Plan 9 openDir succeeds even on a regular file (no O_DIRECTORY), so decide
++    // file-vs-dir by stat, not by whether openDir fails.
++    const st = parent.statFile(name) catch {
++        parent.deleteFile(name) catch {};
++        return;
++    };
++    if (st.kind != .directory) {
++        parent.deleteFile(name) catch {};
++        return;
++    }
++    var d = parent.openDir(name, .{ .iterate = true }) catch return;
++    var names = plan9DirNames(gpa, d);
++    defer plan9FreeNames(gpa, &names);
++    for (names.items) |nm| plan9RmTree(gpa, d, nm);
++    d.close();
++    parent.deleteDir(name) catch {};
++}
++fn plan9CopyTree(gpa: std.mem.Allocator, sdir: std.fs.Dir, spath: []const u8, ddir: std.fs.Dir, dpath: []const u8) !void {
++    try ddir.makePath(dpath);
++    var s = try sdir.openDir(spath, .{ .iterate = true });
++    var names = plan9DirNames(gpa, s);
++    s.close();
++    defer plan9FreeNames(gpa, &names);
++    for (names.items) |nm| {
++        var b1: [std.fs.max_path_bytes]u8 = undefined;
++        var b2: [std.fs.max_path_bytes]u8 = undefined;
++        const sp = try std.fmt.bufPrint(&b1, "{s}/{s}", .{ spath, nm });
++        const dp = try std.fmt.bufPrint(&b2, "{s}/{s}", .{ dpath, nm });
++        const cst = sdir.statFile(sp) catch continue;
++        switch (cst.kind) {
++            .directory => try plan9CopyTree(gpa, sdir, sp, ddir, dp),
++            else => try sdir.copyFile(sp, ddir, dp, .{}),
++        }
++    }
++}
++fn plan9MoveTree(gpa: std.mem.Allocator, dir: std.fs.Dir, src: []const u8, dst: []const u8) !void {
++    plan9RmTree(gpa, dir, dst);
++    // If the copy fails partway, remove the half-written dst so a later run keyed
++    // on the same cache hash can't treat a truncated tree as a valid hit.
++    errdefer plan9RmTree(gpa, dir, dst);
++    try plan9CopyTree(gpa, dir, src, dir, dst);
++    plan9RmTree(gpa, dir, src);
++}
++
+ fn renameTmpIntoCache(
++    gpa: std.mem.Allocator,
+     cache_directory: Compilation.Directory,
+     tmp_dir_sub_path: []const u8,
+     o_sub_path: []const u8,
+ ) !void {
++    if (builtin.os.tag == .plan9) {
++        try cache_directory.handle.makePath("o");
++        return plan9MoveTree(gpa, cache_directory.handle, tmp_dir_sub_path, o_sub_path);
++    }
+     var seen_eaccess = false;
+     while (true) {
+         std.fs.rename(

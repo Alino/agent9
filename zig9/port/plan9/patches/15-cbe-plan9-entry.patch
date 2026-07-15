@@ -1,0 +1,86 @@
+diff --color -ru a/lib/std/os/plan9/x86_64.zig b/lib/std/os/plan9/x86_64.zig
+--- a/lib/std/os/plan9/x86_64.zig	2026-07-14 20:47:32
++++ b/lib/std/os/plan9/x86_64.zig	2026-07-14 20:47:32
+@@ -1,5 +1,13 @@
+ const plan9 = @import("../plan9.zig");
++const builtin = @import("builtin");
+ 
++// zig9: under the C backend the inline asm below is rejected by clang (its
++// output/input registers rax/rdx double as clobbers, which clang forbids), so
++// CBE-built binaries route through a generic SysV->Plan9 thunk instead
++// (port/plan9/native/zig9syscall.s, linked by the cc9 build). Comptime-dead
++// for every other backend — the a.out path is unchanged.
++extern fn zig9_syscall(num: usize, a0: usize, a1: usize, a2: usize, a3: usize) usize;
++
+ // zig9: the Plan 9 amd64 kernel SYSCALL does not preserve the SysV callee-saved
+ // registers (cc9 proved on hardware that rbx, rbp, r13 come back holding KZERO
+ // kernel addresses). The self-hosted x86_64 backend likes to keep the base
+@@ -20,6 +28,7 @@
+ //      free to (and does) keep the global base in rbp across the call.
+ 
+ pub fn syscall1(sys: plan9.SYS, arg0: usize) usize {
++    if (builtin.zig_backend == .stage2_c) return zig9_syscall(@intFromEnum(sys), arg0, 0, 0, 0);
+     return asm volatile (
+         \\push %%rbp
+         \\push %%rbx
+@@ -46,6 +55,7 @@
+     );
+ }
+ pub fn syscall2(sys: plan9.SYS, arg0: usize, arg1: usize) usize {
++    if (builtin.zig_backend == .stage2_c) return zig9_syscall(@intFromEnum(sys), arg0, arg1, 0, 0);
+     return asm volatile (
+         \\push %%rbp
+         \\push %%rbx
+@@ -75,6 +85,7 @@
+     );
+ }
+ pub fn syscall3(sys: plan9.SYS, arg0: usize, arg1: usize, arg2: usize) usize {
++    if (builtin.zig_backend == .stage2_c) return zig9_syscall(@intFromEnum(sys), arg0, arg1, arg2, 0);
+     return asm volatile (
+         \\push %%rbp
+         \\push %%rbx
+@@ -107,6 +118,7 @@
+     );
+ }
+ pub fn syscall4(sys: plan9.SYS, arg0: usize, arg1: usize, arg2: usize, arg3: usize) usize {
++    if (builtin.zig_backend == .stage2_c) return zig9_syscall(@intFromEnum(sys), arg0, arg1, arg2, arg3);
+     return asm volatile (
+         \\push %%rbp
+         \\push %%rbx
+diff --color -ru a/lib/std/start.zig b/lib/std/start.zig
+--- a/lib/std/start.zig	2026-07-14 20:47:32
++++ b/lib/std/start.zig	2026-07-14 20:47:32
+@@ -87,6 +87,12 @@
+                 // Only call main when defined. For WebAssembly it's allowed to pass `-fno-entry` in which
+                 // case it's not required to provide an entrypoint such as main.
+                 if (!@hasDecl(root, start_sym_name) and @hasDecl(root, "main")) @export(&wasm_freestanding_start, .{ .name = start_sym_name });
++            } else if (native_os == .plan9 and builtin.object_format == .c) {
++                // zig9: a CBE-emitted plan9 binary runs under cc9's crt0 (n9libc),
++                // which owns _start, the big BSS stack, the Tos pointer, and a real
++                // environ built from /env. Export a C main for it instead of the
++                // naked asm _start (which would leave us on the small kernel stack).
++                @export(&plan9CcMain, .{ .name = "main" });
+             } else if (native_os != .other and native_os != .freestanding) {
+                 if (!@hasDecl(root, start_sym_name)) @export(&_start, .{ .name = start_sym_name });
+             }
+@@ -658,6 +664,20 @@
+     }
+ 
+     return callMainWithArgs(@as(usize, @intCast(c_argc)), @as([*][*:0]u8, @ptrCast(c_argv)), envp);
++}
++
++fn plan9CcMain(c_argc: c_int, c_argv: [*][*:0]c_char) callconv(.c) c_int {
++    // zig9 (plan9 + ofmt=c only): cc9's crt0 already captured the Plan 9 Tos
++    // pointer (entry rax) and built a NAME=value environ from /env before
++    // calling main. __cc9_tos itself is unreachable from Zig (the CBE mangles
++    // leading-__ extern names), so it comes through a zig9compat.c accessor.
++    const zig9_tos = @extern(*const fn () callconv(.c) *std.os.plan9.Tos, .{ .name = "zig9_tos" });
++    std.os.plan9.tos = zig9_tos();
++    const c_envp = @extern(*[*:null]?[*:0]u8, .{ .name = "environ" }).*;
++    var env_count: usize = 0;
++    while (c_envp[env_count] != null) : (env_count += 1) {}
++    const envp = @as([*][*:0]u8, @ptrCast(c_envp))[0..env_count];
++    return callMainWithArgs(@intCast(c_argc), @ptrCast(c_argv), envp);
+ }
+ 
+ fn mainWithoutEnv(c_argc: c_int, c_argv: [*][*:0]c_char) callconv(.c) c_int {
