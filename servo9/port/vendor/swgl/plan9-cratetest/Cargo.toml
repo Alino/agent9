@@ -1,0 +1,13 @@
+[package]
+name = "swgl-plan9-cratetest"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+swgl = { path = ".." }
+
+[[bin]]
+name = "swgltest"
+path = "src/main.rs"
+
+[workspace]

@@ -1,0 +1,12 @@
+[package]
+name = "glsl-to-cxx"
+version = "0.70.0"
+description = "A translator from GLSL to vectorized C++."
+license = "MPL-2.0"
+authors = ["The Mozilla Project Developers", "Dimitri Sabadie"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+glsl = "6.0"
