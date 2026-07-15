@@ -21,8 +21,11 @@ segments; it does NOT program the display, so the screen is untouched).
   biggest unknown and it fell the easy way. Forcewake works: HSW/BDW use
   FORCEWAKE_MT (0xa188) + FORCEWAKE_ACK_HSW (0x130044), `MASKED_ENABLE(1)`;
   render regs (0x2000+) read 0 before forcewake and real values after.
-- **M2 — GPU memory for free.** The BIOS already GTT-maps the ENTIRE 64MB
-  aperture (16384/16384 PTEs live) to contiguous stolen memory at 0xa4000000,
+- **M2 — GPU memory for free (but LESS than M2 claimed).** The BIOS GTT-maps the
+  aperture (M2 said "16384/16384 PTEs live" — that scan looped `i < APSZ/4096`,
+  so it only ever looked at the 64MB it had already assumed, and it tested only
+  PTE bit0, which uninitialised junk sets half the time. See M11-M15 at the
+  bottom: 259 of those 16384 pages are not usable memory.) to contiguous stolen memory at 0xa4000000,
   linearly. The aperture (BAR2, "igfxscreen") is a CPU window THROUGH the GTT, so
   **aperture offset == GGTT address** — no physical addresses, no GTT
   programming, no DMA heap, no kernel help. The framebuffer only uses the first
@@ -142,3 +145,41 @@ half" collapses into the same process), then iris through cc9 (~160k lines, the
 gl9/llvm9 grind), then measure GL vs llvmpipe. Open risk: iris wants PPGTT +
 softpin while we have a 64MB GGTT window — either map softpin addresses into it
 or build PPGTT page tables.
+
+
+## M11-M15 (2026-07-15) — measuring what M2 assumed
+
+M2's "the whole 64MB aperture is GPU memory" was an assumption that checked
+itself. Four probes to settle it, after `gpu9 bench` was caught reporting
+4555 MB/s for a 16MB copy that never finished:
+
+- **m11 — the aperture really IS 64MB.** Bisects `segattach("igfxscreen")` for
+  the size the kernel actually registers: 67108864. So the hardcode was right
+  and my suspicion (PCI reports BAR2 = 256MB) was wrong — 256MB is the decode
+  window, not what we get. The GGTT matches it exactly: GTT[16384] already reads
+  uninitialised junk.
+  m11's first cut then got it wrong the other way: it measured the "maximal
+  linear PREFIX" from GTT[0], hit an anomaly at 8190, and concluded 31MB of 64MB
+  was real. Two odd entries in the middle do not mean the rest is unbacked.
+- **m12/m13 — 3 of 16384 PTEs are not the linear stolen mapping**: 8190 and 8191
+  (at the 32MB mark, holding `0309400103093001` / `0309600103095001`) and 16383.
+  16381 of 16384 DO match `0xa4000000 + i*4096`, so the linear-mapping story is
+  right; it just has holes. `gpu9 bench` allocated its dst across 8190/8191.
+- **m14 — the blit fails at an ADDRESS, not a size.** 3840 pages copy correctly;
+  4000 and 4090 both fail at the *same absolute dword*, GGTT `0x3F00000` — the
+  63MB edge.
+- **m15 — mapped is not yours.** Non-destructive write/readback (save, write,
+  compare, restore) over every aperture page: the top 1MB (16128..16383) does
+  **not hold writes**, behind PTEs identical to every other. Firmware lives
+  there. This is why m14 stopped exactly there.
+
+**The lesson worth keeping: a present, perfectly-linear PTE is not evidence the
+page is yours.** Only touching the memory is. `gpu9_arena()` now checks the PTE
+first (never write through a PTE pointing somewhere unknown — that is how you
+DMA into something you cannot name) and then proves each page by write/readback,
+taking the largest run that survives both: pages 8192..16127, 31MB.
+
+And the meta-lesson: **an unverified benchmark is a rumour.** The 16MB row was
+wrong for weeks and looked like the best result in the table. Verification
+turned "1.11x at 16MB" into "ties at 4MB, ~8% ahead past it", and `gpu9 rps`
+now re-derives the 6.7x headline on the box instead of quoting a number.
