@@ -53,3 +53,30 @@ page over TLS; verified 2026-07-15). Two runtime issues gate the headless PNG:
    peer-pid needed — shm/fd handles are addressed by global name). The
    gl9win2/swgl9 procs I first suspected were a concurrent servo9 session's,
    not ladybird's.
+
+## M4 render-stage blockers (after the IPC deadlock was fixed, 2026-07-16)
+
+The full multi-process stack now spawns, connects, and reaches "Taking
+screenshot after 8 seconds" on cirno. Two render-stage bugs remain before a PNG:
+
+3. **No monospace font → WebContent VERIFY crash.** FontPlugin.cpp:56
+   `VERIFY(m_default_fixed_width_font)` fails: the bundled fonts
+   (Base/res/fonts: SerenitySans + NotoEmoji) have NO monospace, and
+   generic_font_name(UiMonospace) tries {DejaVu Sans Mono, Liberation Mono,
+   Noto Sans Mono, ...} — none present. Linux gets these from fontconfig.
+   Fix: bundle a monospace TTF whose internal name matches a fallback (ship
+   DejaVu Sans Mono / Liberation Mono into Base/res/fonts + /lib/ladybird/fonts).
+
+4. **Compositor shm backing-store IPC parse failure — likely the Phase A shm
+   segment cap.** DidAllocateBackingStores (Compositor->UI, carrying
+   Vector<Gfx::SharedImage> = shm AnonymousBuffers) fails to parse ("endpoint
+   magic number mismatch") and the Compositor disconnects/restarts. The
+   TransportPlan9 attachment framing is symmetric (verified), so the leading
+   suspect is the documented Phase A limitation: one #g named segment PER
+   bitmap against a ~60-64 segment SYSTEM-WIDE kernel cap. A page render
+   allocates many backing stores; exhausting the cap yields invalid
+   AnonymousBuffers that corrupt the message. Fix: the planned **Phase B shm
+   pool allocator** (per-process pool segments carved into many buffers, same
+   {name,offset,len} wire format — the offset field is already there for
+   exactly this). ~500 lines, specified in docs/plans/2026-07-15-ladybird9-
+   browser.md. Confirm by tracing shm create failures during the render.
