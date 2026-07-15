@@ -59,6 +59,19 @@ alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacrit
 # compiled-in /usr/local/share/nvim. TUI needs a terminal — run inside
 # alacritty9 (or any TERM-setting host). jobs/:terminal/LSP all work.
 neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9/neovim9-amd64.tar.gz
+# gpu9 — the Intel Gen8 (Broadwell) GPU driver, entirely in userspace. Builds
+# on-box from two small kencc files, so no tarball and no version column (the
+# registry's rule: a version needs an immutable release URL, and a git clone
+# tracks HEAD). `pac9 changelog gpu9` after install; the mkfile ships it.
+#
+# Its reason to exist is the CLOCK: 9front has no GPU driver, so nothing runs
+# RPS and Broadwell sits at 100MHz of its 800MHz forever. `gpu9 rps` shows the
+# 6.7x. It is NOT a general speed win — see the changelog, it is honest about
+# tying memcpy at 4MB. No 3D/OpenGL; use gl9 for that.
+#
+# SECURITY: a process with GPU MMIO + GTT can DMA anywhere in physical memory =
+# full privilege escalation. Opt-in only, never a default, never on a shared box.
+gpu9	https://github.com/Alino/agent9	gpu9	-
 mxio	https://github.com/Alino/agent9	src/mxio	-
 vts	https://github.com/Alino/agent9	src/vts	-
 vtwin	https://github.com/Alino/agent9	src/vtwin	-

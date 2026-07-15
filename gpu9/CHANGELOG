@@ -1,0 +1,39 @@
+gpu9 — Intel Gen8 (Broadwell) GPU driver for 9front, entirely in userspace.
+
+0.1.0  2026-07-15  first release
+
+	What it does: submits commands to the Intel GPU and waits for them
+	properly, and manages the GPU CLOCK — which nothing else on 9front does.
+
+	The headline. 9front ships no GPU driver, so nothing ever runs RPS and
+	Broadwell parks at its minimum P-state forever: 100 MHz out of 800. One
+	register write fixes that and makes the blitter 6.7x faster (684 ->
+	4568 MB/s on a 4MB copy). Run `gpu9 rps` — it re-derives that on your
+	box rather than asking you to trust this file.
+
+	Honest about speed: the GPU is NOT a big win over the CPU here. It is
+	clock-bound and flat at ~4.4 GB/s; memcpy in cached RAM beats it below
+	4MB, ties it at 4MB, and loses by ~8% past that. The real benefit is
+	that it runs asynchronously. cirno's GT1 (12 EUs) is the weakest
+	Broadwell made.
+
+	Verified on bare metal (Shuttle DS57U, 8086/1606): MMIO, forcewake,
+	GTT/aperture memory, RPS, the legacy ring, batch buffers with correct
+	fences, the 2D blitter. `gpu9 test` self-checks; `gpu9 bench` verifies
+	every copy and refuses to report a speed for a wrong one.
+
+	NOT included: 3D/OpenGL. Mesa's iris compiles and links for 9front
+	(1027/1027 TUs via cc9) but is not wired to gpu9 — iris is softpin-only
+	and wants a 0..12GB address space where gpu9 has a 64MB GGTT. For
+	software OpenGL today, use gl9.
+
+	SECURITY — read before installing. A process holding GPU MMIO + the GTT
+	can program the engine to DMA anywhere in physical memory, kernel
+	included. That is full privilege escalation for anyone who can open
+	those segments, and it is a real reason Linux keeps DRM in the kernel.
+	This is opt-in on purpose and should never be a default. Fine on a box
+	you own; do not install it on a machine you share.
+
+	Requires: `echo type igfx >/dev/vgactl` once per boot, so the kernel
+	registers the igfxmmio/igfxscreen segments. That only maps and
+	registers them — it does not program your display.

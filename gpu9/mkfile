@@ -1,0 +1,28 @@
+< /$objtype/mkfile
+
+BIN=/$objtype/bin
+TARG=gpu9
+
+# The driver (lib/) and the command (cmd/) stay in separate directories: the
+# same lib/gpu9.c is what the cc9-built ioctl() shim will link against, so it
+# must not depend on anything cmd/ owns. mkone assumes one flat directory, so
+# spell the two rules out rather than copy sources around at install time.
+
+all:V: $O.out
+
+$O.out: gpu9cmd.$O gpu9lib.$O
+	$LD -o $O.out gpu9cmd.$O gpu9lib.$O
+
+gpu9cmd.$O: cmd/gpu9.c lib/gpu9.h
+	$CC $CFLAGS -Ilib -o gpu9cmd.$O cmd/gpu9.c
+
+gpu9lib.$O: lib/gpu9.c lib/gpu9.h
+	$CC $CFLAGS -Ilib -o gpu9lib.$O lib/gpu9.c
+
+install:V: $O.out
+	cp $O.out $BIN/$TARG
+	mkdir -p /sys/lib/pac9/changelog
+	cp CHANGELOG /sys/lib/pac9/changelog/gpu9
+
+clean:V:
+	rm -f *.[568] $O.out
