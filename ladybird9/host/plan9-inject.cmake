@@ -30,3 +30,15 @@ set(ENABLE_AUDIO OFF CACHE BOOL "" FORCE)
 # RUSTUP_TOOLCHAIN=plan9 (rustup link of the stage1) for cargo; the triple is
 # a documented rust_crate.cmake cache seam:
 set(RUST_TARGET_TRIPLE "x86_64-unknown-plan9" CACHE INTERNAL "Rust target triple")
+
+# Host-run build tools a cross build cannot execute from the target build:
+# asmintgen (host cargo build, from the M0 spike) and the pre-generated
+# asm offsets (ABI-proven by the 123-static_assert gate; regenerate + re-gate
+# on every pin bump via test/m0/asmint-spike.sh).
+get_filename_component(_lb9_inject_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+set(LADYBIRD_ASMINTGEN
+    "${_lb9_inject_root}/vendor/ladybird/Libraries/LibJS/AsmIntGen/target/release/asmintgen"
+    CACHE FILEPATH "host asmintgen")
+set(LADYBIRD_ASM_OFFSETS_FILE
+    "${_lb9_inject_root}/vendor/ladybird/Build/release/Libraries/LibJS/Bytecode/AsmInterpreter/asm_offsets.conf"
+    CACHE FILEPATH "pre-generated, gate-verified asm offsets")

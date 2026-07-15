@@ -1,0 +1,85 @@
+diff --git a/Libraries/LibJS/CMakeLists.txt b/Libraries/LibJS/CMakeLists.txt
+index 25d61bc1eb..07b80c7f1d 100644
+--- a/Libraries/LibJS/CMakeLists.txt
++++ b/Libraries/LibJS/CMakeLists.txt
+@@ -340,35 +340,53 @@ if (DEFINED ASMINT_ARCH)
+     set(ASMINT_GENERATED_S "${CMAKE_CURRENT_BINARY_DIR}/Bytecode/AsmInterpreter/asmint_${ASMINT_ARCH}.S")
+     set(ASM_OFFSETS_FILE "${CMAKE_CURRENT_BINARY_DIR}/Bytecode/AsmInterpreter/asm_offsets.conf")
+ 
+-    # Build-time offset generator: compiles a small C++ program that uses
+-    # offsetof() to emit struct field offsets as DSL constants.
+-    add_executable(gen_asm_offsets "${CMAKE_CURRENT_SOURCE_DIR}/Bytecode/AsmInterpreter/gen_asm_offsets.cpp")
+-    target_link_libraries(gen_asm_offsets PRIVATE AK)
+-    if (MSVC)
+-        target_compile_definitions(gen_asm_offsets PRIVATE _ALLOW_KEYWORD_MACROS)
+-    endif()
+-    target_compile_definitions(gen_asm_offsets PRIVATE private=public protected=public)
+-    # NB: Strip fuzzer sanitizer flags so gen_asm_offsets can define its own main().
+-    if (ENABLE_FUZZERS_LIBFUZZER)
+-        target_compile_options(gen_asm_offsets PRIVATE -fno-sanitize=fuzzer)
+-        target_link_options(gen_asm_offsets PRIVATE -fno-sanitize=fuzzer)
+-    endif()
+-    # NB: gen_asm_offsets no longer depends on Op.h since opcode field
+-    # offsets are now computed from Bytecode.def by asmintgen directly.
++    # Cross builds whose target binaries cannot run on the build host may
++    # provide a pre-generated offsets file (LADYBIRD_ASM_OFFSETS_FILE) and a
++    # host-built asmintgen (LADYBIRD_ASMINTGEN). The offsets file must be
++    # ABI-verified against the target toolchain (ladybird9: 123 static_asserts
++    # compiled by the target compiler prove it byte-exact).
++    if (LADYBIRD_ASM_OFFSETS_FILE)
++        add_custom_command(
++            OUTPUT "${ASM_OFFSETS_FILE}"
++            COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${LADYBIRD_ASM_OFFSETS_FILE}" "${ASM_OFFSETS_FILE}"
++            DEPENDS "${LADYBIRD_ASM_OFFSETS_FILE}"
++            COMMENT "Using pre-generated asm struct offsets"
++        )
++    else()
++        # Build-time offset generator: compiles a small C++ program that uses
++        # offsetof() to emit struct field offsets as DSL constants.
++        add_executable(gen_asm_offsets "${CMAKE_CURRENT_SOURCE_DIR}/Bytecode/AsmInterpreter/gen_asm_offsets.cpp")
++        target_link_libraries(gen_asm_offsets PRIVATE AK)
++        if (MSVC)
++            target_compile_definitions(gen_asm_offsets PRIVATE _ALLOW_KEYWORD_MACROS)
++        endif()
++        target_compile_definitions(gen_asm_offsets PRIVATE private=public protected=public)
++        # NB: Strip fuzzer sanitizer flags so gen_asm_offsets can define its own main().
++        if (ENABLE_FUZZERS_LIBFUZZER)
++            target_compile_options(gen_asm_offsets PRIVATE -fno-sanitize=fuzzer)
++            target_link_options(gen_asm_offsets PRIVATE -fno-sanitize=fuzzer)
++        endif()
++        # NB: gen_asm_offsets no longer depends on Op.h since opcode field
++        # offsets are now computed from Bytecode.def by asmintgen directly.
+ 
+-    add_custom_command(
+-        OUTPUT "${ASM_OFFSETS_FILE}"
+-        COMMAND "$<TARGET_FILE:gen_asm_offsets>" > "${ASM_OFFSETS_FILE}"
+-        DEPENDS gen_asm_offsets
+-        COMMENT "Generating asm struct offsets"
+-    )
++        add_custom_command(
++            OUTPUT "${ASM_OFFSETS_FILE}"
++            COMMAND "$<TARGET_FILE:gen_asm_offsets>" > "${ASM_OFFSETS_FILE}"
++            DEPENDS gen_asm_offsets
++            COMMENT "Generating asm struct offsets"
++        )
++    endif()
+ 
+-    build_rust_binary(
+-        MANIFEST_PATH AsmIntGen/Cargo.toml
+-        CRATE_NAME asmintgen
+-        BINARY_NAME asmintgen
+-        OUTPUT_PATH_VAR ASMINTGEN_BIN
+-    )
++    if (LADYBIRD_ASMINTGEN)
++        set(ASMINTGEN_BIN "${LADYBIRD_ASMINTGEN}")
++    else()
++        build_rust_binary(
++            MANIFEST_PATH AsmIntGen/Cargo.toml
++            CRATE_NAME asmintgen
++            BINARY_NAME asmintgen
++            OUTPUT_PATH_VAR ASMINTGEN_BIN
++        )
++    endif()
+ 
+     set(BYTECODE_DEF "${CMAKE_CURRENT_SOURCE_DIR}/Bytecode/Bytecode.def")
+ 
