@@ -95,6 +95,20 @@ typedef uchar  g9u8;
 #define MI_FLUSH_DW_GEN8	((0x26u<<23) | (1u<<14) | 2u)	/* BCS only */
 #define MI_FLUSH_DW_USE_GTT	(1u<<2)
 
+/* 2D blitter ops (XY_COLOR_BLT / XY_SRC_COPY_BLT). Encodings from
+ * genxml/gen5.xml — the 2D BLT format is unchanged gen4..gen8 EXCEPT gen8
+ * widened the base address to 64-bit (so one extra dword each). Verified byte
+ * layout matches gpu9's working SRC_COPY (ROP<<16, depth<<24, pitch in low 16).
+ * These are why a 2D GPU exists: the CPU reaches the framebuffer only through
+ * the uncached aperture, the blitter is native to it. */
+#define GPU9_XY_COLOR_BLT	((2u<<29)|(0x50u<<22))	/* solid fill */
+#define GPU9_XY_SRC_COPY_BLT	((2u<<29)|(0x53u<<22))	/* copy (scroll) */
+#define GPU9_BLT_WRITE_RGBA	(3u<<20)
+#define GPU9_ROP_FILL		(0xF0u<<16)		/* PATCOPY: dest = pattern */
+#define GPU9_ROP_COPY		(0xCCu<<16)		/* SRCCOPY: dest = source */
+#define GPU9_DEPTH16		1u			/* r5g6b5 — the framebuffer */
+#define GPU9_DEPTH32		3u			/* x8r8g8b8 */
+
 /* PIPE_CONTROL (gen8, 6 dwords) per genxml/gen8.xml:
  *   DW0 = type3<<29 | subtype3<<27 | opcode2<<24 | len(=6-2)
  *   DW1 flags: PostSyncOp(46:47)=1 -> bit14 ; DAT(56)=GGTT(1) -> bit24
@@ -119,7 +133,7 @@ struct Gpu9 {
 	g9u32 next_page;
 	g9u32 end_page;
 
-	/* the render ring */
+	/* the render ring (RCS): 3D/compute batches, gpu9_exec */
 	g9u32 ring_page;
 	g9u32 *ring;
 	g9u32 ring_dwords;
@@ -128,6 +142,13 @@ struct Gpu9 {
 	g9u32 fence_page;
 	volatile g9u32 *fence;
 	g9u32 seqno;
+
+	/* the blitter ring (BCS): 2D fill/copy, gpu9_fill/gpu9_blt */
+	g9u32 bring_page;
+	g9u32 *bring;
+	g9u32 bfence_page;
+	volatile g9u32 *bfence;
+	g9u32 bseq;
 };
 
 int   gpu9_open(Gpu9 *g);
@@ -155,6 +176,20 @@ void    *gpu9_cpu(Gpu9 *g, g9u32 ggtt);
 /* submit a batch buffer at a GGTT address on the render ring, and wait for it
  * to actually complete (MI_FLUSH_DW fence, not HEAD==TAIL). */
 int  gpu9_exec(Gpu9 *g, g9u32 batch_ggtt, g9u32 nbytes);
+
+/* 2D acceleration — what makes gpu9 worth installing on a box with no hw accel.
+ * Both target any GGTT address (framebuffer = GGTT 0) with a byte pitch, and
+ * block until the blitter has finished. Coordinates in pixels, w/h in pixels.
+ * Return 0, or -1 if the blitter hung.
+ *
+ *   gpu9_fill  solid rectangle (clear, background, filled shape)
+ *   gpu9_blt   copy a rectangle dst<-src (scroll = copy the screen onto itself
+ *              shifted; blit a window's backing store to the screen)
+ */
+int  gpu9_fill(Gpu9 *g, g9u32 dst, int pitch, int x, int y, int w, int h,
+	g9u32 color, int depth);
+int  gpu9_blt(Gpu9 *g, g9u32 dst, int dx, int dy, g9u32 src, int sx, int sy,
+	int pitch, int w, int h, int depth);
 
 static inline g9u32 gpu9_rd(Gpu9 *g, g9u32 o){ return g->mmio[o/4]; }
 static inline void     gpu9_wr(Gpu9 *g, g9u32 o, g9u32 v){ g->mmio[o/4] = v; }

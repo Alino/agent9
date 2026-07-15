@@ -5,6 +5,9 @@
  *   gpu9 clock    request the maximum P-state (RP0) and report it
  *   gpu9 rps      prove the headline: the same blit at RPn vs RP0
  *   gpu9 bench    GPU blitter vs CPU memcpy, across sizes
+ *   gpu9 fill     accelerated framebuffer clear, GPU vs CPU (the real use)
+ *   gpu9 scroll   accelerated screen scroll, GPU vs CPU
+ *   gpu9 demo     draw on the actual screen so you can SEE the GPU work
  *   gpu9 test     self-check: submit work and verify the GPU did it
  *
  * This is a real driver in userspace — no kernel component. 9front already
@@ -27,7 +30,7 @@ static char *memtype[] = { "UC", "WC", "WT", "WB" };
 static void
 usage(void)
 {
-	fprint(2, "usage: gpu9 [info | clock | rps | bench | test]\n");
+	fprint(2, "usage: gpu9 [info | clock | rps | bench | fill | scroll | demo | test]\n");
 	exits("usage");
 }
 
@@ -270,6 +273,139 @@ cmdtest(Gpu9 *g)
 		exits("fail");
 }
 
+/* the framebuffer 9front is running: cat /dev/vgactl says 1024x768x16 r5g6b5 */
+#define FBW	1024
+#define FBH	768
+#define FBPITCH	(FBW*2)
+#define FBBYTES	(FBW*FBH*2)
+
+static vlong
+nsmin(vlong a, vlong b){ return a == 0 || b < a ? b : a; }
+
+/*
+ * fill — the operation a 2D accelerator is FOR. Clear/paint a framebuffer-sized
+ * region. The CPU can only reach framebuffer memory through the uncached
+ * aperture; the blitter is native to it. This is the honest comparison (both
+ * write the same VRAM), and it is exactly what 9front's softscreen flush does
+ * by hand today with no acceleration.
+ */
+static void
+cmdfill(Gpu9 *g)
+{
+	u32int bufg;
+	u16int *buf;
+	int i, k;
+	vlong t0, tg, tc;
+	u16int color = 0x07ff;		/* cyan-ish in r5g6b5 */
+
+	bufg = gpu9_alloc(g, FBBYTES, (void**)&buf);
+	if(bufg == 0) sysfatal("alloc: %r");
+
+	if(gpu9_fill(g, bufg, FBPITCH, 0, 0, FBW, FBH, color, GPU9_DEPTH16) < 0)
+		sysfatal("fill: %r");
+	for(i = 0; i < FBW*FBH; i += 1021)	/* verify a prime-strided sample */
+		if(buf[i] != color){
+			print("VERIFY FAIL: pixel %d = %.4ux want %.4ux\n", i, buf[i], color);
+			return;
+		}
+
+	tg = 0;
+	for(k = 0; k < 8; k++){
+		t0 = nsec();
+		if(gpu9_fill(g, bufg, FBPITCH, 0, 0, FBW, FBH, color, GPU9_DEPTH16) < 0)
+			sysfatal("fill: %r");
+		tg = nsmin(tg, nsec()-t0);
+	}
+	tc = 0;
+	for(k = 0; k < 5; k++){
+		t0 = nsec();
+		for(i = 0; i < FBW*FBH; i++) buf[i] = color;	/* CPU, through aperture */
+		tc = nsmin(tc, nsec()-t0);
+	}
+	print("fill %dx%d (%d KB), verified:\n", FBW, FBH, FBBYTES/1024);
+	print("  GPU blitter %6.0f MB/s   (%lld us)\n", (double)FBBYTES/(double)tg*1000.0, tg/1000);
+	print("  CPU aperture%6.0f MB/s   (%lld us)\n", (double)FBBYTES/(double)tc*1000.0, tc/1000);
+	print("  -> GPU is %.1fx faster at clearing the framebuffer\n", (double)tc/(double)tg);
+}
+
+/*
+ * scroll — the terminal operation: shift the whole screen up. A framebuffer-to-
+ * framebuffer copy. The CPU must READ every pixel back through the uncached
+ * aperture (memmove), which is the worst case for it; the blitter stays in VRAM.
+ */
+static void
+cmdscroll(Gpu9 *g)
+{
+	u32int bufg;
+	u16int *buf;
+	int i, k, y, lines = FBH - 16;	/* scroll up 16px: almost the whole screen moves */
+	vlong t0, tg, tc;
+
+	bufg = gpu9_alloc(g, FBBYTES, (void**)&buf);
+	if(bufg == 0) sysfatal("alloc: %r");
+
+	/* pattern: every pixel on line y holds y. After scrolling up 16, line y
+	 * must hold y+16. */
+	for(y = 0; y < FBH; y++)
+		for(i = 0; i < FBW; i++) buf[y*FBW + i] = y;
+	if(gpu9_blt(g, bufg, 0, 0, bufg, 0, 16, FBPITCH, FBW, lines, GPU9_DEPTH16) < 0)
+		sysfatal("scroll: %r");
+	for(y = 0; y < lines; y += 37)
+		if(buf[y*FBW] != (u16int)(y+16)){
+			print("VERIFY FAIL: line %d = %d want %d\n", y, buf[y*FBW], y+16);
+			return;
+		}
+
+	tg = 0;
+	for(k = 0; k < 8; k++){
+		t0 = nsec();
+		if(gpu9_blt(g, bufg, 0, 0, bufg, 0, 16, FBPITCH, FBW, lines, GPU9_DEPTH16) < 0)
+			sysfatal("scroll: %r");
+		tg = nsmin(tg, nsec()-t0);
+	}
+	tc = 0;
+	for(k = 0; k < 5; k++){
+		t0 = nsec();
+		memmove(buf, buf + 16*FBW, (long)lines*FBPITCH);	/* CPU, through aperture */
+		tc = nsmin(tc, nsec()-t0);
+	}
+	print("scroll %dx%d up 16px (%ld KB moved), verified:\n",
+		FBW, FBH, (long)lines*FBPITCH/1024);
+	print("  GPU blitter %6.0f MB/s   (%lld us)\n", (double)lines*FBPITCH/(double)tg*1000.0, tg/1000);
+	print("  CPU aperture%6.0f MB/s   (%lld us)\n", (double)lines*FBPITCH/(double)tc*1000.0, tc/1000);
+	print("  -> GPU is %.1fx faster at scrolling the screen\n", (double)tc/(double)tg);
+}
+
+/*
+ * demo — draw on the ACTUAL screen (GGTT 0 == the framebuffer) so you can see
+ * the GPU do it. Softscreen redraws over these on the next damage, so it is
+ * self-healing; move the mouse or refresh to clear. Reports the fill rate.
+ */
+static void
+cmddemo(Gpu9 *g)
+{
+	static u16int col[] = { 0xf800, 0x07e0, 0x001f, 0xffe0, 0xf81f, 0x07ff, 0xffff };
+	int cols = 8, rows = 6, cw = FBW/8, ch = FBH/6, r, c, k, fills = 0;
+	vlong t0, t;
+
+	print("drawing %d rectangles on your screen with the GPU blitter...\n", cols*rows);
+	t0 = nsec();
+	for(k = 0; k < 20; k++)			/* 20 passes so the rate is measurable */
+		for(r = 0; r < rows; r++)
+			for(c = 0; c < cols; c++){
+				if(gpu9_fill(g, 0, FBPITCH, c*cw, r*ch, cw-4, ch-4,
+					col[(r*cols+c+k) % nelem(col)], GPU9_DEPTH16) < 0)
+					sysfatal("fill: %r");
+				fills++;
+			}
+	t = nsec() - t0;
+	print("%d fills in %lld ms = %.0f fills/s (%.0f MB/s of framebuffer)\n",
+		fills, t/1000000, (double)fills/(double)t*1e9,
+		(double)fills*(cw-4)*(ch-4)*2/(double)t*1000.0);
+	print("look at cirno's screen — that grid was drawn entirely by the GPU.\n");
+	print("(9front's softscreen will paint over it on the next redraw.)\n");
+}
+
 void
 main(int argc, char **argv)
 {
@@ -288,6 +424,12 @@ main(int argc, char **argv)
 		cmdrps(&g);
 	else if(strcmp(cmd, "bench") == 0)
 		cmdbench(&g);
+	else if(strcmp(cmd, "fill") == 0)
+		cmdfill(&g);
+	else if(strcmp(cmd, "scroll") == 0)
+		cmdscroll(&g);
+	else if(strcmp(cmd, "demo") == 0)
+		cmddemo(&g);
 	else if(strcmp(cmd, "test") == 0)
 		cmdtest(&g);
 	else {

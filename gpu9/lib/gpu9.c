@@ -120,7 +120,7 @@ gpu9_open(Gpu9 *g)
 		return -1;
 	}
 
-	/* ring + fence */
+	/* render ring + fence */
 	g->ring_page = g->next_page++;
 	g->ring = (g9u32*)(g->aper + g->ring_page*4096);
 	g->ring_dwords = RING_DWORDS;
@@ -128,6 +128,14 @@ gpu9_open(Gpu9 *g)
 	g->fence = (volatile g9u32*)(g->aper + g->fence_page*4096);
 	g->fence[0] = 0;
 	g->seqno = 0x9000;
+
+	/* blitter ring + fence (for gpu9_fill / gpu9_blt) */
+	g->bring_page = g->next_page++;
+	g->bring = (g9u32*)(g->aper + g->bring_page*4096);
+	g->bfence_page = g->next_page++;
+	g->bfence = (volatile g9u32*)(g->aper + g->bfence_page*4096);
+	g->bfence[0] = 0;
+	g->bseq = 0xb17;
 
 	/* Ask for the real clock. Without this the GPU runs at its 100MHz floor
 	 * (1/8 of RP0) because nothing else on 9front runs RPS. */
@@ -292,4 +300,94 @@ gpu9_exec(Gpu9 *g, g9u32 batch_ggtt, g9u32 nbytes)
 		}
 	}
 	return 0;
+}
+
+/*
+ * The blitter (BCS) path. Same legacy-ring discipline as the render ring —
+ * re-arm fully each submit, wait on a posted fence, never on HEAD==TAIL — but
+ * here MI_FLUSH_DW is the RIGHT fence: this IS the blitter, the engine
+ * MI_FLUSH_DW is native to (on the render ring it silently never posts).
+ */
+static int
+bcs_submit(Gpu9 *g, int n, g9u32 want)
+{
+	vlong t0;
+
+	while(n & 1)
+		g->bring[n++] = MI_NOOP;
+	g->bfence[0] = 0;
+	gpu9_wr(g, GPU9_BCS_BASE+GPU9_RING_CTL, 0);
+	gpu9_wr(g, GPU9_BCS_BASE+GPU9_RING_HEAD, 0);
+	gpu9_wr(g, GPU9_BCS_BASE+GPU9_RING_TAIL, 0);
+	gpu9_wr(g, GPU9_BCS_BASE+GPU9_RING_START, g->bring_page*4096);
+	gpu9_wr(g, GPU9_BCS_BASE+GPU9_RING_CTL, GPU9_RING_VALID);
+	gpu9_rd(g, GPU9_BCS_BASE+GPU9_RING_CTL);
+	gpu9_wr(g, GPU9_BCS_BASE+GPU9_RING_TAIL, n*4);
+	gpu9_rd(g, GPU9_BCS_BASE+GPU9_RING_TAIL);
+
+	t0 = nsec();
+	while(g->bfence[0] != want){
+		if(nsec() - t0 > 2000000000LL){
+			werrstr("gpu9: blitter hung (fence %.8ux want %.8ux HEAD %.8ux TAIL %.8ux)",
+				g->bfence[0], want,
+				gpu9_rd(g, GPU9_BCS_BASE+GPU9_RING_HEAD),
+				gpu9_rd(g, GPU9_BCS_BASE+GPU9_RING_TAIL));
+			return -1;
+		}
+	}
+	return 0;
+}
+
+/* append the blitter's own MI_FLUSH_DW fence, posting `want`. Returns new n. */
+static int
+bcs_fence(Gpu9 *g, int n, g9u32 want)
+{
+	g->bring[n++] = MI_FLUSH_DW_GEN8;
+	g->bring[n++] = (g->bfence_page*4096) | MI_FLUSH_DW_USE_GTT;
+	g->bring[n++] = 0;
+	g->bring[n++] = want;
+	return n;
+}
+
+int
+gpu9_fill(Gpu9 *g, g9u32 dst, int pitch, int x, int y, int w, int h,
+	g9u32 color, int depth)
+{
+	g9u32 want;
+	int n;
+
+	want = ++g->bseq;
+	n = 0;
+	g->bring[n++] = GPU9_XY_COLOR_BLT | GPU9_BLT_WRITE_RGBA | (7-2);
+	g->bring[n++] = (depth<<24) | GPU9_ROP_FILL | (pitch & 0xffff);
+	g->bring[n++] = (y<<16) | (x & 0xffff);
+	g->bring[n++] = ((y+h)<<16) | ((x+w) & 0xffff);
+	g->bring[n++] = dst;			/* base addr lo (GGTT) */
+	g->bring[n++] = 0;			/* base addr hi */
+	g->bring[n++] = color;
+	n = bcs_fence(g, n, want);
+	return bcs_submit(g, n, want);
+}
+
+int
+gpu9_blt(Gpu9 *g, g9u32 dst, int dx, int dy, g9u32 src, int sx, int sy,
+	int pitch, int w, int h, int depth)
+{
+	g9u32 want;
+	int n;
+
+	want = ++g->bseq;
+	n = 0;
+	g->bring[n++] = GPU9_XY_SRC_COPY_BLT | GPU9_BLT_WRITE_RGBA | (10-2);
+	g->bring[n++] = (depth<<24) | GPU9_ROP_COPY | (pitch & 0xffff);
+	g->bring[n++] = (dy<<16) | (dx & 0xffff);		/* dst x1,y1 */
+	g->bring[n++] = ((dy+h)<<16) | ((dx+w) & 0xffff);	/* dst x2,y2 */
+	g->bring[n++] = dst;			/* dst base lo */
+	g->bring[n++] = 0;			/* dst base hi */
+	g->bring[n++] = (sy<<16) | (sx & 0xffff);		/* src x1,y1 */
+	g->bring[n++] = pitch & 0xffff;				/* src pitch */
+	g->bring[n++] = src;			/* src base lo */
+	g->bring[n++] = 0;			/* src base hi */
+	n = bcs_fence(g, n, want);
+	return bcs_submit(g, n, want);
 }
