@@ -1,11 +1,43 @@
 #!/bin/rc
-# gl9 — run OpenGL (Mesa softpipe) on 9front, presenting to a window via gl9win.
+# gl9 — run OpenGL on 9front, presenting to a window via gl9win.
 #   gl9 cube            spinning lit 3D cube (the showcase)
 #   gl9 egl             a triangle through the EGL API
 #   gl9 run cmd [args]  pipe your own gl9 GL app to gl9win
-# GALLIUM_NOSSE=1 forces softpipe's C vertex-fetch path (its x86 JIT NX-faults on
-# 9front). Run from a rio window so gl9win has a window to draw into.
-GALLIUM_NOSSE=1
+#   gl9 driver          print which rasterizer would be used
+# Run from a rio window so gl9win has a window to draw into.
+#
+# The driver is chosen automatically:
+#   llvmpipe  ~15x faster (JIT-compiles the shaders) — needs the W^X kernel
+#   softpipe  the scalar reference rasterizer — the only one a stock kernel runs
+# They render identically, pixel for pixel; llvmpipe is purely a speed choice.
+#
+# Why a gate: llvmpipe writes machine code at runtime and jumps to it, so it needs
+# writable+executable memory (segattach SG_EXEC). Stock 9front NX-enforces every
+# writable segment, so llvmpipe would fault on its first shader. The optional
+# wxallow kernel patch adds that opt-in, plan9.ini's `wxallow=1` turns it on, and
+# #ec is the kernel's own view of plan9.ini — so that key is the signal.
+#
+# Caveat: #ec says the GATE is on, not that the running kernel honours it. A stock
+# kernel booted with a stale `wxallow=1` left in plan9.ini would take the llvmpipe
+# path and fault. Probing for real means executing JIT memory on every launch,
+# which faults noisily on the stock kernels that are the common case — so the cheap
+# signal wins. If you downgrade to a stock kernel, drop wxallow from plan9.ini too.
+#
+# Set GALLIUM_DRIVER yourself to override the detection entirely.
+if(~ $#GALLIUM_DRIVER 0){
+	wx=()
+	if(test -e '#ec/wxallow')
+		wx=`{cat '#ec/wxallow'}
+	# the kernel reads this as strtol(...)!=0, so anything but 0 means on
+	if(! ~ $#wx 0 && ! ~ $wx 0)
+		GALLIUM_DRIVER=llvmpipe
+	if not {
+		GALLIUM_DRIVER=softpipe
+		# no exec memory here either, so force softpipe's C vertex-fetch path:
+		# rtasm's x86 JIT would NX-fault exactly like llvmpipe.
+		GALLIUM_NOSSE=1
+	}
+}
 switch($1){
 case cube
 	gl9-cube | gl9win
@@ -14,7 +46,9 @@ case egl
 case run
 	shift
 	$* | gl9win
+case driver
+	echo $GALLIUM_DRIVER
 case *
-	echo 'usage: gl9 cube | gl9 egl | gl9 run <glapp> [args...]' >[1=2]
+	echo 'usage: gl9 cube | gl9 egl | gl9 run <glapp> [args...] | gl9 driver' >[1=2]
 	exit usage
 }
