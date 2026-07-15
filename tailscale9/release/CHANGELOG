@@ -1,0 +1,15 @@
+1.100.0 (2026-07-15)
+	First release. Upstream Tailscale v1.100.0 cross-compiled for
+	plan9/amd64 with stock Go 1.26 — no patches, upstream supports
+	GOOS=plan9 since 2025. Userspace WireGuard (gVisor netstack), so it
+	runs on a stock 9front kernel.
+
+	Ships /amd64/bin/tailscale (CLI), /sys/lib/tailscale/tailscaled
+	(daemon) and /rc/bin/tailscaled, a wrapper that configures the
+	loopback interface tailscaled's control socket needs (fresh 9front
+	has no 127.0.0.1) and defaults --statedir to $home/lib/tailscale.
+
+	Verified on bare-metal 9front (cirno): daemon brings up the
+	WireGuard engine, reaches controlplane.tailscale.com over TLS,
+	registers a node key and issues a login URL; `tailscale status` /
+	`tailscale up` work against it.

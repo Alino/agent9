@@ -1,0 +1,10 @@
+#!/bin/rc
+# tailscaled — Tailscale daemon for 9front (upstream GOOS=plan9 build; userspace
+# WireGuard via gVisor netstack, no kernel modifications).
+#
+# The control socket the `tailscale` CLI talks to listens on 127.0.0.1:5252,
+# and a fresh 9front namespace has NO loopback interface — configure one first
+# (a no-op if it's already there).
+grep -s '127\.0\.0\.1' /net/ipselftab || ip/ipconfig loopback /dev/null 127.1
+if(! test -d $home/lib/tailscale) mkdir -p $home/lib/tailscale
+exec /sys/lib/tailscale/tailscaled --statedir $home/lib/tailscale $*

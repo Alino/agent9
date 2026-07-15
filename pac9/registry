@@ -103,3 +103,13 @@ hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9/he
 # frames hid it by blacking the window first. `pac9 changelog dosbox9` has the
 # story; P9_FULLFRAMES=1 restores 0.1.0's behaviour.
 dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9-v0.2.0/dosbox9-amd64.tar.gz	-	0.2.0
+
+# tailscale9 — upstream Tailscale v1.100.0 for plan9/amd64 (official GOOS=plan9
+# port, stock Go 1.26, no patches; userspace WireGuard over gVisor netstack, so
+# a stock kernel works). /rc/bin/tailscaled wraps the daemon: it configures the
+# loopback interface the control socket needs (fresh 9front has no 127.0.0.1)
+# and defaults --statedir to $home/lib/tailscale. `tailscaled &` then
+# `tailscale up` prints the login URL. Verified on bare-metal cirno up to the
+# control-plane handshake (TLS to controlplane.tailscale.com, node key
+# registered, login URL issued).
+tailscale9	-	.	tarball https://github.com/Alino/agent9/releases/download/tailscale9-v1.100.0/tailscale9-amd64.tar.gz	-	1.100.0

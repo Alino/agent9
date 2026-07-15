@@ -60,3 +60,5 @@ hermes9/
 *.token
 *.key
 auth.json
+tailscale9/release/stage/
+tailscale9/release/*.tar.gz
