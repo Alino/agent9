@@ -1,0 +1,52 @@
+dosbox9 — DOSBox 0.74-3 for 9front. Changelog.
+(`pac9 changelog dosbox9` shows this; newest first.)
+
+0.2.0 — 2026-07-15
+  Damage rects on by default: a blinking cursor costs ~1 KB, not 1 MB.
+
+  0.1.0 presented every update as a FULL FRAME — a 1 MB pipe write plus a
+  whole-window image reload, for a screen where 13 rows changed. It did that
+  because the delta path was visibly wrong: on the Apogee "Galaxy" games
+  (bmenace, keen4) old text stayed under new, and Halloween Harry showed a
+  garbled band. Deltas are now correct and are the default.
+
+  The bug was never the deltas. gl9win2's Image is ABGR32 — a format WITH an
+  alpha channel — so Plan 9's draw(2) computes
+
+      dst = src + dst*(1 - src.alpha)
+
+  from the 4th byte of every pixel. Our frames declared no alpha, so that byte
+  was 0, and every draw was an ADDITIVE BLEND instead of a replace: whatever was
+  already on screen showed through, and colours crept brighter. Full frames
+  looked correct only by accident — gl9win2 blacks the window before drawing
+  one, and src + 0 == src. Sending opaque pixels fixes it; the window server is
+  unchanged.
+
+  Verified on bare metal (Shuttle DS57U, Broadwell): 12/12 games render, no
+  regressions, and Harry's "garbled band" — long filed as a separate artifact —
+  was the same bug and is gone.
+
+  Set P9_FULLFRAMES=1 to force 0.1.0's whole-frame presentation.
+
+  Also in this release:
+    - Windows 3.11 for Workgroups runs, GUI and all — Program Manager, groups,
+      mouse. No boot needed: WIN.COM is an ordinary DOS program, so point C: at
+      an installed WINDOWS tree and run `win`.
+    - Windows 98 boots to real mode via DOSBox's BOOT.COM (its own IO.SYS and
+      COMMAND.COM, at an interactive A:\>). The Win98 GUI does NOT run and
+      won't: VMM32.VXD needs protected-mode/V86 and IDE emulation that vanilla
+      DOSBox 0.74 has never had. That's an upstream DOSBox limit, not a 9front
+      one — Win98-in-DOSBox means DOSBox-X.
+    - New README with the architecture, the build, and both Windows recipes.
+
+  Unchanged: sound is wired but still unlistened-to; game startup is slow
+  because the CPU core is the portable interpreter (dynrec needs W^X and a real
+  mprotect, which cc9 hasn't got).
+
+0.1.0
+  First release. DOSBox 0.74-3 cross-compiled with cc9, presented to a rio
+  window by gl9win2 (the alacritty9 window server, reused unmodified). All 118
+  DOSBox .cpp compile unmodified; the port is really an SDL 1.2.15 port with a
+  Plan 9 video/audio backend. 12 shareware/freeware DOS games verified rendering
+  on bare metal. `dosbox9` boots to Z:\>, `dosbox9 <dir>` mounts it as C:.
+  Games are not bundled — host/fetch-games.py pulls them from archive.org.

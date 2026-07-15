@@ -91,9 +91,15 @@ hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9/he
 
 # dosbox9 — DOSBox 0.74-3 on 9front (SDL 1.2 with a Plan 9 backend over
 # gl9win2; cc9 can't link libdraw, so a native window server hosts it).
-# 12 shareware/freeware DOS games verified rendering on bare metal.
+# 12 shareware/freeware DOS games verified rendering on bare metal, plus
+# Windows 3.11 for Workgroups with its full GUI (Win98 boots to real mode only —
+# its GUI needs protected mode DOSBox 0.74 hasn't got, i.e. DOSBox-X).
 # Run from a rio window: `dosbox9` boots to Z:\>, `dosbox9 <dir>` mounts it as
 # C:. Games are NOT bundled — dosbox9/host/fetch-games.py pulls them from
-# archive.org. Presents FULL FRAMES (correct but slow): the GL9D delta path has
-# an open bug, see dosbox9/PORT-NOTES.md.
-dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9-v0.1.0/dosbox9-amd64.tar.gz	-	0.1.0
+# archive.org.
+# 0.2.0 presents DAMAGE RECTS (a blinking cursor is ~1 KB, not a 1 MB full
+# frame). 0.1.0's delta path was wrong because we sent alpha=0 pixels into
+# gl9win2's ABGR32 image and Plan 9's draw(2) blended them additively; full
+# frames hid it by blacking the window first. `pac9 changelog dosbox9` has the
+# story; P9_FULLFRAMES=1 restores 0.1.0's behaviour.
+dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9-v0.2.0/dosbox9-amd64.tar.gz	-	0.2.0
