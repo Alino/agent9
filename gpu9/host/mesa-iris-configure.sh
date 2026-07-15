@@ -37,4 +37,18 @@ fi
 
 echo "== ninja: materialize generated sources (ignore native link failures) =="
 drun "cd $BG && ninja -j4 || true"
+
+# driconf_static.h — the built-in driconf option DEFAULTS, baked into a header.
+# meson only generates this for a WITH_XMLCONFIG=0 build; ours configures =1
+# (the container HAS expat), so ninja never emits it. cc9 has no expat, so the
+# cc9 build drops -DWITH_XMLCONFIG and takes Mesa's static path — which needs
+# this header. Generate it unconditionally; it costs nothing when unused.
+#
+# NB argument order is `drirc... header` (meson passes @INPUT@ @OUTPUT@).
+# Reversing it makes the generator TRUNCATE 00-mesa-defaults.conf to 0 bytes,
+# and vendor/ is .gitignore'd, so there is nothing to `git checkout` back.
+echo "== generate driconf_static.h (defaults for the no-expat build) =="
+drun "cd /work/gl9/vendor/mesa && python3 src/util/driconf_static.py \
+  src/util/00-mesa-defaults.conf $BG/src/util/driconf_static.h"
+
 echo "done -> gl9/build-gen-iris/compile_commands.json"

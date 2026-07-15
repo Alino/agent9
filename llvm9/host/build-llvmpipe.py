@@ -54,22 +54,24 @@ SCRUB = {
   "HAVE_PROGRAM_INVOCATION_NAME","HAVE_DLADDR","HAVE_DL_ITERATE_PHDR",
   "HAVE_REALLOCARRAY","HAVE_POSIX_MEMALIGN","HAVE_DIRENT_D_TYPE","HAVE_ISSIGNALING",
   "HAVE_ZLIB","HAVE_COMPRESSION","USE_DRICONF","HAVE_OPENMP","USE_X86_64_ASM",
+  # iris calls driQueryOption*; Mesa's !WITH_XMLCONFIG path still applies the
+  # built-in DEFAULTS and only drops user config-file parsing (which is what
+  # wants expat). Dropping this -D is how we build xmlconfig.c without expat.
+  "WITH_XMLCONFIG",
 }
 # GCC-only -f flags clang rejects (meson's native compiler is g++). Prefix match.
 DROP_F = ("-fdiagnostics-color","-pipe","-fno-common","-flifetime-dse",
           "-fno-semantic-interposition","-fconserve-stack")
 # same non-softpipe skips as build-gl9.py (tools/tests/loaders/spirv tool)
 EXCLUDE = ["/src/gtest/","/src/loader/","/gallium/auxiliary/pipe-loader/",
-  "/src/virtio/","/src/util/mesa_cache_db.c","/src/util/xmlconfig.c",
+  "/src/virtio/","/src/util/mesa_cache_db.c",
   "/glsl/glcpp/glcpp.c","/glsl/main.cpp","/glsl/standalone.cpp",
   "/glsl/test_optpass.cpp","/glsl/shader_cache.cpp","/compiler/spirv/spirv2nir.c",
   "/mesa/program/dummy_errors.c",  # stub _mesa_*; real errors.c wins
   "standalone",  # glsl standalone scaffolding stubs (dup _mesa_*)
   # iris extras that are not on any render path:
   "/intel/common/intel_decoder.c",   # batch DECODER (debug); wants expat
-  "/intel/common/intel_measure.c",   # debug timing harness; wants mkfifoat
-  "/gallium/auxiliary/renderonly/",  # split render/display SoCs; not this GPU
-  "/intel/compiler/brw_eu_validate.c"]  # shader-asm validator (debug only)
+  "/gallium/auxiliary/renderonly/"]  # split render/display SoCs; not this GPU
 
 # Key the object on meson's unique output path, NOT the source: some sources
 # (mapi entry.c) are compiled several times with different -D (glapi/es2api/...),
@@ -117,7 +119,11 @@ def cc9_cmd(entry, obj):
     cc = BIN+"/clang++" if is_cpp else BIN+"/clang"
     base = [cc, "--target=x86_64-unknown-none", "-femulated-tls", "-funwind-tables",
             "-fno-pic", "-O2", "-w", "-include", PRE, "-isystem", SHIM_INC,
-            "-isystem", DRM_SHIM_INC]
+            "-isystem", DRM_SHIM_INC,
+            # Mesa's own no-<regex.h> build (it ships the shims). Only xmlconfig.c
+            # reads it, and only to match exe names in driconf USER config files —
+            # which the !WITH_XMLCONFIG path never parses anyway. Defaults still apply.
+            "-DNO_REGEX"]
     if is_cpp:
         base += ["-nostdinc++", "-isystem", LIBCXX,
                  "-D_LIBCPP_PROVIDES_DEFAULT_RUNE_TABLE", "-D_LIBCPP_HAS_CLOCK_GETTIME"]
