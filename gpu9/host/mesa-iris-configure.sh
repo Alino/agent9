@@ -25,7 +25,7 @@ drun() {
 if [ ! -f "$REPO/gl9/build-gen-iris/compile_commands.json" ]; then
   echo "== meson setup (gallium-drivers=iris) =="
   drun "cd /work/gl9/vendor/mesa && meson setup $BG . \
-    -Dgallium-drivers=iris -Dvulkan-drivers= -Dllvm=disabled \
+    -Dgallium-drivers=iris,swrast -Dvulkan-drivers= -Dllvm=disabled \
     -Dglx=disabled -Degl=disabled -Dgbm=disabled \
     -Dopengl=true -Dgles1=disabled -Dgles2=enabled -Dosmesa=true \
     -Dshared-glapi=enabled -Dplatforms= -Dshader-cache=disabled \
