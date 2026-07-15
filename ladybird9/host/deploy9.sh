@@ -16,7 +16,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LB9="$(cd "$HERE/.." && pwd)"
 AGENT9="$(cd "$LB9/.." && pwd)"
-BUILD="$LB9/_out/build"
+# $LB9_BUILD lets callers point at a stable staged snapshot instead of the
+# live build tree (avoids racing an in-flight ninja).
+BUILD="${LB9_BUILD:-$LB9/_out/build}"
 DEPS="$LB9/_out/deps"
 CC9="$AGENT9/cc9"
 
@@ -28,11 +30,17 @@ URL="${4:-}"
 ship() { python3 "$AGENT9/servo9/host/ship.py" "$1" "$HOST" "$PORT" "$2" >/dev/null; }
 rc() { python3 "$HERE/rc9.py" "$HOST" "$PORT" "$1"; }
 
-# elf2aout a SysV-ELF executable to a Plan 9 a.out next to it.
+# Return a Plan 9 a.out for an executable. cc9-link already emits the final
+# a.out (a `data` file) alongside a `.elf` sidecar, so if the target isn't an
+# ELF it already IS the a.out — ship it directly.
 aout() {
-    local elf="$1"
-    python3 "$CC9/host/elf2aout.py" "$elf" "$elf.aout" >/dev/null 2>&1 || return 1
-    echo "$elf.aout"
+    local f="$1"
+    if file "$f" | grep -q ELF; then
+        python3 "$CC9/host/elf2aout.py" "$f" "$f.aout" >/dev/null 2>&1 || return 1
+        echo "$f.aout"
+    else
+        echo "$f"
+    fi
 }
 
 echo "== staging prefix $PREFIX on $HOST:$PORT =="

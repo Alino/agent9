@@ -13,6 +13,51 @@ index 0970926585..e87720cc2b 100644
  elseif (UNIX)
      list(APPEND SOURCES
          Attachment.cpp
+diff --git a/Libraries/LibImageDecoders/CMakeLists.txt b/Libraries/LibImageDecoders/CMakeLists.txt
+index cd06caf427..1fd5a22264 100644
+--- a/Libraries/LibImageDecoders/CMakeLists.txt
++++ b/Libraries/LibImageDecoders/CMakeLists.txt
+@@ -13,6 +13,15 @@ set(SOURCES
+     ${LIBGFX_IMAGE_FORMATS_DIR}/WebPLoader.cpp
+ )
+ 
++if (PLAN9)
++    # PLAN9: JPEG XL and AVIF decode deferred (parity/deferrals.md) — no
++    # libjxl/libavif cross-build. ImageDecoder.cpp skips their registration.
++    list(REMOVE_ITEM SOURCES
++        "${LIBGFX_IMAGE_FORMATS_DIR}/AVIFLoader.cpp"
++        "${LIBGFX_IMAGE_FORMATS_DIR}/JPEGXLLoader.cpp"
++    )
++endif()
++
+ ladybird_lib(LibImageDecoders imagedecoders)
+ 
+ target_link_libraries(LibImageDecoders PRIVATE
+@@ -31,9 +40,12 @@ target_link_libraries(LibImageDecoders PRIVATE
+     WebP::webpdecoder
+     WebP::webpdemux
+     WebP::libwebpmux
+-    avif
+ )
+ 
++if (NOT PLAN9)
++    target_link_libraries(LibImageDecoders PRIVATE avif)
++endif()
++
+ target_include_directories(LibImageDecoders PRIVATE ${WUFFS_INCLUDE_DIR})
+ 
+ set(generated_sources TIFFMetadata.h TIFFTagHandler.cpp)
+@@ -68,7 +80,9 @@ if (NOT LIBPNG_HAS_APNG)
+     message(FATAL_ERROR "libpng does not support APNG, which is required by LibImageDecoders.")
+ endif()
+ 
+-if (NOT ANDROID)
++if (PLAN9)
++    # PLAN9: no libjxl (deferred, see above).
++elseif (NOT ANDROID)
+     target_link_libraries(LibImageDecoders PRIVATE PkgConfig::Jxl)
+ else()
+     target_link_libraries(LibImageDecoders PRIVATE libjxl::libjxl hwy::hwy)
 diff --git a/Libraries/LibJS/CMakeLists.txt b/Libraries/LibJS/CMakeLists.txt
 index 25d61bc1eb..07b80c7f1d 100644
 --- a/Libraries/LibJS/CMakeLists.txt
@@ -98,8 +143,78 @@ index 25d61bc1eb..07b80c7f1d 100644
  
      set(BYTECODE_DEF "${CMAKE_CURRENT_SOURCE_DIR}/Bytecode/Bytecode.def")
  
+diff --git a/Libraries/LibMedia/CMakeLists.txt b/Libraries/LibMedia/CMakeLists.txt
+index 9cd10e14d0..f7e45e6441 100644
+--- a/Libraries/LibMedia/CMakeLists.txt
++++ b/Libraries/LibMedia/CMakeLists.txt
+@@ -37,24 +37,37 @@ set(SOURCES
+     VideoFrame.cpp
+ )
+ 
++if (PLAN9)
++    # PLAN9: Codecs/Vorbis.cpp calls FFmpeg's vorbis parser directly; the
++    # stub's create() reports no parser (ffmpeg deferred, parity/deferrals.md).
++    list(REMOVE_ITEM SOURCES Codecs/Vorbis.cpp)
++    list(APPEND SOURCES Codecs/VorbisStubPlan9.cpp)
++endif()
++
+ ladybird_lib(LibMedia media EXPLICIT_SYMBOL_EXPORT)
+ target_link_libraries(LibMedia PRIVATE LibCore LibCrypto LibIPC LibGfx LibSync LibThreading LibUnicode)
+ 
+-target_sources(LibMedia PRIVATE
+-        FFmpeg/FFmpegAudioConverter.cpp
+-        FFmpeg/FFmpegAudioDecoder.cpp
+-        FFmpeg/FFmpegDemuxer.cpp
+-        FFmpeg/FFmpegHelpers.cpp
+-        FFmpeg/FFmpegIOContext.cpp
+-        FFmpeg/FFmpegVideoDecoder.cpp
+-)
+-
+-if (NOT ANDROID)
+-    target_link_libraries(LibMedia PRIVATE PkgConfig::AVCODEC PkgConfig::AVFORMAT PkgConfig::AVUTIL PkgConfig::LIBSWRESAMPLE)
++if (PLAN9)
++    # PLAN9: ffmpeg is deferred (parity/deferrals.md); the stub reports
++    # "unsupported" from every decoder factory, keeping LibMedia's API intact.
++    target_sources(LibMedia PRIVATE FFmpeg/FFmpegStubPlan9.cpp)
+ else()
+-    target_include_directories(LibMedia PRIVATE ${FFMPEG_INCLUDE_DIRS})
+-    target_link_directories(LibMedia PRIVATE ${FFMPEG_LIBRARY_DIRS})
+-    target_link_libraries(LibMedia PRIVATE ${FFMPEG_LIBRARIES})
++    target_sources(LibMedia PRIVATE
++            FFmpeg/FFmpegAudioConverter.cpp
++            FFmpeg/FFmpegAudioDecoder.cpp
++            FFmpeg/FFmpegDemuxer.cpp
++            FFmpeg/FFmpegHelpers.cpp
++            FFmpeg/FFmpegIOContext.cpp
++            FFmpeg/FFmpegVideoDecoder.cpp
++    )
++
++    if (NOT ANDROID)
++        target_link_libraries(LibMedia PRIVATE PkgConfig::AVCODEC PkgConfig::AVFORMAT PkgConfig::AVUTIL PkgConfig::LIBSWRESAMPLE)
++    else()
++        target_include_directories(LibMedia PRIVATE ${FFMPEG_INCLUDE_DIRS})
++        target_link_directories(LibMedia PRIVATE ${FFMPEG_LIBRARY_DIRS})
++        target_link_libraries(LibMedia PRIVATE ${FFMPEG_LIBRARIES})
++    endif()
+ endif()
+ 
+ if (LADYBIRD_AUDIO_BACKEND STREQUAL "PULSE")
+diff --git a/Libraries/LibSandbox/CMakeLists.txt b/Libraries/LibSandbox/CMakeLists.txt
+index c4b12d475b..4f65680388 100644
+--- a/Libraries/LibSandbox/CMakeLists.txt
++++ b/Libraries/LibSandbox/CMakeLists.txt
+@@ -2,7 +2,8 @@ set(SOURCES
+     Sandbox.cpp
+ )
+ 
+-if (LINUX)
++# PLAN9: CMAKE_SYSTEM_NAME is Linux (toolchain seam) but there is no seccomp.
++if (LINUX AND NOT PLAN9)
+     list(APPEND SOURCES
+         Seccomp.cpp
+     )
 diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
-index 311dfa0fc0..5b0fa73a58 100644
+index 311dfa0fc0..eae99df887 100644
 --- a/Meta/CMake/check_for_dependencies.cmake
 +++ b/Meta/CMake/check_for_dependencies.cmake
 @@ -2,7 +2,8 @@ include_guard()
@@ -135,6 +250,70 @@ index 311dfa0fc0..5b0fa73a58 100644
      find_package(Fontconfig REQUIRED)
      set(HAS_FONTCONFIG ON CACHE BOOL "" FORCE)
      add_cxx_compile_definitions(USE_FONTCONFIG=1)
+@@ -72,10 +78,33 @@ else()
+ endif()
+ 
+ find_package(CURL REQUIRED)
++if (PLAN9)
++    # PLAN9: fully-static link; the static libcurl.a's private deps (HTTP/2,
++    # zstd) must reach the final link line — the CURL package config from the
++    # static cross-build doesn't carry them.
++    find_library(LB9_NGHTTP2_LIB nghttp2 REQUIRED)
++    find_library(LB9_ZSTD_LIB zstd REQUIRED)
++    get_target_property(_lb9_curl_real CURL::libcurl ALIASED_TARGET)
++    if (NOT _lb9_curl_real)
++        set(_lb9_curl_real CURL::libcurl)
++    endif()
++    set_property(TARGET ${_lb9_curl_real} APPEND PROPERTY
++        INTERFACE_LINK_LIBRARIES "${LB9_NGHTTP2_LIB}" "${LB9_ZSTD_LIB}")
++endif()
+ find_package(ICU 78.3 EXACT REQUIRED COMPONENTS data i18n uc)
+ find_package(LibXml2 REQUIRED)
+ find_package(OpenSSL REQUIRED)
+ find_package(SDL3 CONFIG REQUIRED)
++if (PLAN9 AND LB9_SDL3_VJOYSTICK_OBJECT)
++    # PLAN9: virtual-joystick entry points InternalGamepad links, pending
++    # their move into the sysroot sdl3-shim (see plan9-inject).
++    get_target_property(_lb9_sdl3_real SDL3::SDL3 ALIASED_TARGET)
++    if (NOT _lb9_sdl3_real)
++        set(_lb9_sdl3_real SDL3::SDL3)
++    endif()
++    set_property(TARGET ${_lb9_sdl3_real} APPEND PROPERTY
++        INTERFACE_LINK_LIBRARIES "${LB9_SDL3_VJOYSTICK_OBJECT}")
++endif()
+ find_package(simdjson CONFIG REQUIRED)
+ find_package(SQLite3 REQUIRED)
+ find_package(Threads REQUIRED)
+@@ -98,6 +127,13 @@ if(unofficial-angle_FOUND)
+ else()
+     pkg_check_modules(angle REQUIRED IMPORTED_TARGET angle)
+     set(ANGLE_TARGETS PkgConfig::angle)
++    if (PLAN9 AND LB9_GL9EGL_OBJECT)
++        # PLAN9: gl9's EGL front end is one cc9 object (gl9egl.app.o, needs
++        # only OSMesa* from libgl9mesa.a), not part of the archive; the
++        # Compositor links its egl* entry points. Path set in plan9-inject.
++        set_property(TARGET PkgConfig::angle APPEND PROPERTY
++            INTERFACE_LINK_LIBRARIES "${LB9_GL9EGL_OBJECT}")
++    endif()
+ endif()
+ 
+ if (WIN32)
+@@ -141,6 +177,15 @@ else()
+ 
+     pkg_check_modules(skia skia=${SKIA_REQUIRED_VERSION} REQUIRED IMPORTED_TARGET skia)
+     set(SKIA_TARGET PkgConfig::skia)
++    if (PLAN9)
++        # PLAN9: static link — skia's FreeType port and Ladybird's harfbuzz
++        # use need the archives on the final link line, and the pathops
++        # module (Op/Simplify) is supplied separately (see plan9-inject).
++        find_library(LB9_FREETYPE_LIB freetype REQUIRED)
++        find_library(LB9_HARFBUZZ_LIB harfbuzz REQUIRED)
++        set_property(TARGET PkgConfig::skia APPEND PROPERTY INTERFACE_LINK_LIBRARIES
++            "${LB9_SKIA_PATHOPS_ARCHIVE}" "${LB9_FREETYPE_LIB}" "${LB9_HARFBUZZ_LIB}")
++    endif()
+     set_property(TARGET PkgConfig::skia APPEND PROPERTY INTERFACE_COMPILE_DEFINITIONS "SKCMS_DLL")
+ endif()
+ add_library(skia ALIAS ${SKIA_TARGET})
 diff --git a/Tests/LibIPC/CMakeLists.txt b/Tests/LibIPC/CMakeLists.txt
 index 5df47617d6..b791d707af 100644
 --- a/Tests/LibIPC/CMakeLists.txt
@@ -149,6 +328,22 @@ index 5df47617d6..b791d707af 100644
 +    endif()
      ladybird_test("TestConnection.cpp" LibIPC LIBS LibIPC)
  endif()
+diff --git a/UI/cmake/GUIFramework.cmake b/UI/cmake/GUIFramework.cmake
+index 3952280eb5..7817c7512e 100644
+--- a/UI/cmake/GUIFramework.cmake
++++ b/UI/cmake/GUIFramework.cmake
+@@ -2,6 +2,11 @@
+ if (ANDROID OR VCPKG_TARGET_ANDROID)
+     set(_possible_guis "Android")
+     set(_default_gui "Android")
++elseif (PLAN9)
++    # 9front has no Qt: the chrome is a libdraw presenter driven over a pipe
++    # (UI/Plan9). Headless mode (M4) also lives under this framework.
++    set(_possible_guis "Plan9")
++    set(_default_gui "Plan9")
+ elseif (APPLE)
+     set(_possible_guis "AppKit" "Qt")
+     set(_default_gui "AppKit")
 diff --git a/Utilities/CMakeLists.txt b/Utilities/CMakeLists.txt
 index caa5dadebd..0bc6ca3616 100644
 --- a/Utilities/CMakeLists.txt

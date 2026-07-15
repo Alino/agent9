@@ -23,6 +23,12 @@ set(ENABLE_QT OFF CACHE BOOL "" FORCE)
 set(ENABLE_VIDEO OFF CACHE BOOL "" FORCE)
 set(ENABLE_AUDIO OFF CACHE BOOL "" FORCE)
 
+# Wasm runs on LibWasm's bytecode interpreter: stock 9front enforces W^X
+# (no exec pages), so the cranelift AOT path can never run. Upstream's own
+# toggle selects CraneliftStubs.cpp. Also avoids target-lexicon's build.rs
+# rejecting the x86_64-unknown-plan9 triple.
+set(ENABLE_CRANELIFT_JIT OFF CACHE BOOL "" FORCE)
+
 # Sandbox: Services/RendererSandboxUnimplemented.cpp fallback (no seccomp).
 # (Selected automatically for non-Linux/mac platforms; stated here for record.)
 
@@ -41,6 +47,43 @@ set(RUST_TARGET_TRIPLE "x86_64-unknown-plan9" CACHE INTERNAL "Rust target triple
 # asm offsets (ABI-proven by the 123-static_assert gate; regenerate + re-gate
 # on every pin bump via test/m0/asmint-spike.sh).
 get_filename_component(_lb9_inject_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+
+# ANGLE-only headers (gl2ext_angle.h) that gl9/Mesa doesn't ship: a compat
+# shim mapping onto Mesa's Khronos gl2ext.h (see host/compat/GLES2/).
+include_directories(SYSTEM "${_lb9_inject_root}/host/compat")
+
+# gl9's EGL entry points live in a single cc9 object next to libgl9mesa.a's
+# source tree (they aren't archived); check_for_dependencies appends it to
+# PkgConfig::angle on plan9.
+set(LB9_GL9EGL_OBJECT "${_lb9_inject_root}/../gl9/_out/gl9egl.app.o"
+    CACHE FILEPATH "gl9 EGL front-end object")
+
+# Khronos eglplatform.h selects EGLNative* types per windowing system and
+# recognizes none for --target=x86_64-unknown-none. Its own opt-out makes
+# them void*, which is exactly right for gl9's surfaceless EGL (no native
+# window/pixmap/display on 9front; the Compositor renders offscreen).
+add_compile_definitions(EGL_NO_PLATFORM_SPECIFIC_TYPES)
+
+# Skia pathops (Op/Simplify) reaches upstream libskia.a only via the pdf/xps
+# optionals, both off in the sysroot build — LibGfx calls Op() directly.
+# Until build-skia.sh harvests :pathops, the objects are compiled from the
+# pinned vendor/skia tree into the build dir (see M4 notes) and appended to
+# PkgConfig::skia in check_for_dependencies alongside skia's freetype dep.
+set(LB9_SKIA_PATHOPS_ARCHIVE
+    "${CMAKE_BINARY_DIR}/lib9pathops/libskiapathops.a"
+    CACHE FILEPATH "skia :pathops objects (cc9-built from vendor/skia)")
+
+# SDL3 virtual-joystick stubs (InternalGamepad links them; the sysroot
+# sdl3-shim predates them — fold into port/sdl3-shim on next regeneration).
+set(LB9_SDL3_VJOYSTICK_OBJECT
+    "${CMAKE_BINARY_DIR}/lib9pathops/sdl3-virtual-joystick-stubs.o"
+    CACHE FILEPATH "SDL3 virtual-joystick stub object (host/compat source)")
+
+# Static lagom (BUILD_SHARED_LIBS OFF, above) links several Rust staticlibs
+# into one binary; each carries rustc's identical allocator forwarding shims
+# (__rustc::__rust_alloc etc.). First-definition-wins is safe: same compiler,
+# same shims. cc9-link passes exactly this flag through to lld.
+add_link_options("-Wl,--allow-multiple-definition")
 set(LADYBIRD_ASMINTGEN
     "${_lb9_inject_root}/vendor/ladybird/Libraries/LibJS/AsmIntGen/target/release/asmintgen"
     CACHE FILEPATH "host asmintgen")

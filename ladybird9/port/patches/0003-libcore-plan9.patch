@@ -1,3 +1,16 @@
+diff --git a/Libraries/LibCore/CMakeLists.txt b/Libraries/LibCore/CMakeLists.txt
+index 938d1bc33c..72e58a6fb0 100644
+--- a/Libraries/LibCore/CMakeLists.txt
++++ b/Libraries/LibCore/CMakeLists.txt
+@@ -68,7 +68,7 @@ else()
+ endif()
+ 
+ # FIXME: Implement ProcessStatistics for Windows and *BSD
+-if (LINUX)
++if (LINUX AND NOT PLAN9)
+     list(APPEND SOURCES Platform/ProcessStatisticsLinux.cpp)
+ elseif (APPLE AND NOT IOS)
+     list(APPEND SOURCES Platform/ProcessStatisticsMach.cpp)
 diff --git a/Libraries/LibCore/Resource.h b/Libraries/LibCore/Resource.h
 index 7ab853c488..404657e7c2 100644
 --- a/Libraries/LibCore/Resource.h
@@ -32,6 +45,29 @@ index 7aecfb1597..0a777bbed8 100644
      TRY(System::getsockopt(m_helper.fd(), SOL_SOCKET, SO_PEERCRED, &creds, &creds_size));
      return creds.pid;
  #endif
+diff --git a/Libraries/LibCore/StandardPaths.cpp b/Libraries/LibCore/StandardPaths.cpp
+index 9b6c68c5f1..f7a71991a7 100644
+--- a/Libraries/LibCore/StandardPaths.cpp
++++ b/Libraries/LibCore/StandardPaths.cpp
+@@ -38,10 +38,17 @@ ByteString StandardPaths::home_directory()
+ #else
+     if (auto* home_env = getenv("HOME"))
+         return LexicalPath::canonicalized_path(home_env);
+-
++#    if defined(AK_OS_PLAN9)
++    // Plan 9 names the home env var "home" (lowercase), not "HOME", and has
++    // no passwd db (getpwuid is a stub).
++    if (auto* plan9_home = getenv("home"))
++        return LexicalPath::canonicalized_path(plan9_home);
++    ByteString path = "/usr/glenda";
++#    else
+     auto* pwd = getpwuid(getuid());
+     ByteString path = pwd ? pwd->pw_dir : "/";
+     endpwent();
++#    endif
+ #endif
+     return LexicalPath::canonicalized_path(path);
+ }
 diff --git a/Libraries/LibCore/System.cpp b/Libraries/LibCore/System.cpp
 index fadcfc933d..fc0f3d3563 100644
 --- a/Libraries/LibCore/System.cpp

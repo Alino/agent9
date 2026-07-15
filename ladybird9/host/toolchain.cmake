@@ -54,5 +54,5 @@ set(CMAKE_PROJECT_INCLUDE "${_lb9_host}/plan9-inject.cmake")
 # Executables: link via lld against the cc9 runtime; elf2aout runs as a
 # post-build pass (build-ladybird.sh), keeping CMake's link step host-clean.
 set(CMAKE_CXX_LINK_EXECUTABLE
-  "${CC9_ROOT}/native/cc9-link <OBJECTS> <LINK_LIBRARIES> -o <TARGET>")
+  "${CC9_ROOT}/native/cc9-link <LINK_FLAGS> <OBJECTS> <LINK_LIBRARIES> -o <TARGET>")
 set(CMAKE_C_LINK_EXECUTABLE "${CMAKE_CXX_LINK_EXECUTABLE}")

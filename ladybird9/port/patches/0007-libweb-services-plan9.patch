@@ -1,0 +1,237 @@
+diff --git a/Libraries/LibGfx/Font/FontDatabase.cpp b/Libraries/LibGfx/Font/FontDatabase.cpp
+index 1a1fd4e79d..3428b597e9 100644
+--- a/Libraries/LibGfx/Font/FontDatabase.cpp
++++ b/Libraries/LibGfx/Font/FontDatabase.cpp
+@@ -126,6 +126,13 @@ ErrorOr<Vector<String>> FontDatabase::font_directories()
+         TRY(String::formatted(R"({}\Microsoft\Windows\Fonts)"sv, getenv("LOCALAPPDATA"))),
+     } };
+ 
++#    elif defined(AK_OS_PLAN9)
++    // AK_OS_PLAN9: no fontconfig; fonts live in the Plan 9 lib conventions.
++    return Vector<String> { {
++        "/lib/ladybird/fonts"_string,
++        TRY(String::formatted("{}/lib/ladybird/fonts"sv, Core::StandardPaths::home_directory())),
++    } };
++
+ #    else
+     Vector<String> paths;
+ 
+diff --git a/Libraries/LibGfx/Font/TypefaceSkia.cpp b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+index b4482d68a5..5e8f2d924e 100644
+--- a/Libraries/LibGfx/Font/TypefaceSkia.cpp
++++ b/Libraries/LibGfx/Font/TypefaceSkia.cpp
+@@ -22,6 +22,10 @@
+ #    include <ports/SkFontMgr_android.h>
+ #elif defined(AK_OS_WINDOWS)
+ #    include <ports/SkTypeface_win.h>
++#elif defined(AK_OS_PLAN9)
++// AK_OS_PLAN9: no fontconfig; the custom-directory fontmgr scans
++// /lib/ladybird/fonts with FreeType (mirrors the CoreText/Android arms).
++#    include <ports/SkFontMgr_directory.h>
+ #else
+ #    include <ports/SkFontMgr_fontconfig.h>
+ #    include <ports/SkFontScanner_FreeType.h>
+@@ -90,6 +94,8 @@ static SkFontMgr& font_manager()
+         font_manager = SkFontMgr_New_Android(nullptr);
+ #elif defined(AK_OS_WINDOWS)
+         font_manager = SkFontMgr_New_DirectWrite();
++#elif defined(AK_OS_PLAN9)
++        font_manager = SkFontMgr_New_Custom_Directory("/lib/ladybird/fonts");
+ #else
+         if (!font_manager) {
+             font_manager = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
+diff --git a/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp b/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
+index fbae5ff9a5..634e6013b1 100644
+--- a/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
++++ b/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
+@@ -4,13 +4,17 @@
+  * SPDX-License-Identifier: BSD-2-Clause
+  */
+ 
+-#include <LibGfx/ImageFormats/AVIFLoader.h>
++#include <AK/Platform.h>
++#if !defined(AK_OS_PLAN9)
++// AK_OS_PLAN9: JPEG XL + AVIF decode deferred (no libjxl/libavif cross-build).
++#    include <LibGfx/ImageFormats/AVIFLoader.h>
++#    include <LibGfx/ImageFormats/JPEGXLLoader.h>
++#endif
+ #include <LibGfx/ImageFormats/BMPLoader.h>
+ #include <LibGfx/ImageFormats/GIFLoader.h>
+ #include <LibGfx/ImageFormats/ICOLoader.h>
+ #include <LibGfx/ImageFormats/ImageDecoder.h>
+ #include <LibGfx/ImageFormats/JPEGLoader.h>
+-#include <LibGfx/ImageFormats/JPEGXLLoader.h>
+ #include <LibGfx/ImageFormats/PNGLoader.h>
+ #include <LibGfx/ImageFormats/WebPLoader.h>
+ 
+@@ -28,10 +32,14 @@ static ErrorOr<OwnPtr<ImageDecoderPlugin>> probe_and_sniff_for_appropriate_plugi
+         { GIFImageDecoderPlugin::sniff, GIFImageDecoderPlugin::create },
+         { ICOImageDecoderPlugin::sniff, ICOImageDecoderPlugin::create },
+         { JPEGImageDecoderPlugin::sniff, JPEGImageDecoderPlugin::create },
++#if !defined(AK_OS_PLAN9)
+         { JPEGXLImageDecoderPlugin::sniff, JPEGXLImageDecoderPlugin::create },
++#endif
+         { PNGImageDecoderPlugin::sniff, PNGImageDecoderPlugin::create },
+         { WebPImageDecoderPlugin::sniff, WebPImageDecoderPlugin::create },
++#if !defined(AK_OS_PLAN9)
+         { AVIFImageDecoderPlugin::sniff, AVIFImageDecoderPlugin::create }
++#endif
+     };
+ 
+     for (auto& plugin : s_initializers) {
+diff --git a/Libraries/LibTLS/TLSv12.cpp b/Libraries/LibTLS/TLSv12.cpp
+index f67b58889a..a526a4fc37 100644
+--- a/Libraries/LibTLS/TLSv12.cpp
++++ b/Libraries/LibTLS/TLSv12.cpp
+@@ -17,6 +17,11 @@
+ #    define FD_SET_ FD_SET
+ #endif
+ 
++#ifdef AK_OS_PLAN9
++// AK_OS_PLAN9: fd_set/select live in <sys/select.h> (not pulled in transitively).
++#    include <sys/select.h>
++#endif
++
+ #include <openssl/bio.h>
+ #include <openssl/err.h>
+ #include <openssl/ssl.h>
+diff --git a/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp b/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp
+index 9c0b9722df..0fde6b7008 100644
+--- a/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp
++++ b/Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp
+@@ -36,6 +36,9 @@
+ #    include <unistd.h>
+ #    if defined(AK_OS_MACOS)
+ #        include <sys/ucontext.h>
++#    elif defined(AK_OS_PLAN9)
++// AK_OS_PLAN9: no ucontext.h; only the compiled-fault-recovery path needs it,
++// and WASM_COMPILED_FAULT_RECOVERY_SUPPORTED is 0 on Plan 9.
+ #    else
+ #        include <ucontext.h>
+ #    endif
+@@ -269,6 +272,13 @@ static void install_compiled_fault_handlers()
+ 
+ static void install_compiled_fault_handlers() { }
+ 
++// Referenced by interpret() even when fault recovery is unsupported (the
++// may_run_native paths are dead at runtime there). Mirrors the default case.
++static StringView cranelift_trap_message(u8)
++{
++    return "unreachable executed"sv;
++}
++
+ #endif
+ 
+ }
+diff --git a/Libraries/LibWasm/CMakeLists.txt b/Libraries/LibWasm/CMakeLists.txt
+index eb5f679ae1..d9b13cfe1d 100644
+--- a/Libraries/LibWasm/CMakeLists.txt
++++ b/Libraries/LibWasm/CMakeLists.txt
+@@ -21,7 +21,8 @@ if(WIN32 AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64|aarch64|ARM64
+     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
+ elseif(APPLE)
+     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
+-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|aarch64)$"))
++elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|aarch64)$") AND NOT PLAN9)
++    # PLAN9: no SIGSEGV-based fault recovery (notes, not signals); cranelift is off anyway.
+     set(WASM_COMPILED_FAULT_RECOVERY_SUPPORTED 1)
+ endif()
+ 
+diff --git a/Libraries/LibWeb/Loader/UserAgent.h b/Libraries/LibWeb/Loader/UserAgent.h
+index 3d5d7a5b1d..2cf0ccb169 100644
+--- a/Libraries/LibWeb/Loader/UserAgent.h
++++ b/Libraries/LibWeb/Loader/UserAgent.h
+@@ -55,6 +55,8 @@ namespace Web {
+ #    define OS_STRING "Haiku"
+ #elif defined(AK_OS_GNU_HURD)
+ #    define OS_STRING "GNU/Hurd"
++#elif defined(AK_OS_PLAN9)
++#    define OS_STRING "Plan 9"
+ #else
+ #    error Unknown OS
+ #endif
+diff --git a/Services/Compositor/CMakeLists.txt b/Services/Compositor/CMakeLists.txt
+index 4eb76e7b27..1411bab4e6 100644
+--- a/Services/Compositor/CMakeLists.txt
++++ b/Services/Compositor/CMakeLists.txt
+@@ -36,7 +36,7 @@ ladybird_generated_sources(compositorservice)
+ 
+ add_executable(Compositor main.cpp)
+ 
+-if (LINUX)
++if (LINUX AND NOT PLAN9)
+     target_sources(Compositor PRIVATE SandboxLinux.cpp)
+ elseif (APPLE)
+     target_sources(Compositor PRIVATE SandboxMacOS.cpp)
+diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
+index f74576f28f..61c5cec728 100644
+--- a/Services/Compositor/main.cpp
++++ b/Services/Compositor/main.cpp
+@@ -25,7 +25,15 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+     StringView cache_path;
+     bool wait_for_debugger = false;
+     bool enable_test_mode = false;
++#if defined(AK_OS_PLAN9)
++    // 9front has no GPU, and gl9's EGL/Mesa is a windowed (two-process
++    // libdraw) backend that can't provide the Compositor an offscreen
++    // context — so paint on the CPU (Skia's WrapPixels raster path, proven
++    // pixel-parity in the gl9 port). WebGL is separately disabled.
++    bool force_cpu_painting = true;
++#else
+     bool force_cpu_painting = false;
++#endif
+     bool force_fontconfig = false;
+     bool disable_async_scrolling = false;
+     bool disable_sandbox = false;
+diff --git a/Services/ImageDecoder/CMakeLists.txt b/Services/ImageDecoder/CMakeLists.txt
+index d5831cba0f..e680aa696e 100644
+--- a/Services/ImageDecoder/CMakeLists.txt
++++ b/Services/ImageDecoder/CMakeLists.txt
+@@ -19,7 +19,7 @@ endif()
+ 
+ add_executable(ImageDecoder main.cpp)
+ 
+-if (LINUX)
++if (LINUX AND NOT PLAN9)
+     target_sources(ImageDecoder PRIVATE SandboxLinux.cpp)
+     if (ENABLE_ADDRESS_SANITIZER)
+         target_sources(ImageDecoder PRIVATE LeakSanitizer.cpp)
+diff --git a/Services/RequestServer/CMakeLists.txt b/Services/RequestServer/CMakeLists.txt
+index 723b507bcc..4b920283e7 100644
+--- a/Services/RequestServer/CMakeLists.txt
++++ b/Services/RequestServer/CMakeLists.txt
+@@ -8,7 +8,7 @@ set(SOURCES
+     WebSocketImplCurl.cpp
+ )
+ 
+-if (LINUX)
++if (LINUX AND NOT PLAN9)
+     list(APPEND SOURCES SandboxLinux.cpp)
+ elseif (APPLE)
+     list(APPEND SOURCES SandboxMacOS.cpp)
+diff --git a/Services/WebContent/CMakeLists.txt b/Services/WebContent/CMakeLists.txt
+index c3e897b5d7..64fe9a10ca 100644
+--- a/Services/WebContent/CMakeLists.txt
++++ b/Services/WebContent/CMakeLists.txt
+@@ -38,7 +38,7 @@ target_compile_options(webcontentservice PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Cla
+ 
+ add_executable(WebContent main.cpp)
+ 
+-if (LINUX)
++if (LINUX AND NOT PLAN9)
+     target_sources(WebContent PRIVATE ../RendererSandboxLinux.cpp)
+ elseif (APPLE)
+     target_sources(WebContent PRIVATE ../RendererSandboxMacOS.cpp)
+diff --git a/Services/WebWorker/CMakeLists.txt b/Services/WebWorker/CMakeLists.txt
+index 0b9390c994..56b7a3a19b 100644
+--- a/Services/WebWorker/CMakeLists.txt
++++ b/Services/WebWorker/CMakeLists.txt
+@@ -18,7 +18,7 @@ target_link_libraries(webworkerservice PRIVATE OpenSSL::Crypto OpenSSL::SSL)
+ 
+ add_executable(WebWorker main.cpp)
+ 
+-if (LINUX)
++if (LINUX AND NOT PLAN9)
+     target_sources(WebWorker PRIVATE ../RendererSandboxLinux.cpp)
+ elseif (APPLE)
+     target_sources(WebWorker PRIVATE ../RendererSandboxMacOS.cpp)
