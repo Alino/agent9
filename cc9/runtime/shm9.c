@@ -93,6 +93,41 @@ typedef struct {
 #define SHM_MAXMAP 512
 static shm_map maps[SHM_MAXMAP];
 
+/* ---- Phase B pool allocator ----
+ * Plan 9 caps a process at NSEG (~12) attached segments (Proc.seg[]); one #g
+ * segment per bitmap blows that in ~6 backing stores (see parity/deferrals.md).
+ * So every buffer is sub-allocated from ONE big per-process pool segment
+ * (#g/shmp.<pid>): the whole pool costs the creator AND each receiver exactly
+ * ONE segattach regardless of buffer count. The {name,offset,len} wire triple
+ * (offset was always 0 in Phase A) now carries the buffer's offset in the pool.
+ *
+ * fd->offset map: cc9_shm_create/import mint an fd open on the pool's data file
+ * and record its (offset,len) here; export/mmap look it up. ponytail: keyed by
+ * fd number, refreshed on every create/import, so a closed+recreated fd is
+ * correct — but a dup'd buffer fd (rare: one-shot renders don't re-share) would
+ * miss and map at offset 0. Add a dup-safe handle table if multi-view buffers
+ * appear. */
+typedef struct { int fd; unsigned long off, len; } shm_buf;
+#define SHM_MAXBUF 4096
+static shm_buf bufs[SHM_MAXBUF];
+
+#define SHM9_POOL (256ul << 20)     /* 256 MiB per pool; demand-paged, so cheap */
+static char pool_name[CC9_SHM_NAMELEN];  /* "" until the pool is created */
+static unsigned long pool_off;           /* bump cursor within the pool */
+static int pool_fd = -1;                 /* held open process-lifetime: keeps the #g dir + memory alive */
+
+static shm_buf *buf_lookup(int fd) {
+	for (int i = 0; i < SHM_MAXBUF; i++)
+		if (bufs[i].fd == fd + 1) return &bufs[i];   /* +1: 0 = empty slot */
+	return 0;
+}
+static void buf_record(int fd, unsigned long off, unsigned long len) {
+	shm_buf *b = buf_lookup(fd);
+	if (!b) for (int i = 0; i < SHM_MAXBUF; i++) if (bufs[i].fd == 0) { b = &bufs[i]; break; }
+	if (!b) return;                 /* table full: mmap will default to offset 0 */
+	b->fd = fd + 1; b->off = off; b->len = len;
+}
+
 static unsigned long page_round(unsigned long n) {
 	return (n + SHM9_PAGE - 1) & ~(SHM9_PAGE - 1);
 }
@@ -147,29 +182,12 @@ static unsigned long va_alloc(unsigned long len) {
 	return va;
 }
 
-int cc9_shm_create(unsigned long size) {
-	if (size == 0) { errno = EINVAL; return -1; }
-	unsigned long len = page_round(size);
-	char name[CC9_SHM_NAMELEN], path[64];
-
-	n9_semacquire(&shm_lock, 1);
-	unsigned long va = va_alloc(len);
-	unsigned myseq = seq++;
-	n9_semrelease(&shm_lock, 1);
-	if (!va) return -1;
-
-	/* pid+seq is unique among live creators; a stale dir from a crashed
-	 * predecessor with our recycled pid makes create fail -> take the next seq. */
-	long dirfd = -1;
-	for (int tries = 0; tries < 8; tries++) {
-		snprintf(name, sizeof name, SHM9_PREFIX "%d.%u", getpid(), myseq);
-		snprintf(path, sizeof path, "#g/%s", name);
-		dirfd = n9_create(path, OREAD, DMDIR | 0700);
-		if (dirfd >= 0) break;
-		n9_semacquire(&shm_lock, 1);
-		myseq = seq++;
-		n9_semrelease(&shm_lock, 1);
-	}
+/* Create #g/<name> fixed at <va> for <len> bytes; return a fd on its data file
+ * (or -1, errno set, dir cleaned up). */
+static int create_seg(const char *name, unsigned long va, unsigned long len) {
+	char path[64];
+	snprintf(path, sizeof path, "#g/%s", name);
+	long dirfd = n9_create(path, OREAD, DMDIR | 0700);
 	if (dirfd < 0) { errno = cc9_errno_from_errstr(); return -1; }
 	n9_close((int)dirfd);
 
@@ -185,8 +203,6 @@ int cc9_shm_create(unsigned long size) {
 	snprintf(path, sizeof path, "#g/%s/data", name);
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); goto fail_rm; }
-	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_trace("create", name, va, len, fd, 0);
 	return (int)fd;
 
 fail_rm:
@@ -195,12 +211,67 @@ fail_rm:
 	return -1;
 }
 
+/* Lazily create this process's pool segment. Caller holds shm_lock. pool_fd is
+ * held open forever so the #g dir + memory outlive every per-buffer fd. */
+static int pool_ensure(void) {
+	if (pool_name[0]) return 0;
+	unsigned long va = va_alloc(SHM9_POOL);
+	if (!va) return -1;
+	char name[CC9_SHM_NAMELEN];
+	int fd = -1;
+	for (int tries = 0; tries < 8; tries++) {   /* recycled pid -> stale dir -> next seq */
+		snprintf(name, sizeof name, "shmp.%d.%u", getpid(), seq++);
+		fd = create_seg(name, va, SHM9_POOL);
+		if (fd >= 0) break;
+	}
+	if (fd < 0) return -1;
+	fcntl(fd, F_SETFD, FD_CLOEXEC);
+	pool_fd = fd;
+	strcpy(pool_name, name);
+	pool_off = 0;
+	shm_trace("pool", pool_name, va, SHM9_POOL, fd, 0);
+	return 0;
+}
+
+int cc9_shm_create(unsigned long size) {
+	if (size == 0) { errno = EINVAL; return -1; }
+	unsigned long len = page_round(size);
+	if (len > SHM9_POOL) { errno = ENOMEM; return -1; }   /* ponytail: single 256M pool; multi-pool if a buffer needs more */
+
+	n9_semacquire(&shm_lock, 1);
+	if (pool_ensure() < 0) { n9_semrelease(&shm_lock, 1); return -1; }
+	if (pool_off + len > SHM9_POOL) {                     /* ponytail: bump-only, no free-list; pool grows until proc exit */
+		n9_semrelease(&shm_lock, 1); errno = ENOMEM; return -1;
+	}
+	unsigned long off = pool_off;
+	pool_off += len;
+	char name[CC9_SHM_NAMELEN];
+	strcpy(name, pool_name);
+	n9_semrelease(&shm_lock, 1);
+
+	/* A fresh fd per buffer (the AnonymousBuffer owns and closes it); its
+	 * offset within the pool is recorded in the fd->buf table. */
+	char path[64];
+	snprintf(path, sizeof path, "#g/%s/data", name);
+	long fd = n9_open(path, ORDWR);
+	if (fd < 0) { errno = cc9_errno_from_errstr(); return -1; }
+	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
+	buf_record((int)fd, off, len);
+	shm_trace("create", name, off, len, fd, 0);
+	return (int)fd;
+}
+
 int cc9_shm_export(int fd, char *name, unsigned long *offset, unsigned long *len) {
 	char path[128];
 	if (n9_fd2path(fd, path, sizeof path) < 0 || !path_to_name(path, name)) {
 		errno = EBADF;
 		return -1;
 	}
+	n9_semacquire(&shm_lock, 1);
+	shm_buf *b = buf_lookup(fd);
+	if (b) { *offset = b->off; *len = b->len; n9_semrelease(&shm_lock, 1); return 0; }
+	n9_semrelease(&shm_lock, 1);
+	/* not a pool buffer (shouldn't happen post-Phase-B): whole-segment fallback */
 	unsigned long va;
 	if (read_ctl(name, &va, len) < 0) { errno = EBADF; return -1; }
 	*offset = 0;
@@ -208,14 +279,14 @@ int cc9_shm_export(int fd, char *name, unsigned long *offset, unsigned long *len
 }
 
 int cc9_shm_import(const char *name, unsigned long offset, unsigned long len) {
-	(void)offset; (void)len;     /* Phase A: whole-segment buffers */
 	if (strlen(name) >= CC9_SHM_NAMELEN) { errno = ENAMETOOLONG; return -1; }
 	char path[64];
 	snprintf(path, sizeof path, "#g/%s/data", name);
 	long fd = n9_open(path, ORDWR);
-	if (fd < 0) { errno = cc9_errno_from_errstr(); shm_trace("import", name, 0, 0, -1, "open-failed"); return -1; }
+	if (fd < 0) { errno = cc9_errno_from_errstr(); shm_trace("import", name, offset, len, -1, "open-failed"); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_trace("import", name, 0, 0, fd, 0);
+	buf_record((int)fd, offset, len);   /* the buffer's offset in the sender's pool */
+	shm_trace("import", name, offset, len, fd, 0);
 	return (int)fd;
 }
 
@@ -226,17 +297,24 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 		return 0;                /* not ours: mmap falls through to pread-copy */
 	*handled = 1;
 
-	unsigned long va, seglen;
-	if (read_ctl(name, &va, &seglen) < 0) { errno = EBADF; return (void *)-1; }
-	if (page_round(len) > seglen) { errno = EINVAL; return (void *)-1; }
+	unsigned long segva, seglen;
+	if (read_ctl(name, &segva, &seglen) < 0) { errno = EBADF; return (void *)-1; }
 
 	n9_semacquire(&shm_lock, 1);
+	shm_buf *b = buf_lookup(fd);
+	unsigned long off = b ? b->off : 0;   /* pool offset (0 for a whole-segment fd) */
+	if (off + page_round(len) > seglen) { n9_semrelease(&shm_lock, 1); errno = EINVAL; return (void *)-1; }
+
+	/* One segattach per POOL (keyed by name, refcounted); every buffer in the
+	 * pool shares it and returns base + its own offset. This is what keeps a
+	 * process under the Plan 9 NSEG cap. */
 	shm_map *free_slot = 0;
 	for (int i = 0; i < SHM_MAXMAP; i++) {
 		if (maps[i].refs && strcmp(maps[i].name, name) == 0) {
-			maps[i].refs++;      /* already attached here: hand back the VA */
+			maps[i].refs++;
+			unsigned long base = maps[i].va;
 			n9_semrelease(&shm_lock, 1);
-			return (void *)maps[i].va;
+			return (void *)(base + off);
 		}
 		if (!maps[i].refs && !free_slot) free_slot = &maps[i];
 	}
@@ -252,19 +330,19 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 	if ((long)got < 0 || got == 0) {
 		char eb[96]; eb[0] = 0;
 		n9_errstr(eb, sizeof eb);          /* read + CLEAR kernel errstr */
-		shm_trace("attach", name, va, seglen, (long)got, eb);
+		shm_trace("attach", name, segva, seglen, (long)got, eb);
 		n9_errstr(eb, sizeof eb);          /* swap back so the map below sees it */
 		n9_semrelease(&shm_lock, 1);
 		errno = cc9_errno_from_errstr();
 		return (void *)-1;
 	}
-	shm_trace("attach", name, va, seglen, (long)got, 0);
+	shm_trace("attach", name, segva, seglen, (long)got, 0);
 	strcpy(free_slot->name, name);
 	free_slot->va = (unsigned long)got;
 	free_slot->len = seglen;
 	free_slot->refs = 1;
 	n9_semrelease(&shm_lock, 1);
-	return got;
+	return (void *)((unsigned long)got + off);
 }
 
 int cc9_shm_unmap(void *p, unsigned long len) {
@@ -272,9 +350,10 @@ int cc9_shm_unmap(void *p, unsigned long len) {
 	unsigned long va = (unsigned long)p;
 	n9_semacquire(&shm_lock, 1);
 	for (int i = 0; i < SHM_MAXMAP; i++) {
-		if (maps[i].refs && maps[i].va == va) {
+		/* range-match: p is base + buffer offset, so find the pool it lands in */
+		if (maps[i].refs && va >= maps[i].va && va < maps[i].va + maps[i].len) {
 			if (--maps[i].refs == 0) {
-				n9_segdetach(p);
+				n9_segdetach((void *)maps[i].va);   /* detach at the segment base */
 				maps[i].name[0] = 0;
 			}
 			n9_semrelease(&shm_lock, 1);
