@@ -41,20 +41,16 @@ index b4482d68a5..5e8f2d924e 100644
          if (!font_manager) {
              font_manager = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
 diff --git a/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp b/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
-index fbae5ff9a5..634e6013b1 100644
+index fbae5ff9a5..72f168852d 100644
 --- a/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
 +++ b/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
-@@ -4,13 +4,17 @@
+@@ -4,13 +4,14 @@
   * SPDX-License-Identifier: BSD-2-Clause
   */
  
--#include <LibGfx/ImageFormats/AVIFLoader.h>
 +#include <AK/Platform.h>
-+#if !defined(AK_OS_PLAN9)
-+// AK_OS_PLAN9: JPEG XL + AVIF decode deferred (no libjxl/libavif cross-build).
-+#    include <LibGfx/ImageFormats/AVIFLoader.h>
-+#    include <LibGfx/ImageFormats/JPEGXLLoader.h>
-+#endif
+ #include <LibGfx/ImageFormats/AVIFLoader.h>
++#include <LibGfx/ImageFormats/JPEGXLLoader.h>
  #include <LibGfx/ImageFormats/BMPLoader.h>
  #include <LibGfx/ImageFormats/GIFLoader.h>
  #include <LibGfx/ImageFormats/ICOLoader.h>
@@ -64,21 +60,6 @@ index fbae5ff9a5..634e6013b1 100644
  #include <LibGfx/ImageFormats/PNGLoader.h>
  #include <LibGfx/ImageFormats/WebPLoader.h>
  
-@@ -28,10 +32,14 @@ static ErrorOr<OwnPtr<ImageDecoderPlugin>> probe_and_sniff_for_appropriate_plugi
-         { GIFImageDecoderPlugin::sniff, GIFImageDecoderPlugin::create },
-         { ICOImageDecoderPlugin::sniff, ICOImageDecoderPlugin::create },
-         { JPEGImageDecoderPlugin::sniff, JPEGImageDecoderPlugin::create },
-+#if !defined(AK_OS_PLAN9)
-         { JPEGXLImageDecoderPlugin::sniff, JPEGXLImageDecoderPlugin::create },
-+#endif
-         { PNGImageDecoderPlugin::sniff, PNGImageDecoderPlugin::create },
-         { WebPImageDecoderPlugin::sniff, WebPImageDecoderPlugin::create },
-+#if !defined(AK_OS_PLAN9)
-         { AVIFImageDecoderPlugin::sniff, AVIFImageDecoderPlugin::create }
-+#endif
-     };
- 
-     for (auto& plugin : s_initializers) {
 diff --git a/Libraries/LibTLS/TLSv12.cpp b/Libraries/LibTLS/TLSv12.cpp
 index f67b58889a..a526a4fc37 100644
 --- a/Libraries/LibTLS/TLSv12.cpp
@@ -192,8 +173,45 @@ index 4eb76e7b27..1411bab4e6 100644
      target_sources(Compositor PRIVATE SandboxLinux.cpp)
  elseif (APPLE)
      target_sources(Compositor PRIVATE SandboxMacOS.cpp)
+diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
+index 825841e8a4..9b645b43e2 100644
+--- a/Services/Compositor/OpenGLContext.cpp
++++ b/Services/Compositor/OpenGLContext.cpp
+@@ -34,7 +34,10 @@ extern "C" {
+ 
+ // Enable WebGL if we're on macOS and can use Metal, if Linux can use ANGLE's
+ // OpenGL backend for CPU-painting tests, or if we can use shareable Vulkan images.
+-#if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(USE_VULKAN_DMABUF_IMAGES)
++// On Plan 9, gl9 (Mesa softpipe + OSMesa) provides GLES3/EGL; the surfaceless
++// CPU-painting path (render to FBO, glReadPixels into a Gfx::Bitmap) needs no
++// GPU and no native window — exactly the Linux CPU-painting-test configuration.
++#if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(USE_VULKAN_DMABUF_IMAGES) || defined(AK_OS_PLAN9)
+ #    define ENABLE_WEBGL 1
+ #endif
+ 
+@@ -145,7 +148,7 @@ static EGLConfig get_egl_config(EGLDisplay display)
+ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia_backend_context, WebGLVersion webgl_version, [[maybe_unused]] DrawingBufferOptions drawing_buffer_options)
+ {
+ #ifdef ENABLE_WEBGL
+-#    if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID))
++#    if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_PLAN9)
+     bool use_cpu_painting_surface = !skia_backend_context;
+ #    else
+     bool use_cpu_painting_surface = false;
+@@ -165,7 +168,10 @@ OwnPtr<OpenGLContext> OpenGLContext::create(RefPtr<Gfx::SkiaBackendContext> skia
+         EGL_PLATFORM_ANGLE_TYPE_ANGLE,
+ #    if defined(AK_OS_MACOS)
+         EGL_PLATFORM_ANGLE_TYPE_METAL_ANGLE,
+-#    elif defined(USE_VULKAN_DMABUF_IMAGES) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID))
++#    elif defined(USE_VULKAN_DMABUF_IMAGES) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_PLAN9)
++        // gl9's eglGetPlatformDisplay ignores platform + attributes (one
++        // OSMesa display), so these ANGLE hints are inert but honest: gl9 is a
++        // surfaceless Mesa GL, exactly what EGL_PLATFORM_SURFACELESS_MESA names.
+         EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE,
+         EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE,
+         EGL_PLATFORM_SURFACELESS_MESA,
 diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
-index f74576f28f..61c5cec728 100644
+index f74576f28f..0ba58b4098 100644
 --- a/Services/Compositor/main.cpp
 +++ b/Services/Compositor/main.cpp
 @@ -25,7 +25,15 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
@@ -201,10 +219,10 @@ index f74576f28f..61c5cec728 100644
      bool wait_for_debugger = false;
      bool enable_test_mode = false;
 +#if defined(AK_OS_PLAN9)
-+    // 9front has no GPU, and gl9's EGL/Mesa is a windowed (two-process
-+    // libdraw) backend that can't provide the Compositor an offscreen
-+    // context — so paint on the CPU (Skia's WrapPixels raster path, proven
-+    // pixel-parity in the gl9 port). WebGL is separately disabled.
++    // 9front has no GPU: composite pages on the CPU (Skia's WrapPixels raster
++    // path, proven pixel-parity in the gl9 port). WebGL is separate — it uses
++    // gl9's surfaceless GL (Mesa softpipe + OSMesa, render-to-FBO + readback),
++    // see OpenGLContext.cpp; that path needs no window and no GPU.
 +    bool force_cpu_painting = true;
 +#else
      bool force_cpu_painting = false;

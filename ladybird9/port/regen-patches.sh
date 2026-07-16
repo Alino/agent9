@@ -39,6 +39,7 @@ gen 0007-libweb-services-plan9.patch \
   Libraries/LibWasm/AbstractMachine/BytecodeInterpreter.cpp Libraries/LibWasm/CMakeLists.txt \
   Libraries/LibWeb/Loader/UserAgent.h Libraries/LibWeb/Platform/FontPlugin.cpp \
   Services/Compositor/CMakeLists.txt Services/Compositor/main.cpp \
+  Services/Compositor/OpenGLContext.cpp \
   Services/ImageDecoder/CMakeLists.txt Services/RequestServer/CMakeLists.txt \
   Services/RequestServer/main.cpp Services/WebContent/CMakeLists.txt \
   Services/WebWorker/CMakeLists.txt

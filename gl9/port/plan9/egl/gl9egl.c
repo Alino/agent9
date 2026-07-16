@@ -204,6 +204,17 @@ eglCreateWindowSurface(EGLDisplay dpy, EGLConfig cfg, EGLNativeWindowType win,
 	return (EGLSurface)make_surface(nw->w, nw->h, 1);
 }
 
+/* EGL 1.5's spelling of the same call. The native window is platform-defined
+ * either way, and on gl9 both mean "a struct gl9_native_win*" — the attrib list
+ * (EGLAttrib here, EGLint above) carries nothing we honour on a window. */
+EGLSurface
+eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig cfg, void *win,
+			       const EGLAttrib *attrs)
+{
+	(void)attrs;
+	return eglCreateWindowSurface(dpy, cfg, (EGLNativeWindowType)win, 0);
+}
+
 EGLSurface
 eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig cfg, const EGLint *attrs)
 {
@@ -239,6 +250,7 @@ eglQuerySurface(EGLDisplay dpy, EGLSurface surf, EGLint attr, EGLint *val)
 
 static struct gl9_ctx *cur_ctx;
 static struct gl9_surf *cur_surf;
+static struct gl9_surf *dummy_surf;   /* surfaceless make-current backing */
 
 EGLBoolean
 eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)
@@ -246,7 +258,17 @@ eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)
 	struct gl9_ctx *c = ctx;
 	struct gl9_surf *s = draw;
 	(void)dpy; (void)read;
-	if (!c || !s) return EGL_TRUE;      /* release current: no-op */
+	if (!c) return EGL_TRUE;             /* release current: no-op */
+	if (!s) {
+		/* EGL_KHR_surfaceless_context: no draw surface, the client renders
+		 * entirely into an FBO (Ladybird's WebGL CPU-readback path). OSMesa
+		 * still needs *a* buffer to make a context current, so bind a
+		 * persistent 1x1 throwaway — the FBO is the real render target. */
+		if (!dummy_surf && !(dummy_surf = make_surface(1, 1, 0))) {
+			set_err(EGL_BAD_ALLOC); return EGL_FALSE;
+		}
+		s = dummy_surf;
+	}
 	if (!OSMesaMakeCurrent(c->os, s->buf, GL_UNSIGNED_BYTE, s->w, s->h)) {
 		set_err(EGL_BAD_MATCH); return EGL_FALSE;
 	}
@@ -498,6 +520,7 @@ static const struct gl9_proc gl9_procs[] = {
 	P(eglCreateContext)
 	P(eglCreateImageKHR)
 	P(eglCreatePbufferSurface)
+	P(eglCreatePlatformWindowSurface)
 	P(eglCreateWindowSurface)
 	P(eglDestroyContext)
 	P(eglDestroyImageKHR)

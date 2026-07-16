@@ -28,6 +28,19 @@
 extern "C" {
 #endif
 
+/* ANGLE-private enums OpenGLContext.cpp names directly (not via the generated
+ * WebGL glue). On gl9/Mesa these code paths are inert — texture_target is
+ * always GL_TEXTURE_2D (no IOSurface), and glGetString(REQUESTABLE_EXTENSIONS)
+ * returns null (Mesa doesn't advertise GL_ANGLE_request_extension) which the
+ * caller already handles — but the constants must exist to compile. Values are
+ * ANGLE's registered ones (GL_TEXTURE_RECTANGLE_ANGLE aliases GL_TEXTURE_RECTANGLE). */
+#ifndef GL_TEXTURE_RECTANGLE_ANGLE
+#    define GL_TEXTURE_RECTANGLE_ANGLE 0x84F5
+#endif
+#ifndef GL_REQUESTABLE_EXTENSIONS_ANGLE
+#    define GL_REQUESTABLE_EXTENSIONS_ANGLE 0x93A8
+#endif
+
 /* GL_ANGLE_instanced_arrays: Mesa exports the core symbols only. */
 #define glDrawArraysInstancedANGLE glDrawArraysInstanced
 #define glDrawElementsInstancedANGLE glDrawElementsInstanced

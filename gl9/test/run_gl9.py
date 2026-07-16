@@ -30,7 +30,7 @@ ALL = ["01_clear_color", "02_triangle", "03_shaded_triangle",
 # FBO (render-to-texture) rather than to the default framebuffer, which is what
 # surfman/WebRender actually do and what nothing in ALL ever exercised.
 # They need the EGL seam linked in, hence EXTRA_SRC below.
-SELFCHECK = ["07_fbo_readback", "08_fbo_big"]
+SELFCHECK = ["07_fbo_readback", "08_fbo_big", "09_fbo_surfaceless"]
 EXTRA_SRC = {n: ["port/plan9/egl/gl9egl.c"] for n in SELFCHECK}
 
 

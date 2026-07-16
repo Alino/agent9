@@ -19,6 +19,8 @@ int *__n9_errno(void);
 #define E2BIG 7
 #define ECHILD 10
 #define ENOTTY 25
+#define ETXTBSY 26
+#define EFBIG 27
 #define ESPIPE 29
 #define EAGAIN 11
 #define EWOULDBLOCK EAGAIN

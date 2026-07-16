@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>WebGL gate</title>
+<style>html,body{margin:0;background:#fff}#c{display:block}</style></head>
+<body>
+<canvas id="c" width="200" height="200"></canvas>
+<pre id="log">no-js</pre>
+<script>
+const cv = document.getElementById('c');
+const log = document.getElementById('log');
+const gl = cv.getContext('webgl') || cv.getContext('experimental-webgl');
+if (!gl) { log.textContent = 'WEBGL-NULL'; }
+else {
+  // red background, green triangle — proves clear + shader + raster + present.
+  gl.clearColor(1, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  const vs = gl.createShader(gl.VERTEX_SHADER);
+  gl.shaderSource(vs, 'attribute vec2 p; void main(){ gl_Position = vec4(p,0.0,1.0); }');
+  gl.compileShader(vs);
+  const fs = gl.createShader(gl.FRAGMENT_SHADER);
+  gl.shaderSource(fs, 'void main(){ gl_FragColor = vec4(0.0,1.0,0.0,1.0); }');
+  gl.compileShader(fs);
+  const pr = gl.createProgram();
+  gl.attachShader(pr, vs); gl.attachShader(pr, fs); gl.linkProgram(pr); gl.useProgram(pr);
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0,0.8, -0.8,-0.8, 0.8,-0.8]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(pr, 'p');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  // read back the center pixel — should be the green triangle.
+  const px = new Uint8Array(4);
+  gl.readPixels(100, 100, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+  log.textContent = 'WEBGL-OK ' + gl.getParameter(gl.VERSION)
+    + ' center=' + px[0] + ',' + px[1] + ',' + px[2] + ',' + px[3];
+}
+</script>
+</body>
+</html>

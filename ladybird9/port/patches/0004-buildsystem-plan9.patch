@@ -14,50 +14,40 @@ index 0970926585..e87720cc2b 100644
      list(APPEND SOURCES
          Attachment.cpp
 diff --git a/Libraries/LibImageDecoders/CMakeLists.txt b/Libraries/LibImageDecoders/CMakeLists.txt
-index cd06caf427..1fd5a22264 100644
+index cd06caf427..756dac7674 100644
 --- a/Libraries/LibImageDecoders/CMakeLists.txt
 +++ b/Libraries/LibImageDecoders/CMakeLists.txt
-@@ -13,6 +13,15 @@ set(SOURCES
-     ${LIBGFX_IMAGE_FORMATS_DIR}/WebPLoader.cpp
- )
- 
-+if (PLAN9)
-+    # PLAN9: JPEG XL and AVIF decode deferred (parity/deferrals.md) — no
-+    # libjxl/libavif cross-build. ImageDecoder.cpp skips their registration.
-+    list(REMOVE_ITEM SOURCES
-+        "${LIBGFX_IMAGE_FORMATS_DIR}/AVIFLoader.cpp"
-+        "${LIBGFX_IMAGE_FORMATS_DIR}/JPEGXLLoader.cpp"
-+    )
-+endif()
-+
- ladybird_lib(LibImageDecoders imagedecoders)
- 
- target_link_libraries(LibImageDecoders PRIVATE
-@@ -31,9 +40,12 @@ target_link_libraries(LibImageDecoders PRIVATE
+@@ -31,9 +31,15 @@ target_link_libraries(LibImageDecoders PRIVATE
      WebP::webpdecoder
      WebP::webpdemux
      WebP::libwebpmux
 -    avif
  )
  
-+if (NOT PLAN9)
++if (PLAN9)
++    # AVIF via pkg-config (build-libavif.sh); pulls dav1d transitively.
++    target_link_libraries(LibImageDecoders PRIVATE PkgConfig::AVIF)
++else()
 +    target_link_libraries(LibImageDecoders PRIVATE avif)
 +endif()
 +
  target_include_directories(LibImageDecoders PRIVATE ${WUFFS_INCLUDE_DIR})
  
  set(generated_sources TIFFMetadata.h TIFFTagHandler.cpp)
-@@ -68,7 +80,9 @@ if (NOT LIBPNG_HAS_APNG)
+@@ -68,8 +74,10 @@ if (NOT LIBPNG_HAS_APNG)
      message(FATAL_ERROR "libpng does not support APNG, which is required by LibImageDecoders.")
  endif()
  
 -if (NOT ANDROID)
-+if (PLAN9)
-+    # PLAN9: no libjxl (deferred, see above).
-+elseif (NOT ANDROID)
-     target_link_libraries(LibImageDecoders PRIVATE PkgConfig::Jxl)
- else()
+-    target_link_libraries(LibImageDecoders PRIVATE PkgConfig::Jxl)
+-else()
++if (ANDROID)
      target_link_libraries(LibImageDecoders PRIVATE libjxl::libjxl hwy::hwy)
++else()
++    # PLAN9 + Linux: libjxl via pkg-config (PLAN9 build-libjxl.sh installs
++    # libjxl.pc with Requires: libhwy libbrotli* libjxl_cms).
++    target_link_libraries(LibImageDecoders PRIVATE PkgConfig::Jxl)
+ endif()
 diff --git a/Libraries/LibJS/CMakeLists.txt b/Libraries/LibJS/CMakeLists.txt
 index 25d61bc1eb..07b80c7f1d 100644
 --- a/Libraries/LibJS/CMakeLists.txt
@@ -144,20 +134,10 @@ index 25d61bc1eb..07b80c7f1d 100644
      set(BYTECODE_DEF "${CMAKE_CURRENT_SOURCE_DIR}/Bytecode/Bytecode.def")
  
 diff --git a/Libraries/LibMedia/CMakeLists.txt b/Libraries/LibMedia/CMakeLists.txt
-index 9cd10e14d0..f7e45e6441 100644
+index 9cd10e14d0..ebfd2a3c23 100644
 --- a/Libraries/LibMedia/CMakeLists.txt
 +++ b/Libraries/LibMedia/CMakeLists.txt
-@@ -37,24 +37,37 @@ set(SOURCES
-     VideoFrame.cpp
- )
- 
-+if (PLAN9)
-+    # PLAN9: Codecs/Vorbis.cpp calls FFmpeg's vorbis parser directly; the
-+    # stub's create() reports no parser (ffmpeg deferred, parity/deferrals.md).
-+    list(REMOVE_ITEM SOURCES Codecs/Vorbis.cpp)
-+    list(APPEND SOURCES Codecs/VorbisStubPlan9.cpp)
-+endif()
-+
+@@ -40,21 +40,27 @@ set(SOURCES
  ladybird_lib(LibMedia media EXPLICIT_SYMBOL_EXPORT)
  target_link_libraries(LibMedia PRIVATE LibCore LibCrypto LibIPC LibGfx LibSync LibThreading LibUnicode)
  
@@ -172,9 +152,9 @@ index 9cd10e14d0..f7e45e6441 100644
 -
 -if (NOT ANDROID)
 -    target_link_libraries(LibMedia PRIVATE PkgConfig::AVCODEC PkgConfig::AVFORMAT PkgConfig::AVUTIL PkgConfig::LIBSWRESAMPLE)
-+if (PLAN9)
-+    # PLAN9: ffmpeg is deferred (parity/deferrals.md); the stub reports
-+    # "unsupported" from every decoder factory, keeping LibMedia's API intact.
++if (FALSE)
++    # (was PLAN9 stub) ffmpeg 7.1.1 cross-built C-only into the sysroot
++    # (host/deps/build-ffmpeg.sh); PLAN9 now links the real decoders.
 +    target_sources(LibMedia PRIVATE FFmpeg/FFmpegStubPlan9.cpp)
  else()
 -    target_include_directories(LibMedia PRIVATE ${FFMPEG_INCLUDE_DIRS})
@@ -214,7 +194,7 @@ index c4b12d475b..4f65680388 100644
          Seccomp.cpp
      )
 diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
-index 311dfa0fc0..eae99df887 100644
+index 311dfa0fc0..2a8af8f430 100644
 --- a/Meta/CMake/check_for_dependencies.cmake
 +++ b/Meta/CMake/check_for_dependencies.cmake
 @@ -2,7 +2,8 @@ include_guard()
@@ -227,19 +207,34 @@ index 311dfa0fc0..eae99df887 100644
      pkg_check_modules(LIBEDIT REQUIRED IMPORTED_TARGET libedit)
  endif()
  
-@@ -26,7 +27,10 @@ find_path(WUFFS_INCLUDE_DIR NAMES wuffs/wuffs-v0.3.c REQUIRED)
+@@ -26,7 +27,25 @@ find_path(WUFFS_INCLUDE_DIR NAMES wuffs/wuffs-v0.3.c REQUIRED)
  pkg_check_modules(WOFF2 REQUIRED IMPORTED_TARGET libwoff2dec)
  
  # TODO: Figure out if we can do this the same way on all platforms
 -if (NOT ANDROID)
 +if (PLAN9)
-+    # No <video>/<audio> decode yet (LibMedia stub) and no JPEG XL — both
-+    # tracked as parity deferrals in ladybird9/parity/.
++    # JPEG XL (libjxl) + AVIF (libavif over dav1d) cross-built into the sysroot
++    # (host/deps/build-{highway,libjxl,dav1d,libavif}.sh); both link via
++    # pkg-config so the static deps' transitive libs reach the link line.
++    # <video>/<audio> (ffmpeg) still deferred (LibMedia stub) — parity ledger.
++    pkg_check_modules(Jxl REQUIRED IMPORTED_TARGET libjxl)
++    pkg_check_modules(AVIF REQUIRED IMPORTED_TARGET libavif)
++    # Fully-static link: libavif.pc lists dav1d only in Requires.private, which
++    # the dynamic imported target drops. Pull it onto the target explicitly
++    # (same fix as CURL's nghttp2/zstd below).
++    find_library(LB9_DAV1D_LIB dav1d REQUIRED)
++    set_property(TARGET PkgConfig::AVIF APPEND PROPERTY INTERFACE_LINK_LIBRARIES "${LB9_DAV1D_LIB}")
++
++    # ffmpeg 7.1.1 (C-only, host/deps/build-ffmpeg.sh) for <video>/<audio> decode.
++    pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
++    pkg_check_modules(AVFORMAT REQUIRED IMPORTED_TARGET libavformat)
++    pkg_check_modules(AVUTIL REQUIRED IMPORTED_TARGET libavutil)
++    pkg_check_modules(LIBSWRESAMPLE REQUIRED IMPORTED_TARGET libswresample)
 +elseif (NOT ANDROID)
      pkg_check_modules(Jxl REQUIRED IMPORTED_TARGET libjxl)
  
      pkg_check_modules(AVCODEC REQUIRED IMPORTED_TARGET libavcodec)
-@@ -40,7 +44,9 @@ else()
+@@ -40,7 +59,9 @@ else()
      find_package(FFMPEG REQUIRED)
  endif()
  
@@ -250,7 +245,7 @@ index 311dfa0fc0..eae99df887 100644
      find_package(Fontconfig REQUIRED)
      set(HAS_FONTCONFIG ON CACHE BOOL "" FORCE)
      add_cxx_compile_definitions(USE_FONTCONFIG=1)
-@@ -72,10 +78,33 @@ else()
+@@ -72,10 +93,33 @@ else()
  endif()
  
  find_package(CURL REQUIRED)
@@ -284,7 +279,7 @@ index 311dfa0fc0..eae99df887 100644
  find_package(simdjson CONFIG REQUIRED)
  find_package(SQLite3 REQUIRED)
  find_package(Threads REQUIRED)
-@@ -98,6 +127,13 @@ if(unofficial-angle_FOUND)
+@@ -98,6 +142,13 @@ if(unofficial-angle_FOUND)
  else()
      pkg_check_modules(angle REQUIRED IMPORTED_TARGET angle)
      set(ANGLE_TARGETS PkgConfig::angle)
@@ -298,7 +293,7 @@ index 311dfa0fc0..eae99df887 100644
  endif()
  
  if (WIN32)
-@@ -141,6 +177,15 @@ else()
+@@ -141,6 +192,15 @@ else()
  
      pkg_check_modules(skia skia=${SKIA_REQUIRED_VERSION} REQUIRED IMPORTED_TARGET skia)
      set(SKIA_TARGET PkgConfig::skia)
