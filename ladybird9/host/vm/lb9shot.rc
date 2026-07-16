@@ -1,0 +1,15 @@
+#!/bin/rc
+# lb9shot.rc OUT.png — raise the ladybird window and screenshot the screen.
+# (dosbox9 shot.rc pattern: a listen1 session owns no window, so re-enter the
+# browser window's namespace by id; rio serves /dev/screen there. Raising is
+# required — the listener's terminal prints keep ending up on top.)
+if(~ $#RIOSRV 0){
+	RIOSRV=`{ls /srv/rio.* >[2]/dev/null}
+	RIOSRV=$RIOSRV($#RIOSRV)
+}
+id=`{cat /tmp/lb9.winid}
+mount $RIOSRV /n/sw $id
+bind -b /n/sw /dev
+echo current >/dev/wctl >[2]/dev/null
+sleep 1
+topng < /dev/screen > $1

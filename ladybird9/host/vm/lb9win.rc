@@ -1,0 +1,19 @@
+#!/bin/rc
+# lb9win.rc [url] — launch ladybird interactively in a fresh rio window.
+# Adapted from dosbox9 rungame.rc: mount/bind/exec share ONE process; winid is
+# saved so lb9shot.rc can re-enter this window's namespace later.
+if(~ $#RIOSRV 0){
+	RIOSRV=`{ls /srv/rio.* >[2]/dev/null}
+	RIOSRV=$RIOSRV($#RIOSRV)
+}
+if(~ $#RIOSRV 0){
+	echo 'lb9win: no /srv/rio.* — is rio running?' >[1=2]
+	exit norio
+}
+url=$1
+if(~ $#url 0) url=file:///usr/glenda/test.html
+mount $RIOSRV /n/lw 'new -r 40 40 940 700'
+bind -b /n/lw /dev
+cat /dev/winid > /tmp/lb9.winid
+ICU_DATA=/usr/glenda/ladybird9/share/icu
+exec gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' '--disable-sql-database' $url >[2]/tmp/lb9win.log
