@@ -157,6 +157,21 @@ int cc9_note_handler(unsigned long framesp)
 			for (int j=0;j<8;j++){ char c=(char)(v>>(j*8)); b[k++]=(c>=32&&c<127)?c:'.'; }
 			b[k++]='\n'; n9_pwrite(ffd, b, k, -1);
 		}
+		/* Dump the user stack at Ureg.sp (slot 41) — the return-address chain
+		 * past ak_trap lives here; symbolize the text-range words to get the
+		 * VERIFY/panic call site. */
+		unsigned long usp = f[41];
+		if (usp && (usp >> 44) == 0) {
+			unsigned long *s = (unsigned long *)usp;
+			n9_pwrite(ffd, "stack:\n", 7, -1);
+			for (int i = 0; i < 96; i++) {
+				unsigned long v = s[i];
+				char b[24]; int k=0;
+				b[k++]='0'; b[k++]='x';
+				for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
+				b[k++]='\n'; n9_pwrite(ffd, b, k, -1);
+			}
+		}
 	  }
 	}
 #endif
