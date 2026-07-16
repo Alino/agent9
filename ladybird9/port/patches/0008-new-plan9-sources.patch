@@ -1,0 +1,406 @@
+diff --git a/UI/Plan9/Application.cpp b/UI/Plan9/Application.cpp
+new file mode 100644
+index 0000000000..724f93b3f9
+--- /dev/null
++++ b/UI/Plan9/Application.cpp
+@@ -0,0 +1,15 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <UI/Plan9/Application.h>
++
++namespace Ladybird {
++
++// Nothing to override for M4 headless: WebView::Application's defaults
++// (create_platform_event_loop, active_web_view) suffice. This TU exists so
++// the Application vtable has a home.
++
++}
+diff --git a/UI/Plan9/Application.h b/UI/Plan9/Application.h
+new file mode 100644
+index 0000000000..4ee4df421e
+--- /dev/null
++++ b/UI/Plan9/Application.h
+@@ -0,0 +1,33 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWebView/Application.h>
++
++namespace Ladybird {
++
++// The Plan 9 application. For M4 this exists to drive headless mode (the base
++// Application::execute() owns the HeadlessWebView + screenshot flow). The
++// interactive libdraw chrome (M5) subclasses further and overrides
++// active_web_view()/create_platform_event_loop().
++class Application : public WebView::Application {
++    WEB_VIEW_APPLICATION(Application)
++
++public:
++    virtual ~Application() override = default;
++
++    // Browser-process coordination connects to a well-known socket to find an
++    // existing instance; that address family is unsupported on Plan 9
++    // (EAFNOSUPPORT) and there is no multi-window session manager here anyway,
++    // so every launch is its own process.
++    virtual bool should_coordinate_browser_process() const override { return false; }
++
++private:
++    Application() = default;
++};
++
++}
+diff --git a/UI/Plan9/CMakeLists.txt b/UI/Plan9/CMakeLists.txt
+new file mode 100644
+index 0000000000..fb5ff1b038
+--- /dev/null
++++ b/UI/Plan9/CMakeLists.txt
+@@ -0,0 +1,13 @@
++#
++# Plan 9 GUI framework. `ladybird` drives headless modes via the base
++# WebView::Application (M4), and — when run without --headless under the
++# gl9win2 presenter — an interactive Plan9WebView (M5): fd 0 carries 16-byte
++# input records, fd 1 carries GL9B (BGRA) frames.
++#
++
++add_executable(ladybird main.cpp Application.cpp Plan9WebView.cpp)
++target_link_libraries(ladybird PRIVATE LibWebView LibWeb LibGfx LibCore LibMain)
++
++# Copies runtime resources (themes, fonts, about pages) to share/Lagom and
++# defines ladybird_build_resource_files, like the other frameworks do.
++create_ladybird_bundle(ladybird)
+diff --git a/UI/Plan9/Plan9WebView.cpp b/UI/Plan9/Plan9WebView.cpp
+new file mode 100644
+index 0000000000..f299f2e47b
+--- /dev/null
++++ b/UI/Plan9/Plan9WebView.cpp
+@@ -0,0 +1,183 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <UI/Plan9/Plan9WebView.h>
++
++#include <LibGfx/Bitmap.h>
++#include <LibGfx/SharedImageBuffer.h>
++#include <LibWeb/HTML/VisibilityState.h>
++
++#include <unistd.h>
++
++namespace Ladybird {
++
++using Web::UIEvents::KeyCode;
++using Web::UIEvents::KeyModifier;
++using Web::UIEvents::MouseButton;
++
++NonnullOwnPtr<Plan9WebView> Plan9WebView::create(Core::AnonymousBuffer theme, Web::DevicePixelSize window_size, int frame_fd)
++{
++    auto view = adopt_own(*new Plan9WebView(move(theme), window_size, frame_fd));
++    view->initialize_client(CreateNewClient::Yes);
++    // A hidden page's render pipeline is throttled; mark visible and push the
++    // initial viewport so the page lays out and paints (headless does this via
++    // take_screenshot, but the interactive path relies on natural paints).
++    view->set_system_visibility_state(Web::HTML::VisibilityState::Visible);
++    view->handle_resize();
++    return view;
++}
++
++Plan9WebView::Plan9WebView(Core::AnonymousBuffer theme, Web::DevicePixelSize size, int frame_fd)
++    : WebView::HeadlessWebView(move(theme), size)
++    , m_frame_fd(frame_fd)
++{
++    // Stream every painted frame to the presenter.
++    on_ready_to_paint = [this] { present(); };
++}
++
++static void write_all(int fd, void const* buf, size_t n)
++{
++    auto const* p = static_cast<u8 const*>(buf);
++    while (n > 0) {
++        auto w = ::write(fd, p, n);
++        if (w <= 0)
++            return; // presenter gone or would block indefinitely; drop the rest
++        p += w;
++        n -= static_cast<size_t>(w);
++    }
++}
++
++void Plan9WebView::present()
++{
++    if (!m_client_state.has_usable_bitmap || !m_client_state.front_bitmap.shared_image_buffer)
++        return;
++
++    auto bitmap = m_client_state.front_bitmap.shared_image_buffer->bitmap();
++    u32 w = static_cast<u32>(bitmap->width());
++    u32 h = static_cast<u32>(bitmap->height());
++
++    // GL9B: BGRA8888 full frame (== Plan 9 ARGB32; gl9win2 converts on blit).
++    u8 hdr[12] = {
++        'G', 'L', '9', 'B',
++        static_cast<u8>(w >> 24), static_cast<u8>(w >> 16), static_cast<u8>(w >> 8), static_cast<u8>(w),
++        static_cast<u8>(h >> 24), static_cast<u8>(h >> 16), static_cast<u8>(h >> 8), static_cast<u8>(h)
++    };
++    write_all(m_frame_fd, hdr, sizeof hdr);
++
++    // Row-by-row: the presenter reads w*h*4 contiguous bytes, and the bitmap's
++    // pitch may exceed w*4 (padding), so send exactly the visible width.
++    for (u32 y = 0; y < h; ++y)
++        write_all(m_frame_fd, bitmap->scanline_u8(static_cast<int>(y)), static_cast<size_t>(w) * 4);
++}
++
++// Presenter modifier bitmask (bit0 shift, bit1 ctrl, bit2 alt, bit3 super) ->
++// Web KeyModifier (whose bit assignments differ).
++static KeyModifier map_mods(u16 m)
++{
++    int r = KeyModifier::Mod_None;
++    if (m & 1)
++        r |= KeyModifier::Mod_Shift;
++    if (m & 2)
++        r |= KeyModifier::Mod_Ctrl;
++    if (m & 4)
++        r |= KeyModifier::Mod_Alt;
++    if (m & 8)
++        r |= KeyModifier::Mod_Super;
++    return static_cast<KeyModifier>(r);
++}
++
++void Plan9WebView::dispatch_mouse(Web::MouseEvent::Type type, MouseButton changed_button, u16 modifiers, double wheel_y)
++{
++    Web::MouseEvent event;
++    event.type = type;
++    event.position = Web::DevicePixelPoint { m_mouse.x(), m_mouse.y() };
++    event.screen_position = event.position;
++    event.button = changed_button;
++    event.buttons = m_buttons;
++    event.modifiers = map_mods(modifiers);
++    event.wheel_delta_y = wheel_y;
++    if (type == Web::MouseEvent::Type::MouseDown || type == Web::MouseEvent::Type::MouseUp)
++        event.click_count = 1;
++    enqueue_input_event(move(event));
++}
++
++void Plan9WebView::dispatch_key(bool down, u32 rune, u16 modifiers)
++{
++    // Plan 9 key runes (/sys/include/keyboard.h; see alacritty9/PROTOCOL.md).
++    KeyCode key = KeyCode::Key_Invalid;
++    u32 code_point = 0;
++    bool printable = false;
++
++    switch (rune) {
++    case 0x08: key = KeyCode::Key_Backspace; break;
++    case 0x09: key = KeyCode::Key_Tab; break;
++    case 0x0A:
++    case 0x0D: key = KeyCode::Key_Return; break;
++    case 0x1B: key = KeyCode::Key_Escape; break;
++    case 0x7F: key = KeyCode::Key_Delete; break;
++    case 0x80: key = KeyCode::Key_Down; break;    // yes, Kdown is 0x80 on Plan 9
++    case 0xF00D: key = KeyCode::Key_Home; break;
++    case 0xF00E: key = KeyCode::Key_Up; break;
++    case 0xF00F: key = KeyCode::Key_PageUp; break;
++    case 0xF011: key = KeyCode::Key_Left; break;
++    case 0xF012: key = KeyCode::Key_Right; break;
++    case 0xF013: key = KeyCode::Key_PageDown; break;
++    case 0xF014: key = KeyCode::Key_Insert; break;
++    case 0xF018: key = KeyCode::Key_End; break;
++    default:
++        if (rune >= 0x20 && rune < 0xF000) {
++            code_point = rune;
++            printable = true;
++        }
++        break;
++    }
++
++    Web::KeyEvent event;
++    event.type = down ? Web::KeyEvent::Type::KeyDown : Web::KeyEvent::Type::KeyUp;
++    event.key = key;
++    event.modifiers = map_mods(modifiers);
++    event.code_point = code_point;
++    event.should_insert_text = printable && down;
++    enqueue_input_event(move(event));
++}
++
++void Plan9WebView::feed_event(u8 type, u8 state, u16 modifiers, u32 a, u32 b)
++{
++    switch (type) {
++    case 1: // key
++        dispatch_key(state == 1, a, modifiers);
++        break;
++    case 2: // mouse move
++        m_mouse = { static_cast<int>(a), static_cast<int>(b) };
++        dispatch_mouse(Web::MouseEvent::Type::MouseMove, MouseButton::None, modifiers);
++        break;
++    case 3: { // mouse button (a: 1=left, 2=middle, 3=right)
++        MouseButton btn = a == 1 ? MouseButton::Primary : a == 2 ? MouseButton::Middle
++                                                                 : MouseButton::Secondary;
++        if (state == 1)
++            m_buttons = static_cast<MouseButton>(m_buttons | btn);
++        else
++            m_buttons = static_cast<MouseButton>(m_buttons & ~btn);
++        dispatch_mouse(state == 1 ? Web::MouseEvent::Type::MouseDown : Web::MouseEvent::Type::MouseUp, btn, modifiers);
++        break;
++    }
++    case 4: // scroll: a = line delta (i32, + = up); wheel_delta_y is + = down
++        dispatch_mouse(Web::MouseEvent::Type::MouseWheel, MouseButton::None, modifiers, -static_cast<double>(static_cast<i32>(a)));
++        break;
++    case 5: // resize
++        if (on_resize_window)
++            on_resize_window(Gfx::IntSize { static_cast<int>(a), static_cast<int>(b) });
++        break;
++    case 6: // focus — nothing to do
++        break;
++    case 7: // quit
++        if (on_quit)
++            on_quit();
++        break;
++    }
++}
++
++}
+diff --git a/UI/Plan9/Plan9WebView.h b/UI/Plan9/Plan9WebView.h
+new file mode 100644
+index 0000000000..095bd83a16
+--- /dev/null
++++ b/UI/Plan9/Plan9WebView.h
+@@ -0,0 +1,42 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <LibWeb/Page/InputEvent.h>
++#include <LibWebView/HeadlessWebView.h>
++
++namespace Ladybird {
++
++// Interactive on-screen view for Plan 9. It is a HeadlessWebView (which already
++// owns the WebContent client, viewport and paint bookkeeping) whose painted
++// front bitmap is streamed to the gl9win2 presenter as GL9B frames (fd), and
++// which is driven by the 16-byte input records the presenter writes back
++// (decoded per alacritty9/PROTOCOL.md).
++class Plan9WebView final : public WebView::HeadlessWebView {
++public:
++    static NonnullOwnPtr<Plan9WebView> create(Core::AnonymousBuffer theme, Web::DevicePixelSize window_size, int frame_fd);
++
++    // Push the current front bitmap to the presenter as a GL9B full frame.
++    void present();
++
++    // Decode + dispatch one presenter event record.
++    void feed_event(u8 type, u8 state, u16 modifiers, u32 a, u32 b);
++
++    Function<void()> on_quit;
++
++private:
++    Plan9WebView(Core::AnonymousBuffer theme, Web::DevicePixelSize size, int frame_fd);
++
++    void dispatch_mouse(Web::MouseEvent::Type, Web::UIEvents::MouseButton changed_button, u16 modifiers, double wheel_y = 0);
++    void dispatch_key(bool down, u32 rune, u16 modifiers);
++
++    int m_frame_fd { 1 };
++    Gfx::IntPoint m_mouse;
++    Web::UIEvents::MouseButton m_buttons { Web::UIEvents::MouseButton::None };
++};
++
++}
+diff --git a/UI/Plan9/main.cpp b/UI/Plan9/main.cpp
+new file mode 100644
+index 0000000000..a65edc640e
+--- /dev/null
++++ b/UI/Plan9/main.cpp
+@@ -0,0 +1,84 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/LexicalPath.h>
++#include <LibCore/EventLoop.h>
++#include <LibCore/Notifier.h>
++#include <LibGfx/SystemTheme.h>
++#include <LibMain/Main.h>
++#include <LibWebView/Application.h>
++#include <LibWebView/Utilities.h>
++#include <UI/Plan9/Application.h>
++#include <UI/Plan9/Plan9WebView.h>
++
++#include <unistd.h>
++
++// Read exactly one 16-byte presenter event record from fd 0; false on EOF.
++static bool read_event_record(u8 (&rec)[16])
++{
++    size_t got = 0;
++    while (got < sizeof rec) {
++        auto n = ::read(0, rec + got, sizeof rec - got);
++        if (n <= 0)
++            return false;
++        got += static_cast<size_t>(n);
++    }
++    return true;
++}
++
++ErrorOr<int> ladybird_main(Main::Arguments arguments)
++{
++    AK::set_rich_debug_enabled(true);
++
++    auto app = TRY(Ladybird::Application::create(arguments));
++    if (app->should_exit_after_profile_coordination()) {
++        outln("Opening in existing process");
++        return 0;
++    }
++
++    auto const& options = WebView::Application::browser_options();
++
++    // Headless modes (screenshot/text/layout-tree) are owned by the base flow.
++    if (options.headless_mode.has_value())
++        return app->execute();
++
++    // Interactive: we run as the gl9win2 child — fd 0 = 16-byte input records,
++    // fd 1 = the frame stream. Move fd 1 aside and point stdout at stderr so a
++    // stray outln() can't corrupt the frame stream.
++    int frame_fd = ::dup(1);
++    if (frame_fd < 0)
++        return Error::from_errno(errno);
++    ::dup2(2, 1);
++
++    auto theme_path = LexicalPath::join(WebView::s_ladybird_resource_root, "themes"sv, "Default.ini"sv);
++    auto theme = TRY(Gfx::load_system_theme(theme_path.string()));
++
++    Web::DevicePixelSize window_size { options.window_width, options.window_height };
++    auto view = Ladybird::Plan9WebView::create(move(theme), window_size, frame_fd);
++
++    auto& event_loop = Core::EventLoop::current();
++    view->on_quit = [&event_loop]() { event_loop.quit(0); };
++
++    // Presenter events (mouse/key/scroll/resize/quit) arrive on fd 0.
++    auto input_notifier = Core::Notifier::construct(0, Core::Notifier::Type::Read);
++    input_notifier->on_activation = [&view]() {
++        u8 rec[16];
++        if (!read_event_record(rec)) {
++            if (view->on_quit)
++                view->on_quit();
++            return;
++        }
++        u16 mods = static_cast<u16>((rec[2] << 8) | rec[3]);
++        u32 a = (static_cast<u32>(rec[4]) << 24) | (static_cast<u32>(rec[5]) << 16) | (static_cast<u32>(rec[6]) << 8) | rec[7];
++        u32 b = (static_cast<u32>(rec[8]) << 24) | (static_cast<u32>(rec[9]) << 16) | (static_cast<u32>(rec[10]) << 8) | rec[11];
++        view->feed_event(rec[0], rec[1], mods, a, b);
++    };
++
++    if (!options.urls.is_empty())
++        view->load(options.urls.first());
++
++    return app->execute();
++}
