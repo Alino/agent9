@@ -174,7 +174,7 @@ index 4eb76e7b27..1411bab4e6 100644
  elseif (APPLE)
      target_sources(Compositor PRIVATE SandboxMacOS.cpp)
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index 825841e8a4..9b645b43e2 100644
+index 825841e8a4..9c6d091573 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
 @@ -34,7 +34,10 @@ extern "C" {
@@ -210,6 +210,38 @@ index 825841e8a4..9b645b43e2 100644
          EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE,
          EGL_PLATFORM_ANGLE_NATIVE_PLATFORM_TYPE_ANGLE,
          EGL_PLATFORM_SURFACELESS_MESA,
+@@ -439,7 +445,7 @@ bool OpenGLContext::allocate_vkimage_painting_surface()
+ }
+ #endif
+ 
+-#if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID))
++#if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_PLAN9)
+ void OpenGLContext::allocate_cpu_painting_surface()
+ {
+     m_painting_surface = Gfx::PaintingSurface::create_with_size(
+@@ -563,7 +569,7 @@ void OpenGLContext::allocate_painting_surface_if_needed()
+ #        else
+     (void)allocate_vkimage_painting_surface();
+ #        endif
+-#    elif defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
++#    elif (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_PLAN9)
+     allocate_cpu_painting_surface();
+ #    endif
+     VERIFY(m_painting_surface);
+@@ -627,11 +633,11 @@ void OpenGLContext::present(bool preserve_drawing_buffer)
+ #    elif defined(USE_VULKAN_DMABUF_IMAGES)
+     // FIXME: CPU sync for now, but it would be better to export a fence and have Skia wait for it before reading from the surface
+     glFinish();
+-#    elif defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)
++#    elif (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_PLAN9)
+     glFinish();
+ #    endif
+ 
+-#    if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID))
++#    if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_PLAN9)
+     if (m_impl->uses_cpu_painting_surface)
+         copy_default_framebuffer_to_cpu_painting_surface();
+ #    endif
 diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
 index f74576f28f..0ba58b4098 100644
 --- a/Services/Compositor/main.cpp
