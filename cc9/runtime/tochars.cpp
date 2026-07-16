@@ -25,6 +25,15 @@ static to_chars_result cc9_ld_to_chars(char* first, char* last, long double v, c
     else if (fmt == chars_format::scientific) n = snprintf(tmp, sizeof tmp, "%.*Le", p, v);
     else if (fmt == chars_format::hex)        n = snprintf(tmp, sizeof tmp, "%.*La", p, v);
     else                                      n = snprintf(tmp, sizeof tmp, "%.*Lg", p, v);
+    // [charconv.to.chars]: hex form has NO "0x" prefix (printf %a emits one). Strip it
+    // in place, past an optional leading '-'.
+    if (fmt == chars_format::hex && n >= 2) {
+        int s = (tmp[0] == '-') ? 1 : 0;
+        if (n >= s + 2 && tmp[s] == '0' && (tmp[s + 1] | 0x20) == 'x') {
+            for (int i = s; i < n - 2; i++) tmp[i] = tmp[i + 2];
+            n -= 2;
+        }
+    }
     // snprintf returns the FULL (untruncated) length, so bound the copy by BOTH the
     // caller's buffer AND tmp — only tmp[0 .. min(n, sizeof tmp - 1)] was actually
     // stored (an absurd precision that overflows tmp -> value_too_large, not an OOB read).

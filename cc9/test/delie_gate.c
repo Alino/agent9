@@ -20,11 +20,26 @@ int main(void) {
         int fd = open(p, O_WRONLY|O_CREAT|O_TRUNC, 0644);
         write(fd, "AAA", 3); close(fd);
         fd = open(p, O_WRONLY|O_APPEND);
-        write(fd, "BBB", 3); close(fd);
+        write(fd, "BBB", 3);          /* appends at EOF -> "AAABBB", offset 6 */
+        lseek(fd, 0, SEEK_SET);        /* move offset to START; a per-write append must IGNORE it */
+        write(fd, "CC", 2);            /* must STILL land at EOF (tests the per-write seek, not just open-time) */
+        close(fd);
         char buf[16]; fd = open(p, O_RDONLY); int n = read(fd, buf, sizeof buf); close(fd);
         buf[n>0?n:0] = 0;
-        printf("  O_APPEND file = \"%s\" (want AAABBB)\n", buf);
-        CHECK("O_APPEND appends (not overwrite)", n==6 && memcmp(buf,"AAABBB",6)==0);
+        printf("  O_APPEND file = \"%s\" (want AAABBBCC)\n", buf);
+        CHECK("O_APPEND appends every write, even after lseek(0)", n==8 && memcmp(buf,"AAABBBCC",8)==0);
+    }
+
+    /* fopen("a") must APPEND, not truncate — stdio bypasses open(2) and Plan 9
+     * create(2) always truncates, so this is a distinct path from the open() test. */
+    {
+        const char *p = "/tmp/delie_fappend"; unlink(p);
+        FILE *w = fopen(p, "w"); if (w) { fputs("HEAD", w); fclose(w); }
+        FILE *a = fopen(p, "a"); if (a) { fputs("TAIL", a); fclose(a); }
+        char buf[16]; FILE *r = fopen(p, "r"); int n = r ? (int)fread(buf, 1, sizeof buf, r) : 0; if (r) fclose(r);
+        buf[n>0?n:0] = 0;
+        printf("  fopen(\"a\") file = \"%s\" (want HEADTAIL)\n", buf);
+        CHECK("fopen(a) appends, does not truncate", n==8 && memcmp(buf,"HEADTAIL",8)==0);
     }
 
     /* printf %.500f: no crash, no OOB (was a 400-byte-buffer over-read). */
@@ -37,10 +52,12 @@ int main(void) {
 
     /* sscanf %hd into a short (was a 4-byte write) + field width. */
     {
-        short s = -1; int r1 = sscanf("5", "%hd", &s);
-        int x = -1;   int r2 = sscanf("12345", "%2d", &x);
-        printf("  sscanf %%hd -> %d, %%2d -> %d\n", (int)s, x);
-        CHECK("sscanf %hd stores a short 5", r1==1 && s==5);
+        /* guard field directly after the short catches the old 4-byte store */
+        struct { short s; short guard; } h = { -1, 0x5a5a };
+        int r1 = sscanf("5", "%hd", &h.s);
+        int x = -1; int r2 = sscanf("12345", "%2d", &x);
+        printf("  sscanf %%hd -> %d (guard=%04x), %%2d -> %d\n", (int)h.s, (unsigned short)h.guard, x);
+        CHECK("sscanf %hd stores a short 5 without clobbering the next 2 bytes", r1==1 && h.s==5 && h.guard==0x5a5a);
         CHECK("sscanf %2d honors width (=12)", r2==1 && x==12);
     }
 

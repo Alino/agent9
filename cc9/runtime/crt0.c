@@ -365,16 +365,23 @@ cc9_exit_common(const char *status)
 	 * the FIRST entrant drain; a later or recursive one just terminates its proc. */
 	static int exit_lock = 1;
 	static int exited = 0;
+	static unsigned long exit_pid = 0;
+	extern unsigned cc9_tos_pid(void) __attribute__((weak));
 	n9_semacquire(&exit_lock, 1);
 	if (exited) {
+		unsigned long me = cc9_tos_pid ? cc9_tos_pid() : 0;
+		int recursive = !cc9_tos_pid || me == exit_pid;   /* no threads -> only recursion possible */
 		n9_semrelease(&exit_lock, 1);
-		/* A recursive exit() (from a handler) abandons the outer drain, so still reap
-		 * worker threads here — otherwise this path skips cc9_kill_threads and leaks
-		 * the orphan pread'ers on fd 0 that this whole epilogue exists to prevent. */
-		{ extern void cc9_kill_threads(void) __attribute__((weak)); if (cc9_kill_threads) cc9_kill_threads(); }
+		/* RECURSIVE exit() (SAME thread, from inside a handler) abandons the outer
+		 * drain, so reap workers here. A CONCURRENT exit() (a DIFFERENT thread) must
+		 * NOT reap — cc9_kill_threads would kill the first entrant mid-drain (its
+		 * finalizers skipped, any pthread_join on it hung forever). Just terminate this
+		 * proc and let the drainer finish + reap. */
+		if (recursive) { extern void cc9_kill_threads(void) __attribute__((weak)); if (cc9_kill_threads) cc9_kill_threads(); }
 		n9_exits(status);
 	}
 	exited = 1;
+	exit_pid = cc9_tos_pid ? cc9_tos_pid() : 0;
 	n9_semrelease(&exit_lock, 1);
 	{ extern void cc9_prof_dump(void); cc9_prof_dump(); }   /* CC9_PROF: flush samples before we go */
 	/* Run atexit/__cxa_atexit handlers LIFO, RE-READING atexit_n each step so a

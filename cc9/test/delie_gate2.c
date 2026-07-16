@@ -4,6 +4,8 @@
 #include <string.h>
 #include <pthread.h>
 #include <netdb.h>
+#include <errno.h>
+#include <limits.h>
 
 extern unsigned int arc4random(void);
 extern unsigned int arc4random_uniform(unsigned int);
@@ -21,6 +23,16 @@ static void *exit_thread(void *a) {
     pthread_setspecific(key, (void*)1);
     pthread_exit((void*)42);       /* must run the TSD dtor + terminate cleanly */
     return (void*)7;               /* never reached */
+}
+
+/* strtol overflow must set THIS thread's errno (per-thread slot), not the global. */
+static int strtol_errno_ok = 0;
+static void *errno_thread(void *a) {
+    (void)a;
+    errno = 0;
+    strtol("9999999999999999999", 0, 10);   /* > LONG_MAX -> ERANGE */
+    strtol_errno_ok = (errno == ERANGE);
+    return 0;
 }
 
 int main(void) {
@@ -53,8 +65,22 @@ int main(void) {
         /* a write lock now must succeed (all readers released) */
         if (pthread_rwlock_wrlock(&rw) != 0) ok = 0;
         pthread_rwlock_unlock(&rw);
-        printf("  rwlock recursive-rdlock + wrlock ok=%d\n", ok);
+        /* exclusion: a no-op rwlock (every call returns 0) would pass the above. Prove
+         * the write lock actually EXCLUDES — hold it, and trywrlock must then fail. */
+        pthread_rwlock_t rw2 = PTHREAD_RWLOCK_INITIALIZER;
+        pthread_rwlock_wrlock(&rw2);
+        int excl = (pthread_rwlock_trywrlock(&rw2) != 0);   /* held -> must be EBUSY */
+        pthread_rwlock_unlock(&rw2);
+        printf("  rwlock recursive-rdlock ok=%d, write-excludes=%d\n", ok, excl);
         CHECK("rwlock supports recursive rdlock (no deadlock)", ok);
+        CHECK("rwlock write lock actually excludes (not a no-op)", excl);
+    }
+
+    /* per-thread errno: a worker's strtol overflow must set ITS errno, not the global. */
+    {
+        pthread_t te; pthread_create(&te, 0, errno_thread, 0); pthread_join(te, 0);
+        printf("  worker strtol overflow: errno==ERANGE? %d\n", strtol_errno_ok);
+        CHECK("strtol ERANGE is per-thread (visible on a worker)", strtol_errno_ok);
     }
 
     /* gethostbyname: must resolve now (/net/cs works) instead of always failing. */

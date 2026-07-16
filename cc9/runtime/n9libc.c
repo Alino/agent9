@@ -625,7 +625,7 @@ static unsigned long long n9_ustrto(const char *nptr, char **e, int base, int *n
 	if(e) *e=(char*)(any?s:nptr);
 	/* ponytail: flags unsigned-range overflow only (covers every stoul/stoull/stol/
 	 * stoll overflow test). Add a per-wrapper signed-range clamp if one ever needs it. */
-	if(ov){ n9_errno_v = 34; /* ERANGE */ r = ~0ULL; }
+	if(ov){ *__n9_errno() = 34; /* ERANGE */ r = ~0ULL; }
 	return r;
 }
 /* Clamp the unsigned magnitude to a SIGNED range + set ERANGE, per C strtol/strtoll.
@@ -635,11 +635,11 @@ static unsigned long long n9_ustrto(const char *nptr, char **e, int base, int *n
  * type's max (__LONG_MAX__ / __LONG_LONG_MAX__), so this is correct on LP64 and ILP32. */
 static long long n9_clamp_signed(unsigned long long r, int neg, unsigned long long smax){
 	if(neg){
-		if(r > smax + 1ULL){ n9_errno_v = 34; return -(long long)smax - 1; } /* < min -> min, ERANGE */
+		if(r > smax + 1ULL){ *__n9_errno() = 34; return -(long long)smax - 1; } /* < min -> min, ERANGE */
 		if(r == smax + 1ULL) return -(long long)smax - 1;                     /* exactly min (no error) */
 		return -(long long)r;
 	}
-	if(r > smax){ n9_errno_v = 34; return (long long)smax; }                   /* > max -> max, ERANGE */
+	if(r > smax){ *__n9_errno() = 34; return (long long)smax; }                   /* > max -> max, ERANGE */
 	return (long long)r;
 }
 /* openlibm helpers (libcc9m.a) for the correctly-rounded float parser below. */
@@ -750,8 +750,8 @@ double strtod(const char *nptr, char **e){
 	if(!any){ if(e)*e=(char*)nptr; return neg?-0.0:0.0; }
 	if(e)*e=end;
 	double d=(double)v;
-	if(__builtin_isinf(d)) n9_errno_v = 34;            /* overflow -> ERANGE */
-	else if(nz && d==0.0) n9_errno_v = 34;             /* underflow -> ERANGE */
+	if(__builtin_isinf(d)) *__n9_errno() = 34;            /* overflow -> ERANGE */
+	else if(nz && d==0.0) *__n9_errno() = 34;             /* underflow -> ERANGE */
 	return neg?-d:d;
 }
 long strtol(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return (long)n9_clamp_signed(r,neg,(unsigned long long)__LONG_MAX__); }
@@ -792,8 +792,8 @@ long double strtold(const char *nptr, char **e){
 	char *end; int any, nz; long double v=n9_pflt(s,&end,&any,&nz);
 	if(!any){ if(e)*e=(char*)nptr; return neg?-0.0L:0.0L; }
 	if(e)*e=end;
-	if(__builtin_isinf(v)) n9_errno_v = 34;            /* overflow -> ERANGE */
-	else if(nz && v==0.0L) n9_errno_v = 34;            /* underflow -> ERANGE */
+	if(__builtin_isinf(v)) *__n9_errno() = 34;            /* overflow -> ERANGE */
+	else if(nz && v==0.0L) *__n9_errno() = 34;            /* underflow -> ERANGE */
 	return neg?-v:v;
 }
 
@@ -820,7 +820,7 @@ float strtof(const char *s, char **e){
 	double d = strtod(s, e); float f = (float)d;
 	/* float-range overflow: strtod leaves errno clear (the value fits a double),
 	 * but it overflows float — std::stof gates out_of_range on ERANGE. */
-	if(__builtin_isinf(f) && !__builtin_isinf(d)) n9_errno_v = 34 /*ERANGE*/;
+	if(__builtin_isinf(f) && !__builtin_isinf(d)) *__n9_errno() = 34 /*ERANGE*/;
 	return f;
 }
 /* utoa_ used by strerror above; the printf family (incl. float conv) lives in

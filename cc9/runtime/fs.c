@@ -76,17 +76,25 @@ static const char *at_path(int dfd, const char *path, char *buf, int bufsz){
 
 /* O_APPEND: Plan 9 has no per-fd append mode, and write() below uses
  * n9_pwrite(fd,...,-1) = the fd's CURRENT offset — which is 0 after a fresh open, so
- * an "append" open silently OVERWRITES from the start (every fopen("a")/OpenOptions
- * ::append/Python 'a'). Track O_APPEND fds and seek to EOF before each write so every
- * write lands at the current end. Correct for the single-writer case; for concurrent
- * appenders it re-seeks per write (the closest Plan 9 offers — there is no atomic
- * append primitive on /). */
+ * an "append" open silently OVERWRITES from the start (open(...,O_APPEND) from libc /
+ * Rust OpenOptions::append; stdio's fopen("a") has its own fix in stdio.c). Track
+ * O_APPEND fds and seek to EOF before each write so every write lands at the end.
+ * Correct for the single-writer case; for concurrent appenders it re-seeks per write
+ * (the closest Plan 9 offers — no atomic append primitive on /).
+ * Known limits of the per-fd-number bitset (POSIX puts O_APPEND in the shared file
+ * DESCRIPTION): it's carried across dup()/dup2() but NOT set/reported via
+ * fcntl(F_SETFL/F_GETFL), and fds >= APPEND_MAX degrade to seek-once-at-open. */
 #define APPEND_MAX 8192
 static unsigned long append_bits[APPEND_MAX/64];
 static void append_set(int fd, int on){
 	if(fd < 0 || fd >= APPEND_MAX) return;
-	if(on) append_bits[fd>>6] |=  (1UL<<(fd&63));
-	else   append_bits[fd>>6] &= ~(1UL<<(fd&63));
+	/* Atomic RMW: open()/close()/dup2 on fds sharing a 64-fd word run concurrently
+	 * (cc9 threads are rfork(RFMEM) procs), and a torn |=/&= could resurrect a cleared
+	 * append bit onto a just-freed fd number that a later non-append open reuses ->
+	 * phantom seek-to-EOF -> exactly the silent data loss this whole fix exists to kill.
+	 * (Every sibling shared table in this commit — ns_tab, atexit, atom — is locked.) */
+	if(on) __atomic_fetch_or (&append_bits[fd>>6],  (1UL<<(fd&63)), __ATOMIC_SEQ_CST);
+	else   __atomic_fetch_and(&append_bits[fd>>6], ~(1UL<<(fd&63)), __ATOMIC_SEQ_CST);
 }
 static int append_get(int fd){
 	if(fd < 0 || fd >= APPEND_MAX) return 0;
@@ -494,7 +502,7 @@ int fdatasync(int fd){ return fsync(fd); }
 int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_fwstat(fd,b,n)<0?-1:0; }
 int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_wstat(p,b,n)<0?-1:0; }
 extern long n9_dup(int, int);
-int dup(int fd){ int r=(int)n9_dup(fd,-1); if(r<0) errno=EBADF; return r; }
+int dup(int fd){ int r=(int)n9_dup(fd,-1); if(r<0){ errno=EBADF; return -1; } if(append_get(fd)) append_set(r,1); return r; }  /* O_APPEND is shared by the file description -> carry it to the dup */
 
 /* rename: Plan 9 wstat changes only the final name component, so this works for
  * same-directory renames; cross-directory -> EXDEV (libc++ falls back to copy). */
@@ -532,13 +540,18 @@ char *realpath(const char *p, char *out){
 	 * sandbox can't be fooled by "root/../etc"; Plan 9 has no symlinks, so lexical ==
 	 * canonical. POSIX also requires the result to EXIST -> ENOENT otherwise (the old
 	 * identity copy returned nonexistent paths, and left ../. unresolved). */
+	if(!p || !p[0]){ errno = ENOENT; return 0; }      /* POSIX: "" is not a valid path */
 	char abs[1024]; size_t n = 0;
 	if(p[0] != '/'){                                  /* relativize against cwd */
 		if(!getcwd(abs, sizeof abs)) return 0;
 		n = strlen(abs);
-		if(n > 0 && abs[n-1] != '/' && n < sizeof abs - 1) abs[n++] = '/';
+		if(n > 0 && abs[n-1] != '/'){ if(n >= sizeof abs - 1){ errno = 36 /*ENAMETOOLONG*/; return 0; } abs[n++] = '/'; }
 	}
-	for(size_t i=0; p[i]; i++){ if(n < sizeof abs - 1) abs[n++] = p[i]; }
+	for(size_t i=0; p[i]; i++){                        /* don't silently truncate: a
+		truncated path canonicalizes to a DIFFERENT existing path (sandbox bypass) */
+		if(n >= sizeof abs - 1){ errno = 36 /*ENAMETOOLONG*/; return 0; }
+		abs[n++] = p[i];
+	}
 	abs[n] = 0;
 	char clean[1024]; size_t o = 0;                   /* build cleaned components */
 	for(size_t i=0; abs[i]; ){
@@ -552,14 +565,14 @@ char *realpath(const char *p, char *out){
 			if(o>0) o--;
 			continue;
 		}
-		if(o + 1 + clen >= sizeof clean) break;
+		if(o + 1 + clen >= sizeof clean){ errno = 36 /*ENAMETOOLONG*/; return 0; }
 		clean[o++]='/';
 		for(size_t k=0;k<clen;k++) clean[o++]=abs[s+k];
 	}
 	if(o==0) clean[o++]='/';                           /* root */
 	clean[o]=0;
 	struct stat st;
-	if(stat(clean,&st) != 0){ errno = ENOENT; return 0; }
+	if(stat(clean,&st) != 0) return 0;                 /* keep stat's errno (ENOENT/ENOTDIR/EACCES), don't force ENOENT */
 	if(!out){ out = malloc(o+1); if(!out) return 0; }
 	for(size_t k=0;k<=o;k++) out[k]=clean[k];
 	return out;

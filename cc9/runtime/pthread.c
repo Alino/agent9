@@ -296,23 +296,29 @@ static void note_kill(unsigned long pid){   /* single-proc /proc/PID/note — NO
 	long fd = n9_open(path, 1 /*OWRITE*/);
 	if(fd>=0){ n9_pwrite((int)fd,"kill",4,-1); n9_close((int)fd); }
 }
+/* Abort the WHOLE process, not just the calling proc. A bare n9_exits() on Plan 9
+ * kills ONLY the caller, orphaning every sibling worker (left blocked in Semacqui
+ * / fd-0 pread) and hanging a JOINED main forever in pthread_join. So: note every
+ * sibling worker (cc9_kill_threads, skips self + main) AND main (single-proc note,
+ * so the shared-group listen1 parent is untouched), THEN exit self. A deliberate
+ * fault was rejected: a Plan 9 trap kills only the faulting proc, not the RFMEM
+ * group. Callers print their own fd-2 diagnostic first; msg is the exit status.
+ * Shared by the S1 overflow abort and cxxrt's recursive_init abort (both would
+ * otherwise leave the group spinning — the exact "bare n9_exits" disease). */
+void cc9_abort_process(const char *msg){
+	cc9_kill_threads();          /* notes every sibling worker (skips self + main) */
+	note_kill(main_realpid);     /* and main — the real abort of any joiner */
+	n9_exits(msg);
+}
 /* A smashed canary means this thread overflowed and corrupted the SHARED heap
  * (Plan 9's heap is contiguous+mapped, so the write never faulted). The whole
- * process is doomed — abort it LOUDLY, not just this proc. A bare n9_exits()
- * kills only the caller, which would (a) hang a JOINED main forever in
- * pthread_join and (b) leave the rest running on corrupted memory. So: note
- * every sibling worker (cc9_kill_threads) AND main (single-proc note, so the
- * shared-group listen1 parent is untouched), THEN wake the joiner as a
+ * process is doomed — abort the group. Wake this thread's joiner first as a
  * belt-and-suspenders against a hang if main's pid was never captured (main
- * spawned no thread directly), THEN exit self. A deliberate fault instead of
- * notes was rejected: a Plan 9 trap kills only the faulting proc, not the
- * RFMEM group, so it would hang the joiner exactly like n9_exits. */
+ * spawned no thread directly, so note_kill(main_realpid) is a no-op). */
 static void cc9_stack_overflow_abort(n9_thread *t){
 	n9_pwrite(2, "cc9: thread stack overflow (canary smashed)\n", 44, -1);
-	cc9_kill_threads();                        /* notes every sibling worker (skips self + main) */
-	note_kill(main_realpid);                   /* and main — the real abort of the joiner */
 	t->done = 1; n9_semrelease(&t->joinsem, 1);/* fallback: an uncaptured main pid still can't hang */
-	n9_exits("cc9: thread stack overflow");
+	cc9_abort_process("cc9: thread stack overflow");
 }
 
 /* Claim a thread's table slot exactly once (returns 1 to the single caller that

@@ -434,7 +434,18 @@ FILE *fopen(const char *path, const char *mode){
 	/* C11/C++23 'x': exclusive create — fail if the path already exists. Plan 9
 	 * create() always truncates, so guard with a stat (matches fs.c open O_EXCL). */
 	if(excl){ unsigned char sb[512]; if(n9_stat(path, sb, sizeof sb) >= 0) return 0; }
-	long fd = creat ? n9_create(path, omode|(trunc?16:0), 0666) : n9_open(path, omode);
+	long fd;
+	if(append){
+		/* "a"/"a+" must APPEND to an existing file, never truncate it. Plan 9
+		 * create(2) ALWAYS truncates (the fs.c:106 trap), so the old
+		 * `n9_create` for append destroyed the file's contents and the seek-to-EOF
+		 * below then landed at 0 — total data loss on every fopen("a") of a non-empty
+		 * file. Open existing; create only if absent. */
+		fd = n9_open(path, omode);
+		if(fd < 0) fd = n9_create(path, omode, 0666);
+	} else {
+		fd = creat ? n9_create(path, omode|(trunc?16:0), 0666) : n9_open(path, omode);
+	}
 	if(fd<0){   /* propagate a real errno (getpath.py's readlines needs ENOENT) */
 		extern int cc9_errno_from_errstr(void);
 		extern int *__n9_errno(void);

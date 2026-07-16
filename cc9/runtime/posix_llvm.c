@@ -219,6 +219,18 @@ struct mallinfo2 mallinfo2(void) { struct mallinfo2 m; memset(&m, 0, sizeof m); 
  * LOUDLY — silently falling back to rand() is exactly the bug being fixed. */
 static long cc9_rand_fd = -1;
 static int cc9_rand_lk = 1;
+extern long n9_errstr(char *, unsigned long);
+extern char *strstr(const char *, const char *);
+/* Was this last syscall aborted by a note (not a real error)? Same test as
+ * poll.c's was_interrupted: n9_errstr reads AND clears the kernel errstr, so read
+ * it, test, then swap the same buffer back for any other errno path. */
+static int cc9_rand_intr(void) {
+	char e[128]; e[0] = 0;
+	n9_errstr(e, sizeof e);
+	int r = strstr(e, "interrupt") != 0;
+	n9_errstr(e, sizeof e);
+	return r;
+}
 static void cc9_getrandom(void *buf, unsigned long n) {
 	n9_semacquire(&cc9_rand_lk, 1);
 	unsigned char *p = buf; unsigned long got = 0;
@@ -230,10 +242,15 @@ static void cc9_getrandom(void *buf, unsigned long n) {
 		}
 		long r = n9_pread((int)cc9_rand_fd, p + got, (long)(n - got), -1LL);
 		if (r > 0) { got += (unsigned long)r; continue; }
-		/* Cached fd went bad — the app closed it or dup2'd over the number. Drop it
-		 * and reopen ONCE; a second failure is a real entropy outage -> hard fail.
-		 * (A read that SUCCEEDS on a recycled non-random fd can't be caught here;
-		 * that's the residual cost of caching an fd the app can clobber.) */
+		/* A note (SIGINT/DEL, SIGALRM, CC9_PROF's alarm) can abort the read
+		 * mid-flight — the fd is still good: retry it, don't drop it or spend the
+		 * reopen budget (else one note leaks the fd and two aborts the process). */
+		if (cc9_rand_intr()) continue;
+		/* Genuine failure: the app closed the cached fd or dup2'd over the number.
+		 * Close it, reopen /dev/random ONCE; a second real failure is an entropy
+		 * outage -> hard fail. (A read that SUCCEEDS on a recycled non-random fd
+		 * can't be caught here — the residual cost of caching a clobberable fd.) */
+		n9_close((int)cc9_rand_fd);
 		cc9_rand_fd = -1;
 		if (++reopens > 1) { n9_semrelease(&cc9_rand_lk, 1); n9_exits("cc9: arc4random: /dev/random read failed"); }
 	}
@@ -1152,9 +1169,17 @@ extern long n9_dup(int, int);
  * forget), BEFORE the rebind. onclose — not the spawn path's forget — because
  * here (unlike a fork child) the reader/writer threads DO exist and must be
  * stopped, not merely orphaned. Only when n is a different, open fd (n==o is a
- * POSIX no-op; the hooks self-skip an fd they don't own). */
+ * POSIX no-op; the hooks self-skip an fd they don't own).
+ * POSIX also requires: if oldfd is INVALID, dup2 fails (EBADF) and newfd is NOT
+ * touched. So validate o FIRST (probe with n9_dup(o,-1), the same trick fs.c's
+ * dup() uses) — else a failing rebind would have already destroyed n's still-live
+ * state (stopped its threads, freed its /net slot). The teardown must run only
+ * when the rebind will actually happen. */
 int    dup2(int o, int n) {
 	if (n != o && n >= 0) {
+		long probe = n9_dup(o, -1);            /* lowest free fd, or -1 if o is invalid */
+		if (probe < 0) { errno = 9 /*EBADF*/; return -1; }
+		n9_close((int)probe);
 		extern void cc9_poll_onclose(int);
 		extern void cc9_net_onclose(int);
 		extern void cc9_shm_forget_fd(int);

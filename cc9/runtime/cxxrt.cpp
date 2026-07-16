@@ -46,6 +46,7 @@ extern "C" int n9_semrelease(int *, int);
 extern "C" long n9_sleep(long);
 extern "C" long n9_pwrite(int, const void *, long, long long);
 extern "C" unsigned long pthread_self(void);   // cc9's pthread_t is the synthetic tid
+extern "C" void cc9_abort_process(const char *);   // pthread.c: kills siblings+main, then exits
 static int cc9_guard_lock = 1;
 // The guard is 8 bytes: b[0]=initialized (the byte the compiler's fast path reads),
 // b[1]=in-progress. The 6 spare bytes b[2..7] hold the constructing thread's id,
@@ -85,7 +86,10 @@ extern "C" int __cxa_guard_acquire(unsigned long long *g) {
 			n9_semrelease(&cc9_guard_lock, 1);
 			static const char m[] = "cc9: recursive static initialization (recursive_init)\n";
 			n9_pwrite(2, m, sizeof m - 1, -1);
-			n9_exits("cc9: recursive_init");                                               // abort — never returns
+			// Abort the whole PROCESS, not just this proc: a bare n9_exits would leave
+			// b[1]=1 with the owner dead, spinning every sibling thread forever in the
+			// loop below and orphaning workers (cc9_kill_threads never ran).
+			cc9_abort_process("cc9: recursive_init");                                     // never returns
 		}
 		n9_semrelease(&cc9_guard_lock, 1);                                                  // another thread is constructing
 		n9_sleep(0);
