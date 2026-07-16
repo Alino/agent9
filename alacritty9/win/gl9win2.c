@@ -313,6 +313,7 @@ typedef struct Frame Frame;
 struct Frame {
 	int full;
 	int scroll;	/* GL9S: y=y0, h=y1, w=dy; pix=nil */
+	int bgra;	/* GL9B: pixels are BGRA8888 (Plan9 ARGB32), not GL RGBA (ABGR32) */
 	ulong x, y, w, h;
 	uchar *pix;
 	Frame *next;
@@ -356,7 +357,7 @@ framereader(void*)
 	ulong w, h, x, y, len;
 	long n;
 	Frame *f;
-	int full;
+	int full, bgra;
 	char title[256];
 
 	for(;;){
@@ -389,6 +390,7 @@ framereader(void*)
 				threadexitsall("malloc frame hdr");
 			f->full = 0;
 			f->scroll = 1;
+			f->bgra = 0;
 			f->x = 0;
 			f->y = get32(hdr);
 			f->h = get32(hdr + 4);
@@ -397,7 +399,9 @@ framereader(void*)
 			enqueue(f);
 			continue;
 		}
-		if(memcmp(hdr, "GL9F", 4) == 0){
+		bgra = 0;
+		if(memcmp(hdr, "GL9F", 4) == 0 || (bgra = memcmp(hdr, "GL9B", 4) == 0)){
+			/* GL9B: full frame, but BGRA8888 (Ladybird/Skia) not GL RGBA */
 			full = 1;
 			if(readn(framefd, hdr, 8) != 8)
 				break;
@@ -425,6 +429,7 @@ framereader(void*)
 			threadexitsall("malloc frame hdr");
 		f->full = full;
 		f->scroll = 0;
+		f->bgra = bgra;
 		f->x = x;
 		f->y = y;
 		f->w = w;
@@ -441,7 +446,7 @@ threadmain(int argc, char **argv)
 {
 	static Execargs e;
 	int pev[2], pfr[2];
-	ulong w, h;
+	ulong w, h, imchan;
 	long n;
 	Image *im;
 	Point o;
@@ -490,6 +495,7 @@ threadmain(int argc, char **argv)
 	proccreate(framereader, nil, 32*1024);
 
 	im = nil;
+	imchan = 0;
 	lastns = 0;
 	for(;;){
 		if(recvul(framec) == 0)
@@ -542,15 +548,20 @@ threadmain(int argc, char **argv)
 			h = f->h;
 			n = (long)w * h * 4;
 			if(f->full){
-				/* reuse the draw image across same-size frames */
-				if(im == nil || Dx(im->r) != (int)w || Dy(im->r) != (int)h){
+				/* GL9B pixels are BGRA8888 == Plan 9 ARGB32; GL9F are GL
+				 * RGBA == ABGR32. libdraw's draw() does the channel
+				 * conversion to the screen for free — no per-frame repack. */
+				ulong wantchan = f->bgra ? ARGB32 : ABGR32;
+				/* reuse the draw image across same-size, same-format frames */
+				if(im == nil || Dx(im->r) != (int)w || Dy(im->r) != (int)h || imchan != wantchan){
 					if(im != nil)
 						freeimage(im);
-					im = allocimage(display, Rect(0, 0, w, h), ABGR32, 0, DNofill);
+					im = allocimage(display, Rect(0, 0, w, h), wantchan, 0, DNofill);
 					if(im == nil){
 						qunlock(&displock);
 						threadexitsall("allocimage");
 					}
+					imchan = wantchan;
 				}
 				t0 = kbddebug ? nsec() : 0;
 				loadimage(im, im->r, f->pix, n);

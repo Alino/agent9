@@ -58,6 +58,11 @@ Records are distinguished by 4-byte magic:
 - `"GL9F"` + u32be w + u32be h + w*h*4 bytes RGBA (== Plan 9 ABGR32 memory
   order, no repack). Full frame; unchanged from gl9; emitted by gl9egl
   eglSwapBuffers. Supersedes everything queued before it.
+- `"GL9B"` + u32be w + u32be h + w*h*4 bytes BGRA8888 (== Plan 9 ARGB32 memory
+  order). Full frame, identical framing to GL9F but the pixels are in
+  Skia/Ladybird BGRA order; gl9win2 allocs the blit image as ARGB32 so libdraw
+  converts to the screen with no per-frame R/B repack. Used by the ladybird9
+  UI/Plan9 presenter (Skia CPU raster is always BGRA). Supersedes the queue.
 - `"GL9D"` + u32be x + y + w + h + w*h*4 RGBA rows: damage delta — patch the
   given rect (top-left window coords) of the persistent image. Applied in
   arrival order; emitted by gl9egl_swap_damage (one per damage rect).
