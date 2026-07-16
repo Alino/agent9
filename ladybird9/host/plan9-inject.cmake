@@ -18,10 +18,13 @@ set(ENABLE_GUI_TARGETS ON CACHE BOOL "" FORCE)
 # No QT/AppKit chrome, no installer targets.
 set(ENABLE_QT OFF CACHE BOOL "" FORCE)
 
-# Parity deferrals (upstream's own toggles where they exist):
-#   video/audio (ffmpeg) and WebGL (angle/vulkan) land after M5.
-set(ENABLE_VIDEO OFF CACHE BOOL "" FORCE)
-set(ENABLE_AUDIO OFF CACHE BOOL "" FORCE)
+# Video/audio: ENABLED — ffmpeg 7.1.1 cross-built C-only into the sysroot
+# (host/deps/build-ffmpeg.sh, --disable-asm; decoders+demuxers+parsers). LibMedia
+# links the real FFmpeg TUs; audio playback falls to the null PlaybackStream
+# (no 9front audio-out backend wired — decode is the deliverable). WebGL is
+# enabled separately (OpenGLContext.cpp over gl9). See parity/deferrals.md.
+set(ENABLE_VIDEO ON CACHE BOOL "" FORCE)
+set(ENABLE_AUDIO ON CACHE BOOL "" FORCE)
 
 # Wasm runs on LibWasm's bytecode interpreter: stock 9front enforces W^X
 # (no exec pages), so the cranelift AOT path can never run. Upstream's own
