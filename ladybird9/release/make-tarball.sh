@@ -83,4 +83,4 @@ cp "$HERE/CHANGELOG" "$STAGE/sys/lib/pac9/changelog/ladybird9"
 ( cd "$STAGE" && COPYFILE_DISABLE=1 tar --format ustar -czf "$TARBALL" usr rc sys )
 echo "-> $TARBALL  ($(du -h "$TARBALL" | cut -f1))"
 echo "registry entry (tab-separated: name url subdir recipe deps version):"
-echo "ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.1.0/ladybird9-amd64.tar.gz	-	0.1.0"
+echo "ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.2.0/ladybird9-amd64.tar.gz	-	0.2.0"

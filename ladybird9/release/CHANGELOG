@@ -1,5 +1,15 @@
 ladybird9 — the Ladybird browser on 9front
 
+v0.2.0
+  Interactive browser chrome — a tab strip, address bar, and back/forward/
+  reload/stop, drawn presenter-side in gl9win2 (`ladybird` with no URL opens a
+  usable window). Bundled DejaVu fonts (no more hand-drawn fallback; broad
+  Unicode). Persistent-profile groundwork (SQLite unix-none VFS). The four
+  deferred engine features now enabled: WebGL (gl9/Mesa softpipe, surfaceless
+  FBO + readback — no GPU), JPEG-XL + AVIF decode (libjxl/highway, libavif/
+  dav1d), and <video>/<audio> decode (ffmpeg 7.1.1, C-only). Still 1:1 with
+  upstream — additive PLAN9 arms + new platform files only.
+
 v0.1.0
   First release. A real multi-process Ladybird (LadybirdBrowser/ladybird,
   pinned master 8cc5d7a5ff) cross-compiled to native Plan 9 amd64 a.out via
