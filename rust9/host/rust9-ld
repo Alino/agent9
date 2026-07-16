@@ -12,12 +12,9 @@ LDS="$CC9/test/plan9.ld"
 LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"
 ELF2AOUT="$CC9/host/elf2aout.py"
 
-# Shim the 3 libunwind entry points cc9 didn't export (needed by panic=unwind).
-CLANG="${CC9_CLANG:-/opt/homebrew/opt/llvm/bin/clang}"
-SHIM_C="$(cd "$(dirname "$0")" && pwd)/n9unwind.c"; SHIM_O="/tmp/rust9-n9unwind.o"
-if [ -f "$SHIM_C" ] && { [ ! -f "$SHIM_O" ] || [ "$SHIM_C" -nt "$SHIM_O" ]; }; then
-  "$CLANG" --target=x86_64-unknown-none -ffreestanding -nostdlib -fno-pic -O2 -c "$SHIM_C" -o "$SHIM_O"
-fi
+# (Former n9unwind.c shim removed: cc9's libcc9cxx.a now exports REAL
+# _Unwind_GetDataRelBase/_Unwind_GetTextRelBase/_Unwind_GetIPInfo — keeping the
+# no-op shim would collide with them, and could win over the real impls.)
 
 [ -z "${RUST9_LDLOG:-}" ] || printf '%s\0' "$@" >"$RUST9_LDLOG"
 
@@ -80,5 +77,5 @@ fi
 
 elf="$out.elf"
 "$LLD" -o "$elf" "${args[@]}" -T "$LDS" -static -nostdlib \
-  --start-group "$SHIM_O" ${GL9_OBJS[@]+"${GL9_OBJS[@]}"} "$LIB" "$LIBM" --end-group
+  --start-group ${GL9_OBJS[@]+"${GL9_OBJS[@]}"} "$LIB" "$LIBM" --end-group
 python3 "$ELF2AOUT" "$elf" "$out" >&2

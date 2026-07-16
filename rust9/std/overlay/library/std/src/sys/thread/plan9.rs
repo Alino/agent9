@@ -21,9 +21,17 @@ unsafe extern "C" {
     fn pthread_self() -> Pthread;
     fn sched_yield() -> i32;
     fn nanosleep(req: *const CTimespec, rem: *mut CTimespec) -> i32;
-    // cc9's pthread stacks default to 256K; deeply-recursive callers (rustc's
-    // compile thread wants 8M) set the size for the next create through this.
-    fn cc9_set_thread_stack(n: i64);
+    // cc9's pthread stacks default to 256K; pass the requested size per-create.
+    fn pthread_attr_init(attr: *mut CPthreadAttr) -> i32;
+    fn pthread_attr_setstacksize(attr: *mut CPthreadAttr, size: usize) -> i32;
+    fn pthread_attr_destroy(attr: *mut CPthreadAttr) -> i32;
+}
+
+/// cc9's `pthread_attr_t` (runtime/include/pthread.h). Layout must match.
+#[repr(C)]
+struct CPthreadAttr {
+    detachstate: i32,
+    stacksize: usize,
 }
 
 #[repr(C)]
@@ -46,12 +54,24 @@ impl Thread {
     pub unsafe fn new(stack: usize, init: Box<ThreadInit>) -> io::Result<Thread> {
         let data = Box::into_raw(init);
         let mut native: Pthread = 0;
-        // cc9's pthread stacks default to 256K; hand it the requested size so
-        // deeply-recursive callers (rustc's 8M compile thread) don't overflow.
-        unsafe { cc9_set_thread_stack(stack as i64) };
-        // cc9 ignores attr (uses the size set above), so pass null.
-        let ret =
-            unsafe { pthread_create(&mut native, ptr::null(), thread_start, data as *mut c_void) };
+        // Pass the requested stack size per-create via attr. cc9's stacks default to
+        // 256K and deeply-recursive callers (rustc's 8M compile thread, stylo/rayon
+        // layout workers) overflow that. This used to go through the global
+        // cc9_set_thread_stack(), which RACED: concurrent spawns clobbered each
+        // other's size, so a worker could get 256K instead of its 8M, smash its
+        // return address recursing, and fault with pc pointing into the stack.
+        let mut attr = CPthreadAttr { detachstate: 0, stacksize: 0 };
+        unsafe { pthread_attr_init(&mut attr) };
+        unsafe { pthread_attr_setstacksize(&mut attr, stack) };
+        let ret = unsafe {
+            pthread_create(
+                &mut native,
+                &attr as *const CPthreadAttr as *const c_void,
+                thread_start,
+                data as *mut c_void,
+            )
+        };
+        unsafe { pthread_attr_destroy(&mut attr) };
         return if ret == 0 {
             Ok(Thread { id: native })
         } else {
