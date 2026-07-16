@@ -233,17 +233,20 @@ index 723b507bcc..4b920283e7 100644
  elseif (APPLE)
      list(APPEND SOURCES SandboxMacOS.cpp)
 diff --git a/Services/RequestServer/main.cpp b/Services/RequestServer/main.cpp
-index d5acf45747..d340dab7b0 100644
+index d5acf45747..a4628d4892 100644
 --- a/Services/RequestServer/main.cpp
 +++ b/Services/RequestServer/main.cpp
-@@ -86,6 +86,13 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -86,6 +86,16 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
  
      Optional<HTTP::DiskCache> disk_cache;
  
 +#if defined(AK_OS_PLAN9)
 +    // The disk cache is SQLite-backed, and cc9's SQLite VFS hits Plan 9's
 +    // "locking protocol" on the cache index DB (see parity/deferrals.md). Skip
-+    // it until the VFS lock shim lands — a cache is non-essential.
++    // it until the VFS lock shim lands — a cache is non-essential. Don't override
++    // silently: if the user explicitly asked for a cache, say why it's ignored.
++    if (!http_disk_cache_mode.is_empty() && http_disk_cache_mode != "disabled"sv)
++        warnln("RequestServer: --http-disk-cache-mode={} ignored on Plan 9 (SQLite locking; see parity/deferrals.md)", http_disk_cache_mode);
 +    http_disk_cache_mode = "disabled"sv;
 +#endif
 +

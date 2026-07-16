@@ -122,32 +122,53 @@ static unsigned long shm_seek_off(int fd) {
 	return (unsigned long)ret;
 }
 
-typedef struct { int fd; unsigned long off; } shm_buf;
+typedef struct { int fd; unsigned long off; } shm_buf;   /* guarded by shm_lock */
 #define SHM_MAXBUF 4096
 static shm_buf bufs[SHM_MAXBUF];
-static int buf_lookup(int fd, unsigned long *off) {
-	for (int i = 0; i < SHM_MAXBUF; i++)
-		if (bufs[i].fd == fd + 1) { *off = bufs[i].off; return 1; }  /* +1: 0 = empty */
-	return 0;
-}
+static int bufs_live;   /* fast-path: skip the O(N) scan in close() when 0 */
+
+/* Record fd->off both in the table (primary) and the fd seek position
+ * (dup-safe fallback). The table MUST be cleared on close (cc9_shm_forget_fd,
+ * below) or a recycled fd number inherits a dead buffer's offset — the IPC
+ * layer dup()s the buffer fd before export, and dup returns the lowest free
+ * number, which readily lands on a just-closed shm fd. */
 static void shm_set_off_both(int fd, unsigned long off) {
-	shm_set_off(fd, off);                       /* dup-safe carrier */
-	shm_buf *b = 0;
-	for (int i = 0; i < SHM_MAXBUF; i++) if (bufs[i].fd == fd + 1) { b = &bufs[i]; break; }
-	if (!b) for (int i = 0; i < SHM_MAXBUF; i++) if (bufs[i].fd == 0) { b = &bufs[i]; break; }
-	if (b) { b->fd = fd + 1; b->off = off; }    /* same-fd fast path */
+	shm_set_off(fd, off);                       /* seek: outside the lock (syscall) */
+	n9_semacquire(&shm_lock, 1);
+	shm_buf *b = 0, *slot = 0;
+	for (int i = 0; i < SHM_MAXBUF; i++) {
+		if (bufs[i].fd == fd + 1) { b = &bufs[i]; break; }   /* +1: 0 = empty */
+		if (!bufs[i].fd && !slot) slot = &bufs[i];
+	}
+	if (!b && slot) { slot->fd = fd + 1; b = slot; bufs_live++; }
+	if (b) b->off = off;
+	n9_semrelease(&shm_lock, 1);
 }
 /* offset for an fd: table first (reliable), then the dup-shared seek position. */
 static unsigned long shm_get_off(int fd) {
-	unsigned long off;
-	if (buf_lookup(fd, &off)) return off;
-	return shm_seek_off(fd);
+	n9_semacquire(&shm_lock, 1);
+	unsigned long off = 0; int hit = 0;
+	for (int i = 0; i < SHM_MAXBUF; i++)
+		if (bufs[i].fd == fd + 1) { off = bufs[i].off; hit = 1; break; }
+	n9_semrelease(&shm_lock, 1);
+	return hit ? off : shm_seek_off(fd);
+}
+/* close(2) hook: forget this fd's pool offset so a later fd that recycles the
+ * number can't read a dead buffer's offset. Safe (and cheap via bufs_live) to
+ * call for every close, shm fd or not. */
+void cc9_shm_forget_fd(int fd) {
+	if (bufs_live == 0) return;
+	n9_semacquire(&shm_lock, 1);
+	for (int i = 0; i < SHM_MAXBUF; i++)
+		if (bufs[i].fd == fd + 1) { bufs[i].fd = 0; bufs_live--; break; }
+	n9_semrelease(&shm_lock, 1);
 }
 
 #define SHM9_POOL (256ul << 20)     /* 256 MiB per pool; demand-paged, so cheap */
-static char pool_name[CC9_SHM_NAMELEN];  /* "" until the pool is created */
-static unsigned long pool_off;           /* bump cursor within the pool */
+static char pool_name[CC9_SHM_NAMELEN];  /* "" until the current pool is created */
+static unsigned long pool_off;           /* bump cursor within the current pool */
 static int pool_fd = -1;                 /* held open process-lifetime: keeps the #g dir + memory alive */
+static int pool_pid;                     /* pid that owns pool_*: detects a fork WITHOUT exec */
 
 static unsigned long page_round(unsigned long n) {
 	return (n + SHM9_PAGE - 1) & ~(SHM9_PAGE - 1);
@@ -232,10 +253,14 @@ fail_rm:
 	return -1;
 }
 
-/* Lazily create this process's pool segment. Caller holds shm_lock. pool_fd is
- * held open forever so the #g dir + memory outlive every per-buffer fd. */
+/* Ensure a current pool segment owned by THIS process. Caller holds shm_lock.
+ * pool_fd is held open forever so the #g dir + memory outlive every per-buffer
+ * fd. Keyed on pid so a fork WITHOUT exec (which inherits pool_* but execve's
+ * cc9_shm_detach_all does NOT run) mints its own pool instead of scribbling the
+ * parent's cursor onto the shared segment. (The inherited pool_fd is leaked in
+ * that rare case — a bare fork that then allocates shm.) */
 static int pool_ensure(void) {
-	if (pool_name[0]) return 0;
+	if (pool_name[0] && pool_pid == getpid()) return 0;
 	unsigned long va = va_alloc(SHM9_POOL);
 	if (!va) return -1;
 	char name[CC9_SHM_NAMELEN];
@@ -250,6 +275,7 @@ static int pool_ensure(void) {
 	pool_fd = fd;
 	strcpy(pool_name, name);
 	pool_off = 0;
+	pool_pid = getpid();
 	shm_trace("pool", pool_name, va, SHM9_POOL, fd, 0);
 	return 0;
 }
@@ -257,12 +283,18 @@ static int pool_ensure(void) {
 int cc9_shm_create(unsigned long size) {
 	if (size == 0) { errno = EINVAL; return -1; }
 	unsigned long len = page_round(size);
-	if (len > SHM9_POOL) { errno = ENOMEM; return -1; }   /* ponytail: single 256M pool; multi-pool if a buffer needs more */
+	if (len > SHM9_POOL) { errno = ENOMEM; return -1; }   /* one buffer bigger than a whole pool: genuinely too big */
 
 	n9_semacquire(&shm_lock, 1);
 	if (pool_ensure() < 0) { n9_semrelease(&shm_lock, 1); return -1; }
-	if (pool_off + len > SHM9_POOL) {                     /* ponytail: bump-only, no free-list; pool grows until proc exit */
-		n9_semrelease(&shm_lock, 1); errno = ENOMEM; return -1;
+	if (pool_off + len > SHM9_POOL) {
+		/* current pool full — mint a NEW one (bump-only, no free-list, but never
+		 * a hard per-process cap: a long session just attaches a few more 256M
+		 * pools). ponytail: bounded by the 1 GiB pid VA slab (~4 pools); a real
+		 * free-list is the upgrade if that bites. The old pool stays alive via
+		 * its live buffers' fds (pool_fd is intentionally overwritten). */
+		pool_name[0] = 0;
+		if (pool_ensure() < 0) { n9_semrelease(&shm_lock, 1); return -1; }
 	}
 	unsigned long off = pool_off;
 	pool_off += len;

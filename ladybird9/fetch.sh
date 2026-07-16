@@ -36,7 +36,11 @@ echo "ladybird pinned at $(git rev-parse HEAD)"
 
 # Apply the plan9 patch series (idempotent: reset to pin first).
 if ls "$HERE"/port/patches/*.patch >/dev/null 2>&1; then
-	git checkout -- . && git clean -fd >/dev/null
+	# `git reset --hard HEAD`, not `git checkout -- .`: the previous run applied
+	# patches with `--index`, so the INDEX holds patched content — `checkout -- .`
+	# would restore FROM that index, leaving the tree patched and the re-apply
+	# failing at the first hunk. Reset discards both index and worktree to the pin.
+	git reset --hard HEAD >/dev/null && git clean -fd >/dev/null
 	for p in "$HERE"/port/patches/*.patch; do
 		echo "applying $(basename "$p")"
 		git apply --index "$p" || { echo "PATCH FAILED: $p" >&2; exit 1; }

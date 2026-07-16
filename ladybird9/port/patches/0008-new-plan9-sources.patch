@@ -1,3 +1,157 @@
+diff --git a/Libraries/LibMedia/Codecs/VorbisStubPlan9.cpp b/Libraries/LibMedia/Codecs/VorbisStubPlan9.cpp
+new file mode 100644
+index 0000000000..4dd774a457
+--- /dev/null
++++ b/Libraries/LibMedia/Codecs/VorbisStubPlan9.cpp
+@@ -0,0 +1,47 @@
++// AK_OS_PLAN9: Codecs/Vorbis.cpp is backed by FFmpeg's vorbis parser, which
++// is deferred on Plan 9 (see ladybird9/parity/deferrals.md). create() always
++// returns empty — upstream already treats a failed av_vorbis_parse_init the
++// same way — so no Parser instance ever exists at runtime.
++//
++// SPDX-License-Identifier: BSD-2-Clause
++
++#include <AK/StdLibExtras.h>
++#include <LibMedia/Codecs/Vorbis.h>
++
++namespace Media::Codecs {
++
++Optional<Vorbis::Parser> Vorbis::Parser::create(ReadonlyBytes)
++{
++    return {};
++}
++
++Vorbis::Parser::Parser(Parser&& other)
++    : m_context(exchange(other.m_context, nullptr))
++{
++}
++
++Vorbis::Parser& Vorbis::Parser::operator=(Parser&& other)
++{
++    if (this == &other)
++        return *this;
++    m_context = exchange(other.m_context, nullptr);
++    return *this;
++}
++
++Vorbis::Parser::~Parser() = default;
++
++void Vorbis::Parser::reset() const
++{
++}
++
++Optional<u32> Vorbis::Parser::parse_packet_duration_in_samples(ReadonlyBytes) const
++{
++    return {};
++}
++
++Optional<AK::Duration> Vorbis::Parser::parse_packet_duration(ReadonlyBytes, u32) const
++{
++    return {};
++}
++
++}
+diff --git a/Libraries/LibMedia/FFmpeg/FFmpegStubPlan9.cpp b/Libraries/LibMedia/FFmpeg/FFmpegStubPlan9.cpp
+new file mode 100644
+index 0000000000..86e8e2ac3a
+--- /dev/null
++++ b/Libraries/LibMedia/FFmpeg/FFmpegStubPlan9.cpp
+@@ -0,0 +1,95 @@
++// AK_OS_PLAN9: FFmpeg is deferred on Plan 9 (see ladybird9/parity/deferrals.md).
++// This TU stands in for the real FFmpeg sources: it implements only the
++// factory entry points the rest of LibMedia calls, each reporting that the
++// decoder is unavailable. <video>/<audio> decode simply fails gracefully.
++//
++// SPDX-License-Identifier: BSD-2-Clause
++
++#include <LibMedia/FFmpeg/FFmpegAudioConverter.h>
++#include <LibMedia/FFmpeg/FFmpegAudioDecoder.h>
++#include <LibMedia/FFmpeg/FFmpegDemuxer.h>
++#include <LibMedia/FFmpeg/FFmpegVideoDecoder.h>
++
++namespace Media::FFmpeg {
++
++DecoderErrorOr<NonnullRefPtr<FFmpegDemuxer>> FFmpegDemuxer::from_stream(NonnullRefPtr<MediaStream> const&)
++{
++    return DecoderError::with_description(DecoderErrorCategory::NotImplemented, "FFmpeg is not available on Plan 9"sv);
++}
++
++// The factories above never construct, so no instance of these classes can
++// exist: everything below only satisfies the vtables that the (smart-pointer
++// instantiated) destructors emit.
++
++DecoderErrorOr<NonnullOwnPtr<FFmpegVideoDecoder>> FFmpegVideoDecoder::try_create(CodecID, ReadonlyBytes)
++{
++    return DecoderError::with_description(DecoderErrorCategory::NotImplemented, "FFmpeg is not available on Plan 9"sv);
++}
++
++FFmpegVideoDecoder::~FFmpegVideoDecoder() = default;
++
++DecoderErrorOr<void> FFmpegVideoDecoder::receive_coded_data(AK::Duration, AK::Duration, ReadonlyBytes, Optional<AK::Duration>)
++{
++    VERIFY_NOT_REACHED();
++}
++
++void FFmpegVideoDecoder::signal_end_of_stream()
++{
++    VERIFY_NOT_REACHED();
++}
++
++DecoderErrorOr<NonnullRefPtr<VideoFrame>> FFmpegVideoDecoder::get_decoded_frame(CodingIndependentCodePoints const&)
++{
++    VERIFY_NOT_REACHED();
++}
++
++void FFmpegVideoDecoder::flush()
++{
++    VERIFY_NOT_REACHED();
++}
++
++DecoderErrorOr<NonnullOwnPtr<FFmpegAudioDecoder>> FFmpegAudioDecoder::try_create(CodecID, Audio::SampleSpecification const&, ReadonlyBytes)
++{
++    return DecoderError::with_description(DecoderErrorCategory::NotImplemented, "FFmpeg is not available on Plan 9"sv);
++}
++
++FFmpegAudioDecoder::~FFmpegAudioDecoder() = default;
++
++DecoderErrorOr<void> FFmpegAudioDecoder::receive_coded_data(AK::Duration, ReadonlyBytes)
++{
++    VERIFY_NOT_REACHED();
++}
++
++void FFmpegAudioDecoder::signal_end_of_stream()
++{
++    VERIFY_NOT_REACHED();
++}
++
++DecoderErrorOr<void> FFmpegAudioDecoder::write_next_block(AudioBlock&)
++{
++    VERIFY_NOT_REACHED();
++}
++
++void FFmpegAudioDecoder::flush()
++{
++    VERIFY_NOT_REACHED();
++}
++
++ErrorOr<NonnullOwnPtr<FFmpegAudioConverter>> FFmpegAudioConverter::try_create()
++{
++    return Error::from_string_literal("FFmpeg is not available on Plan 9");
++}
++
++FFmpegAudioConverter::~FFmpegAudioConverter() = default;
++
++ErrorOr<void> FFmpegAudioConverter::set_output_sample_specification(Audio::SampleSpecification)
++{
++    VERIFY_NOT_REACHED();
++}
++
++ErrorOr<void> FFmpegAudioConverter::convert(AudioBlock&)
++{
++    VERIFY_NOT_REACHED();
++}
++
++}
 diff --git a/UI/Plan9/Application.cpp b/UI/Plan9/Application.cpp
 new file mode 100644
 index 0000000000..724f93b3f9
@@ -79,10 +233,10 @@ index 0000000000..fb5ff1b038
 +create_ladybird_bundle(ladybird)
 diff --git a/UI/Plan9/Plan9WebView.cpp b/UI/Plan9/Plan9WebView.cpp
 new file mode 100644
-index 0000000000..f299f2e47b
+index 0000000000..9ae7e559d5
 --- /dev/null
 +++ b/UI/Plan9/Plan9WebView.cpp
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,209 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -184,8 +338,22 @@ index 0000000000..f299f2e47b
 +    event.buttons = m_buttons;
 +    event.modifiers = map_mods(modifiers);
 +    event.wheel_delta_y = wheel_y;
++    if (type == Web::MouseEvent::Type::MouseDown) {
++        // Qt defaults: 400ms double-click interval, 10px start-drag distance.
++        static constexpr auto double_click_interval = AK::Duration::from_milliseconds(400);
++        static constexpr int start_drag_distance = 10;
++        auto now = MonotonicTime::now();
++        auto d = m_mouse.absolute_relative_distance_to(m_last_click_position);
++        int manhattan = d.x() + d.y();
++        if (now - m_last_click_time < double_click_interval && manhattan < start_drag_distance)
++            ++m_click_count;
++        else
++            m_click_count = 1;
++        m_last_click_time = now;
++        m_last_click_position = m_mouse;
++    }
 +    if (type == Web::MouseEvent::Type::MouseDown || type == Web::MouseEvent::Type::MouseUp)
-+        event.click_count = 1;
++        event.click_count = m_click_count;
 +    enqueue_input_event(move(event));
 +}
 +
@@ -249,15 +417,27 @@ index 0000000000..f299f2e47b
 +        dispatch_mouse(state == 1 ? Web::MouseEvent::Type::MouseDown : Web::MouseEvent::Type::MouseUp, btn, modifiers);
 +        break;
 +    }
-+    case 4: // scroll: a = line delta (i32, + = up); wheel_delta_y is + = down
-+        dispatch_mouse(Web::MouseEvent::Type::MouseWheel, MouseButton::None, modifiers, -static_cast<double>(static_cast<i32>(a)));
++    case 4: {
++        // scroll: a = notch delta (i32, + = up); gl9win2 emits +/-1 per detent.
++        // wheel_delta_y is in CSS px, + = down. Match the Qt/AppKit feel: one notch
++        // = wheelScrollLines(3 default) * scroll_step_size(40px) = 120 CSS px.
++        static constexpr double px_per_notch = 120;
++        dispatch_mouse(Web::MouseEvent::Type::MouseWheel, MouseButton::None, modifiers, -static_cast<double>(static_cast<i32>(a)) * px_per_notch);
 +        break;
++    }
 +    case 5: // resize
 +        if (on_resize_window)
 +            on_resize_window(Gfx::IntSize { static_cast<int>(a), static_cast<int>(b) });
 +        break;
-+    case 6: // focus — nothing to do
++    case 6: { // focus: state 1 = gained, 0 = lost
++        bool focused = state == 1;
++        client().async_set_has_focus(m_client_state.page_index, focused);
++        // The presenter has no separate mouse-leave record; losing focus is our
++        // proxy for the pointer leaving, so clear stale :hover state.
++        if (!focused)
++            dispatch_mouse(Web::MouseEvent::Type::MouseLeave, MouseButton::None, modifiers);
 +        break;
++    }
 +    case 7: // quit
 +        if (on_quit)
 +            on_quit();
@@ -268,10 +448,10 @@ index 0000000000..f299f2e47b
 +}
 diff --git a/UI/Plan9/Plan9WebView.h b/UI/Plan9/Plan9WebView.h
 new file mode 100644
-index 0000000000..095bd83a16
+index 0000000000..782fd6a5d0
 --- /dev/null
 +++ b/UI/Plan9/Plan9WebView.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,49 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -280,6 +460,7 @@ index 0000000000..095bd83a16
 +
 +#pragma once
 +
++#include <AK/Time.h>
 +#include <LibWeb/Page/InputEvent.h>
 +#include <LibWebView/HeadlessWebView.h>
 +
@@ -311,15 +492,21 @@ index 0000000000..095bd83a16
 +    int m_frame_fd { 1 };
 +    Gfx::IntPoint m_mouse;
 +    Web::UIEvents::MouseButton m_buttons { Web::UIEvents::MouseButton::None };
++
++    // Multi-click detection (mirrors UI/Qt/WebContentView.cpp): consecutive
++    // MouseDowns close in time and position raise click_count for dbl/triple-click.
++    int m_click_count { 0 };
++    MonotonicTime m_last_click_time { MonotonicTime::now() };
++    Gfx::IntPoint m_last_click_position;
 +};
 +
 +}
 diff --git a/UI/Plan9/main.cpp b/UI/Plan9/main.cpp
 new file mode 100644
-index 0000000000..a65edc640e
+index 0000000000..dcde46f516
 --- /dev/null
 +++ b/UI/Plan9/main.cpp
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,101 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -336,6 +523,7 @@ index 0000000000..a65edc640e
 +#include <UI/Plan9/Application.h>
 +#include <UI/Plan9/Plan9WebView.h>
 +
++#include <fcntl.h>
 +#include <unistd.h>
 +
 +// Read exactly one 16-byte presenter event record from fd 0; false on EOF.
@@ -355,6 +543,30 @@ index 0000000000..a65edc640e
 +{
 +    AK::set_rich_debug_enabled(true);
 +
++    // Interactive vs headless has to be decided from the raw args BEFORE
++    // Application::create(), because create() → launch_services() eagerly spawns
++    // RequestServer/ImageDecoder/Compositor. Interactively fd 1 is gl9win2's frame
++    // pipe, so we must move it aside first — otherwise those helpers inherit the
++    // frame pipe as their stdout and a stray write corrupts the frame stream.
++    bool headless = false;
++    for (auto arg : arguments.strings) {
++        if (arg == "--headless"sv || arg.starts_with("--headless="sv)) {
++            headless = true;
++            break;
++        }
++    }
++
++    int frame_fd = -1;
++    if (!headless) {
++        frame_fd = ::dup(1);
++        if (frame_fd < 0)
++            return Error::from_errno(errno);
++        // Keep the frame pipe out of every spawned helper (belt-and-suspenders
++        // with the fd-1-aside above; also covers lazily-spawned WebContent).
++        ::fcntl(frame_fd, F_SETFD, FD_CLOEXEC);
++        ::dup2(2, 1); // stdout -> stderr: a stray outln() can't corrupt frames
++    }
++
 +    auto app = TRY(Ladybird::Application::create(arguments));
 +    if (app->should_exit_after_profile_coordination()) {
 +        outln("Opening in existing process");
@@ -366,14 +578,6 @@ index 0000000000..a65edc640e
 +    // Headless modes (screenshot/text/layout-tree) are owned by the base flow.
 +    if (options.headless_mode.has_value())
 +        return app->execute();
-+
-+    // Interactive: we run as the gl9win2 child — fd 0 = 16-byte input records,
-+    // fd 1 = the frame stream. Move fd 1 aside and point stdout at stderr so a
-+    // stray outln() can't corrupt the frame stream.
-+    int frame_fd = ::dup(1);
-+    if (frame_fd < 0)
-+        return Error::from_errno(errno);
-+    ::dup2(2, 1);
 +
 +    auto theme_path = LexicalPath::join(WebView::s_ladybird_resource_root, "themes"sv, "Default.ini"sv);
 +    auto theme = TRY(Gfx::load_system_theme(theme_path.string()));

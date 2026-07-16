@@ -1,3 +1,95 @@
+diff --git a/AK/Platform.h b/AK/Platform.h
+index a95420d53f..9aac570234 100644
+--- a/AK/Platform.h
++++ b/AK/Platform.h
+@@ -130,6 +130,10 @@
+ #    define AK_OS_GNU_HURD
+ #endif
+ 
++#if defined(__plan9__)
++#    define AK_OS_PLAN9
++#endif
++
+ #if defined(__MACH__)
+ #    define AK_OS_MACH
+ #endif
+diff --git a/AK/Random.cpp b/AK/Random.cpp
+index 1a9c352be2..3271960481 100644
+--- a/AK/Random.cpp
++++ b/AK/Random.cpp
+@@ -20,6 +20,11 @@
+ #    include <AK/Windows.h>
+ #endif
+ 
++#if defined(AK_OS_PLAN9)
++#    include <fcntl.h>
++#    include <unistd.h>
++#endif
++
+ static inline ErrorOr<void> csprng(void* const buf, size_t size)
+ {
+     // We shouldn't use OpenSSL's RAND_bytes function here, because we want to avoid adding dependencies to AK.
+@@ -45,6 +50,28 @@ static inline ErrorOr<void> csprng(void* const buf, size_t size)
+ #elif defined(AK_OS_WINDOWS)
+     // Documented to always return TRUE
+     g_system.ProcessPrng((PBYTE)buf, size);
++#elif defined(AK_OS_PLAN9)
++    // The kernel CSPRNG device; read() never short-reads for sane sizes but
++    // loop anyway, mirroring the getrandom branch above.
++    {
++        int fd = open("/dev/random", O_RDONLY);
++        if (fd < 0) [[unlikely]]
++            return Error::from_errno(errno);
++        unsigned char* out = (unsigned char*)buf;
++        size_t left = size;
++        while (left > 0u) {
++            ssize_t ret = read(fd, out, left);
++            if (ret < 0 && errno != EINTR) [[unlikely]] {
++                close(fd);
++                return Error::from_errno(errno);
++            }
++            if (ret > 0) [[likely]] {
++                left -= (size_t)ret;
++                out += ret;
++            }
++        }
++        close(fd);
++    }
+ #else
+     static_assert(false, "This build target doesn't have a valid CSPRNG interface specified in AK/Random.cpp.");
+ #endif
+diff --git a/AK/StackInfo.cpp b/AK/StackInfo.cpp
+index b4324cb7d6..be8bf2b9ad 100644
+--- a/AK/StackInfo.cpp
++++ b/AK/StackInfo.cpp
+@@ -22,6 +22,9 @@
+ #    include <Windows.h>
+ // NOTE: Prevent clang-format from re-ordering this header order
+ #    include <Processthreadsapi.h>
++#elif defined(AK_OS_PLAN9)
++// cc9 runtime: stack range of the calling thread (pthread table / main arena).
++extern "C" int cc9_stack_bounds(void**, void**);
+ #endif
+ 
+ namespace AK {
+@@ -94,6 +97,17 @@ StackInfo::StackInfo()
+ 
+     m_base = static_cast<FlatPtr>(low_limit);
+     m_size = static_cast<size_t>(high_limit - low_limit);
++#elif defined(AK_OS_PLAN9)
++    // cc9 tracks every pthread's stack range and answers for the calling
++    // thread; the main thread's range is its (large) static stack arena,
++    // which costs nothing extra since conservative scans only walk
++    // [stack pointer, top].
++    void* stack_lo = nullptr;
++    void* stack_hi = nullptr;
++    if (cc9_stack_bounds(&stack_lo, &stack_hi) != 0)
++        VERIFY_NOT_REACHED();
++    m_base = reinterpret_cast<FlatPtr>(stack_lo);
++    m_size = static_cast<size_t>(reinterpret_cast<FlatPtr>(stack_hi) - reinterpret_cast<FlatPtr>(stack_lo));
+ #else
+ #    pragma message "StackInfo not supported on this platform! Recursion checks and stack scans may not work properly"
+     m_size = (size_t)~0;
 diff --git a/Libraries/LibCore/CMakeLists.txt b/Libraries/LibCore/CMakeLists.txt
 index 938d1bc33c..72e58a6fb0 100644
 --- a/Libraries/LibCore/CMakeLists.txt
@@ -12,17 +104,17 @@ index 938d1bc33c..72e58a6fb0 100644
  elseif (APPLE AND NOT IOS)
      list(APPEND SOURCES Platform/ProcessStatisticsMach.cpp)
 diff --git a/Libraries/LibCore/Resource.h b/Libraries/LibCore/Resource.h
-index 7ab853c488..404657e7c2 100644
+index 7ab853c488..f4951540cf 100644
 --- a/Libraries/LibCore/Resource.h
 +++ b/Libraries/LibCore/Resource.h
-@@ -12,6 +12,7 @@
- #include <AK/NonnullRefPtr.h>
- #include <AK/Span.h>
- #include <AK/String.h>
-+#include <time.h>
- #include <AK/StringView.h>
+@@ -16,6 +16,7 @@
  #include <AK/Variant.h>
  #include <LibCore/Export.h>
+ #include <LibCore/MappedFile.h>
++#include <time.h> // time_t (m_modified_time); transitively present elsewhere, explicit for cc9
+ 
+ namespace Core {
+ 
 diff --git a/Libraries/LibCore/Socket.cpp b/Libraries/LibCore/Socket.cpp
 index 7aecfb1597..0a777bbed8 100644
 --- a/Libraries/LibCore/Socket.cpp
@@ -243,3 +335,54 @@ index 09047f66ff..fe41c4292a 100644
  
      auto socket = TRY(Core::LocalSocket::adopt_fd(fd));
      // It had to be !CLOEXEC for obvious reasons, but we
+diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
+index cb8f11cff6..832e81a3cb 100644
+--- a/Libraries/LibGC/BlockAllocator.cpp
++++ b/Libraries/LibGC/BlockAllocator.cpp
+@@ -57,6 +57,18 @@ static auto const s_page_size = [] {
+ 
+ static void* allocate_chunk_with_aligned_heap_blocks()
+ {
++#if defined(AK_OS_PLAN9)
++    // Plan 9 (cc9) mmap is malloc-backed: the munmap() alignment trim below
++    // would free() interior pointers and corrupt the heap. aligned_alloc
++    // yields the same BLOCK_SIZE-aligned chunk directly; chunks are never
++    // torn down (see ~BlockAllocator), so no free() pairing arises. memset
++    // matches the zeroed pages a fresh anonymous mapping guarantees.
++    VERIFY(CHUNK_SIZE % s_page_size == 0);
++    void* chunk = aligned_alloc(HeapBlock::BLOCK_SIZE, CHUNK_SIZE);
++    VERIFY(chunk);
++    __builtin_memset(chunk, 0, CHUNK_SIZE);
++    return chunk;
++#else
+     auto const page_size = s_page_size;
+     VERIFY((page_size & (page_size - 1)) == 0);
+     VERIFY(HeapBlock::BLOCK_SIZE % page_size == 0 || page_size % HeapBlock::BLOCK_SIZE == 0);
+@@ -93,6 +105,7 @@ static void* allocate_chunk_with_aligned_heap_blocks()
+     }
+ 
+     return reinterpret_cast<void*>(aligned_address);
++#endif
+ }
+ #endif
+ 
+diff --git a/Libraries/LibGC/PrimitiveStorage.h b/Libraries/LibGC/PrimitiveStorage.h
+index 396bb55bae..a95dd1688b 100644
+--- a/Libraries/LibGC/PrimitiveStorage.h
++++ b/Libraries/LibGC/PrimitiveStorage.h
+@@ -36,7 +36,15 @@ public:
+         Yes,
+     };
+ 
++#if defined(AK_OS_PLAN9)
++    // Plan 9's segattach length argument is a 32-bit ulong, so a single
++    // demand-paged segment (how reserve_address_space is realized there)
++    // caps just under 4 GiB; 2 GiB is the largest power of two that fits
++    // with the trailing guard page. Same semantics, smaller ceiling.
++    static constexpr size_t default_cage_size = 2ull * GiB;
++#else
+     static constexpr size_t default_cage_size = 64ull * GiB;
++#endif
+     static_assert(is_power_of_two(default_cage_size));
+     static constexpr size_t cage_offset_mask = default_cage_size - 1;
+     static constexpr size_t invalid_offset = NumericLimits<size_t>::max();

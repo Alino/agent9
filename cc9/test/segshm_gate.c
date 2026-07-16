@@ -90,7 +90,9 @@ int main(int argc, char **argv) {
 	char name[CC9_SHM_NAMELEN];
 	unsigned long off, len;
 	if (cc9_shm_export(fd, name, &off, &len) < 0) die("export");
-	if (off != 0 || len < SEGSZ) die("export triple");
+	/* Phase B pool model (cc9 702e3b9): the first buffer sits at pool offset 0,
+	 * and len is receiver-driven (export leaves it 0 on the wire). */
+	if (off != 0) die("export triple");
 	ok("export wire triple");
 
 	/* 9 (early, format probe for the sweeper): our own segment table */
@@ -129,7 +131,29 @@ int main(int argc, char **argv) {
 	if (!check(p, SEGSZ, 0x5A)) die("data lost across detach/re-attach");
 	ok("detach -> re-import -> data persists");
 
-	/* 7: remove the name while attached: contents must persist for us */
+	/* 8: exec-clean — the child's successful attach in step 3 is itself the
+	 * proof: had execve leaked the fork-inherited mapping, its segattach
+	 * would have failed "segments overlap". */
+	ok("execve detached inherited mappings (child attach succeeded)");
+
+	/* 9: pool capacity probe. Phase B (cc9 702e3b9) sub-allocates every buffer
+	 * out of ONE named pool segment, so this no longer probes the kernel NSEG
+	 * cap (which Phase B exists to dodge) — it proves the pool bump-allocator
+	 * hands out many independent buffers without hitting NSEG. Run it BEFORE the
+	 * destructive remove below (all these buffers live in `name`'s pool). */
+	int fds[256], nbuf = 0;
+	for (; nbuf < 256; nbuf++) {
+		fds[nbuf] = cc9_shm_create(4096);
+		if (fds[nbuf] < 0) break;
+	}
+	fprintf(stderr, "-- pool probe: %d buffers from the pool (errno %d)\n", nbuf, errno);
+	for (int i = 0; i < nbuf; i++)
+		close(fds[i]);                    /* just close: they share the pool name */
+	if (nbuf < 8) die("pool probe: fewer than 8 buffers available");
+	ok("pool capacity probe (all closed)");
+
+	/* 7 (last — destroys the pool): remove the pool name while attached. Contents
+	 * must persist for existing attachers; new imports must be refused. */
 	char gpath[64];
 	snprintf(gpath, sizeof gpath, "#g/%s", name);
 	extern long n9_remove(const char *);
@@ -139,31 +163,6 @@ int main(int argc, char **argv) {
 	ok("remove-while-attached: contents persist, new attaches blocked");
 	munmap(p, SEGSZ);
 	close(fd);
-
-	/* 8: exec-clean — the child's successful attach in step 3 is itself the
-	 * proof: had execve leaked the fork-inherited mapping, its segattach
-	 * would have failed "segments overlap". */
-	ok("execve detached inherited mappings (child attach succeeded)");
-
-	/* 10: cap probe — how many named segments does this kernel really allow? */
-	int fds[256], nseg = 0;
-	for (; nseg < 256; nseg++) {
-		fds[nseg] = cc9_shm_create(4096);
-		if (fds[nseg] < 0) break;
-	}
-	fprintf(stderr, "-- cap probe: %d named segments before error (errno %d)\n", nseg, errno);
-	for (int i = 0; i < nseg; i++) {
-		char nm[CC9_SHM_NAMELEN];
-		unsigned long o, l;
-		if (cc9_shm_export(fds[i], nm, &o, &l) == 0) {
-			char rp[64];
-			snprintf(rp, sizeof rp, "#g/%s", nm);
-			n9_remove(rp);
-		}
-		close(fds[i]);
-	}
-	if (nseg < 8) die("cap probe: fewer than 8 segments available");
-	ok("cap probe (all freed)");
 
 	/* sweep smoke: run it; with grace 0 it may remove leftovers from crashed
 	 * prior runs — must not remove anything attached. */

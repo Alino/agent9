@@ -20,6 +20,9 @@ expected to behave identically to the same-commit host build.
 | Proxy discovery | no libproxy | direct connections | env-var proxy support via curl if needed |
 | Gamepad API | No gamepads on 9front; SDL3 is a shim ≡ real SDL3's dummy joystick backend (init OK, zero devices, no events) against the real 3.2.24 headers | port/sdl3-shim + build-sdl3-shim.sh | real SDL3 port if input devices ever matter |
 | PSL IDNA runtime | libpsl is REAL (builtin DAFSA from the pinned 0.21.5 public suffix list) but built --disable-runtime: non-ASCII lookup input isn't IDNA-mapped (Ladybird's LibURL always feeds punycoded ASCII hosts, so no behavior gap) | build-libpsl.sh | link libidn2/libunistring if raw-unicode psl lookups ever appear |
+| HTTP disk cache | Forced off; `--http-disk-cache-mode` is honored on other platforms but ignored on Plan 9 (warns if the user set a non-disabled value) | Services/RequestServer/main.cpp AK_OS_PLAN9 arm sets mode="disabled" (SQLite cache index hits the Plan 9 "locking protocol") | cc9 SQLite VFS lock shim lands (same blocker as the main DB) |
+| Compositor painting path | CPU painting forced on (Skia WrapPixels raster); GPU/Vulkan compositing path not taken | Services/Compositor/main.cpp AK_OS_PLAN9 arm defaults force_cpu_painting=true (no GPU context on 9front); `--force-cpu-painting` still parsed | gl9/llvmpipe-backed GL context if ever (same blocker as WebGL) |
+| GC address-space reservation | `Core::System::reserve_address_space` returns a plain allocation, not a PROT_NONE guard region: over-commit isn't lazily backed and out-of-reservation access won't fault-trap | LibGC/BlockAllocator.cpp AK_OS_PLAN9 arm (cc9 mmap is malloc-backed; no PROT_NONE) — behavior is correct, only the guard semantics are absent | cc9 gains real anonymous PROT_NONE reservations (segattach-based) |
 
 ## Parity measurements (filled per milestone)
 
@@ -34,6 +37,17 @@ expected to behave identically to the same-commit host build.
   `ladybird '--headless=text' --temporary-profile --disable-sql-database
   file://...`, byte compare.
 - M6 WPT smoke — TBD (needs the WPT runner harness; post-release)
+- Code-review rebuild (2026-07-16): after applying 23 review findings, all 6
+  binaries recompiled + relinked against the fixed cc9 runtime (new shm9.o +
+  fs.o close-hook). The shm runtime changes (stale-entry close hook, lock-safe
+  offset table, fork-without-exec pool ownership, multi-pool chaining) validated
+  on the VM via `segshm_gate` PASS 10/10 (true cross-process sharing across
+  fork+exec, refcounted map/unmap, detach→re-import, 256-buffer pool probe with
+  no NSEG hit). Text-dump parity is preserved by construction — none of the 23
+  fixes touch DOM parsing, layout, style, or text rendering (they are shm
+  runtime, UI input handling, RequestServer cache warn, an include reorder, and
+  a PLAN9 font-bundle gate), so the recorded byte-identical `--headless=text`
+  results stand unchanged.
 
 ## M4 runtime blockers (headless screenshot) — diagnosed, fix pending
 
@@ -179,21 +193,24 @@ screenshot after N seconds" on cirno. Four bugs were fixed to get the PNG:
    the common case), then O_RDONLY, then O_WRONLY. RDWR-first never downgrades a
    real socket. (The srvfd_gate passed because it posts a bidirectional pipe.)
 
-## M5.3 on-screen gl9win2 window — status (2026-07-16)
+## M5.3 on-screen gl9win2 window — VALIDATED (2026-07-16, commit 4786322)
 
-Interactive RENDERING is proven (M5.2): the Plan9WebView streams the correctly
--rendered page as GL9B frames, captured off fd 1 and decoded pixel-identical to
-the M4/M6 renders — validated by running `ladybird` with manual fd redirects
-(`{sleep N; cat quitrec} | ladybird ... >frames.bin`).
+The pac9-installed browser runs interactively in a real rio window and responds
+to input — the full presenter chain live end to end (Ladybird → GL9B frames →
+gl9win2 → libdraw window; input records gl9win2 → fd0 → Plan9WebView →
+WebContent → repaint). Proven on the dev VM with in-guest captures:
+- `screenshots/m5-window-initial.png`: the browser window showing the scroll-test
+  page (LINE 001–029, scrollbar at top).
+- `screenshots/m5-window-scrolled.png`: after injected wheel/PageDown input, the
+  page shows LINE 035–070 with the scrollbar thumb moved. The browser also
+  resized to the window interior at startup (the resize record drove it).
 
-NOT yet validated: the full gl9win2-spawns-browser integration displayed on a
-real rio window. On the dev VM, `mount /srv/rio.glenda.N /n/w 'new -r ...';
-bind -b /n/w /dev; gl9win2 ladybird <url>` opens the window (visible via HMP
-screendump, focused) and gl9win2 runs with no error, but no browser frame blits
-to it within ~3 min (the window keeps rio's default terminal content). The
-gl9win2→browser pipe path (fd0 events / fd1 frames set up by gl9win2, vs the
-manual redirects used for the frame-capture proof) is the untested seam; the VM
-is also ~5x slower than cirno. Next: trace whether the browser streams a frame
-to gl9win2's fd 1 under the presenter (add a byte counter in gl9win2's
-framereader), and whether gl9win2 blits (kbddebug). Likely a small fd/pipe or
-first-frame-timing issue, not a rendering defect.
+Two things had masked it earlier (both fixed): the launcher needs
+`--temporary-profile` (a prior run's profile lock silently wedged startup), and
+QMP screendumps capture the window BEHIND the listener terminals — the dosbox9
+shot.rc pattern (re-enter the window namespace by winid, raise via wctl, read
+/dev/screen — or /dev/window for the overdraw-immune backing image) is the
+correct capture method. host/vm/{lb9win.rc,lb9shot.rc} ship that dev loop.
+
+Frame-capture proof (M5.2) still holds as the pixel-parity check: the GL9B stream
+off fd 1 decodes pixel-identical to the M4/M6 renders.

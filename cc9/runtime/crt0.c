@@ -83,12 +83,18 @@ void *cc9_note_sp = cc9_note_stack + (1u<<20) - 256;
 int cc9_note_handler(unsigned long framesp)
 {
 #ifdef CC9_FAULT_FILE
-	/* Dump the raw note frame (contains the Ureg incl. PC) to a FILE FIRST, before
-	 * touching `msg` — the note-string offset varies by fault type and dereferencing
-	 * a bad one double-faults the handler before it can report. Raw f[i] reads stay
-	 * inside the kernel-built note frame, so they can't fault. */
-	if (!cc9_in_note) {
-		extern long n9_create(const char *, int, int);
+	/* alarm/interrupt/hangup are handled+resumed (NCONT) below and fire constantly
+	 * (the profiler's timer especially) — dumping on them would n9_create-truncate
+	 * a REAL fault's /tmp/cc9fault out from under a debugging session. Only the
+	 * fatal path should own the file. framesp+24 is the kernel-built note frame
+	 * (the mainline reads msg[0..4] there too), so this peek can't fault. */
+	{
+		const char *nmsg = (const char *)(framesp + 24);
+		int benign = (nmsg[0]=='a' && nmsg[1]=='l' && nmsg[2]=='a' && nmsg[3]=='r' && nmsg[4]=='m')
+		          || (nmsg[0]=='i' && nmsg[1]=='n' && nmsg[2]=='t' && nmsg[3]=='e' && nmsg[4]=='r')
+		          || (nmsg[0]=='h' && nmsg[1]=='a' && nmsg[2]=='n' && nmsg[3]=='g');
+	if (!cc9_in_note && !benign) {
+		extern long n9_create(const char *, int, unsigned int);
 		int ffd = n9_create("/tmp/cc9fault", 1 /*OWRITE*/, 0666);
 		if (ffd >= 0) {
 			unsigned long *f = (unsigned long *)framesp;
@@ -104,6 +110,7 @@ int cc9_note_handler(unsigned long framesp)
 				b[k++]='\n'; n9_pwrite(ffd, b, k, -1);
 			}
 		}
+	}
 	}
 #endif
 	const char *msg = (const char *)(framesp + 24);
@@ -141,7 +148,7 @@ int cc9_note_handler(unsigned long framesp)
 #ifdef CC9_FAULT_FILE
 	/* Write the note + a 46-slot frame dump to a FILE — survives the listener
 	 * connection dying on a bare-metal fault (where fd 2 is the dead socket). */
-	{ extern long n9_create(const char *, int, int);
+	{ extern long n9_create(const char *, int, unsigned int);
 	  int ffd = n9_create("/tmp/cc9fault", 1 /*OWRITE*/, 0666);
 	  if (ffd >= 0) {
 		if (n > 4) { n9_pwrite(ffd, "note: ", 6, -1); n9_pwrite(ffd, msg, n, -1); n9_pwrite(ffd, "\n", 1, -1); }

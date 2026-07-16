@@ -1,10 +1,14 @@
 #!/bin/rc
 # ladybird9 pac9 install test — point the registry at a locally-served tarball,
-# install, and prove the browser + presenter + launcher landed. Serve the
-# tarball from the Mac first, e.g.:  cd ladybird9/release && python3 -m http.server 8901
+# install, prove the browser + presenter + launcher landed, verify a headless
+# render, then RESTORE the box's original registry. Serve the tarball from the
+# Mac first, e.g.:  cd ladybird9/release && python3 -m http.server 8901
 # then run this on the 9front box (adjust the host IP to the Mac).
 MAC=192.168.88.10
 if(test -d /usr/glenda/ladybird9) mv /usr/glenda/ladybird9 /usr/glenda/ladybird9.premanaged
+# Back up the real registry — the test line below points at a transient Mac HTTP
+# server, so we must put the original back or every later pac9 op breaks.
+cp /sys/lib/pac9/registry /tmp/reg.orig
 grep -v '^ladybird9' /sys/lib/pac9/registry > /tmp/reg.new
 echo 'ladybird9	-	.	tarball http://'^$MAC^':8901/ladybird9-amd64.tar.gz' >> /tmp/reg.new
 cp /tmp/reg.new /sys/lib/pac9/registry
@@ -14,5 +18,16 @@ echo '--- installed layout ---'
 ls /usr/glenda/ladybird9/bin/ladybird /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/libexec /rc/bin/ladybird
 grep ladybird9 /sys/lib/pac9/installed
 echo '--- headless smoke (renders a PNG, no window) ---'
-ICU_DATA=/usr/glenda/ladybird9/share/icu /usr/glenda/ladybird9/bin/ladybird --headless --temporary-profile --disable-sql-database --screenshot-path /tmp/lb9-pkg-shot.png http://example.com >/tmp/lb9-pkg.out >[2=1] &
+rm -f /tmp/lb9-pkg-shot.png /tmp/lb9-pkg.out
+ICU_DATA=/usr/glenda/ladybird9/share/icu /usr/glenda/ladybird9/bin/ladybird --headless --temporary-profile --disable-sql-database --screenshot-path /tmp/lb9-pkg-shot.png http://example.com >/tmp/lb9-pkg.out >[2=1]
+# Verify the render actually produced a non-empty PNG.
+if(test -s /tmp/lb9-pkg-shot.png)
+	echo SMOKE-OK $(ls -l /tmp/lb9-pkg-shot.png)
+if not {
+	echo SMOKE-FAIL 'no /tmp/lb9-pkg-shot.png — see /tmp/lb9-pkg.out'
+	cat /tmp/lb9-pkg.out
+}
+# Restore the box's original registry so the test leaves no trace.
+cp /tmp/reg.orig /sys/lib/pac9/registry
+echo REGISTRY-RESTORED
 echo DONE-INSTALL

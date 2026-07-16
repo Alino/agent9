@@ -88,7 +88,7 @@ echo "== staged =="
 if [ -n "$URL" ]; then
     echo "== headless screenshot of $URL =="
     rc "rm -f $PREFIX/shot.png $PREFIX/hl.out
-        { ICU_DATA=$PREFIX/share/icu $PREFIX/bin/ladybird --headless --screenshot-path=$PREFIX/shot.png $URL > $PREFIX/hl.out >[2=1] & }
+        { ICU_DATA=$PREFIX/share/icu $PREFIX/bin/ladybird --headless --temporary-profile --disable-sql-database --screenshot-path=$PREFIX/shot.png $URL > $PREFIX/hl.out >[2=1] & }
         echo LAUNCHED"
     echo "  (poll $PREFIX/hl.out and $PREFIX/shot.png; pull with ship-back)"
 fi

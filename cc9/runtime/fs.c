@@ -109,7 +109,8 @@ extern int cc9_poll_owned(int);
 extern long cc9_poll_read(int, void *, long);
 extern void cc9_poll_onclose(int);
 extern void cc9_net_onclose(int);
-int close(int fd){ cc9_poll_onclose(fd); cc9_net_onclose(fd); return n9_close(fd) < 0 ? -1 : 0; }
+extern void cc9_shm_forget_fd(int);
+int close(int fd){ cc9_poll_onclose(fd); cc9_net_onclose(fd); cc9_shm_forget_fd(fd); return n9_close(fd) < 0 ? -1 : 0; }
 /* EIO is the FALLBACK, not the answer. These carry socket traffic (net9.c reads
  * and writes /net data fds through them), where the difference between a peer
  * hangup (ECONNRESET) and a generic I/O error decides whether the caller retries,

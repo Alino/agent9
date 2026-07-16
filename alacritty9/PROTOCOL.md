@@ -72,7 +72,7 @@ Records are distinguished by 4-byte magic:
   scroll-down is never emitted (falls back to full/damage frames).
 - `"GL9T"` + u32be len + len bytes UTF-8: set window title (rio /dev/label).
   Unknown magic is fatal (stream is framed, nothing to resync to). Only
-  these four magics exist.
+  these five magics exist.
 
 Frames may be any size; gl9win2 centers smaller frames and clips larger ones
 (the app is expected to track `resize` events and re-render at window size).
