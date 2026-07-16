@@ -120,6 +120,22 @@ fn main() {
         env::remove_var("PG_PARENT_CLR");
     }
 
+    // F8 — is_terminal now routes through cc9 isatty (was hardwired false, so colors
+    // /progress bars never engaged). A regular file is never a terminal; a std stream
+    // on fd 0-2 with $TERM set is (cc9's isatty proxy — Plan 9 has no tcgetattr here).
+    {
+        use std::io::IsTerminal;
+        let f = File::create("/tmp/pg_isterm").unwrap();
+        println!("  F8 File.is_terminal()={}", f.is_terminal());
+        check!("F8 a file is not a terminal", !f.is_terminal());
+        env::set_var("TERM", "xterm");
+        let term_on = std::io::stdout().is_terminal();
+        env::remove_var("TERM");
+        let term_off = std::io::stdout().is_terminal();
+        println!("  F8 stdout.is_terminal(): TERM-set={term_on} TERM-unset={term_off}");
+        check!("F8 is_terminal tracks $TERM on a std stream", term_on && !term_off);
+    }
+
     println!("----\n{pass} passed, {fail} failed");
     std::process::exit(if fail == 0 { 0 } else { 1 });
 }

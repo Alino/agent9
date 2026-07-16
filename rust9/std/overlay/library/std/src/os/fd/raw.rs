@@ -177,8 +177,10 @@ impl FromRawFd for RawFd {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-// plan9: deferred until sys::fs::plan9::File is FileDesc-based.
-#[cfg(not(any(target_os = "trusty", target_os = "plan9")))]
+// plan9: AsRawFd works — sys::fs::plan9::File exposes its plain fd (see the AsRawFd
+// impl in sys/fs/plan9.rs). From/IntoRawFd below stay deferred: they need OwnedFd
+// construction, which the plan9 File isn't FileDesc-based enough for yet.
+#[cfg(not(target_os = "trusty"))]
 impl AsRawFd for fs::File {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {

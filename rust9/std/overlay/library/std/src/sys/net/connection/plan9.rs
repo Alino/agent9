@@ -44,6 +44,7 @@ use crate::fmt;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
 use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, SocketAddrV4, ToSocketAddrs};
 use crate::sync::Mutex;
+use crate::sync::atomic::{AtomicU64, Ordering};
 use crate::sys::unsupported;
 use crate::time::Duration;
 
@@ -60,6 +61,49 @@ unsafe extern "C" {
     fn read(fd: i32, buf: *mut u8, n: usize) -> isize;
     fn write(fd: i32, buf: *const u8, n: usize) -> isize;
     fn pread(fd: i32, buf: *mut u8, n: usize, off: i64) -> isize;
+    /// Plan 9 alarm(2): arm a note `ms` from now (0 cancels), returns the previous
+    /// alarm's remaining ms. Per-PROC — and cc9 threads are separate procs, so this
+    /// is effectively per-thread: one connection's timeout never disturbs another's.
+    fn n9_alarm(ms: u64) -> i64;
+}
+
+/// Run a blocking /net op under a timeout (`timeout_ns`; 0 = no timeout). Plan 9
+/// has no per-fd read/write deadline, so we arm alarm(2): it posts a note that
+/// interrupts the blocking syscall, which cc9 surfaces as EINTR (fs.c). We tell OUR
+/// fired alarm from an unrelated interrupt via alarm(0)'s return: if the alarm had
+/// already fired its remaining is 0 (=> TimedOut); if something else interrupted us
+/// the alarm is still pending with remaining > 0 (=> propagate EINTR, retryable).
+/// Caveat: shares the per-thread alarm with cc9's CC9_PROF profiler — don't expect
+/// net timeouts and profiling to coexist within one thread.
+fn with_timeout<T>(timeout_ns: u64, op: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    if timeout_ns == 0 {
+        return op();
+    }
+    // round up to >= 1ms (Plan 9 alarm is ms-grained); saturating_add so a clamped
+    // u64::MAX-ns "effectively none" timeout can't overflow the round-up.
+    let ms = (timeout_ns.saturating_add(999_999) / 1_000_000).max(1);
+    unsafe { n9_alarm(ms) };
+    let r = op();
+    let remaining = unsafe { n9_alarm(0) }; // cancel + read remaining
+    match r {
+        Err(ref e) if e.kind() == io::ErrorKind::Interrupted && remaining == 0 => {
+            Err(io::const_error!(io::ErrorKind::TimedOut, "operation timed out"))
+        }
+        other => other,
+    }
+}
+
+/// Encode `Option<Duration>` timeout as ns (0 = None). std rejects a zero Duration
+/// before it reaches us, so any `Some` is >= 1ns and never collides with the None
+/// sentinel. Huge durations clamp to u64::MAX ns (~584 years — effectively none).
+fn dur_to_ns(t: Option<Duration>) -> u64 {
+    match t {
+        Some(d) => d.as_nanos().min(u64::MAX as u128) as u64,
+        None => 0,
+    }
+}
+fn ns_to_dur(ns: u64) -> Option<Duration> {
+    if ns == 0 { None } else { Some(Duration::from_nanos(ns)) }
 }
 
 const O_RDONLY: i32 = 0;
@@ -246,6 +290,11 @@ pub struct TcpStream {
     data: Fd,
     conn: u32,
     ttl: Ttl,
+    /// Read/write timeouts in ns (0 = none). Stored here because /net has no
+    /// per-fd deadline knob; `read`/`write` arm alarm(2) around the blocking op
+    /// (see `with_timeout`). AtomicU64 so `set_*_timeout(&self)` stays Sync.
+    read_timeout: AtomicU64,
+    write_timeout: AtomicU64,
 }
 
 /// Ask an fd which /net connection it belongs to. This is the whole reason a
@@ -297,7 +346,13 @@ impl TcpStream {
     /// actually need, and it is in the path either way.
     pub unsafe fn from_raw_fd_plan9(fd: i32) -> io::Result<TcpStream> {
         let conn = conn_of_fd(fd)?;
-        Ok(TcpStream { data: Fd(fd), conn, ttl: Ttl::new() })
+        Ok(TcpStream {
+            data: Fd(fd),
+            conn,
+            ttl: Ttl::new(),
+            read_timeout: AtomicU64::new(0),
+            write_timeout: AtomicU64::new(0),
+        })
     }
 
     /// The single underlying fd. Named `socket()` because that is what
@@ -331,25 +386,36 @@ impl TcpStream {
         let data = open_path(&format!("/net/tcp/{conn}/data"), O_RDWR)?;
         // Drop ctl: the connection is up and `data` keeps the conn dir alive.
         drop(ctl);
-        Ok(TcpStream { data, conn, ttl: Ttl::new() })
+        Ok(TcpStream {
+            data,
+            conn,
+            ttl: Ttl::new(),
+            read_timeout: AtomicU64::new(0),
+            write_timeout: AtomicU64::new(0),
+        })
     }
 
-    pub fn connect_timeout(addr: &SocketAddr, _: Duration) -> io::Result<TcpStream> {
-        // /net has no per-dial timeout knob we honor yet; do a plain connect.
-        TcpStream::connect_addr(addr)
+    pub fn connect_timeout(addr: &SocketAddr, dur: Duration) -> io::Result<TcpStream> {
+        // Arm alarm(2) around the blocking `connect ...` ctl write in connect_addr;
+        // if it fires, the write returns EINTR -> TimedOut and the half-open conn's
+        // fds drop (closed), aborting the dial. Without this a dead host blocked for
+        // minutes (the whole TCP handshake), ignoring the caller's deadline.
+        with_timeout(dur_to_ns(Some(dur)), || TcpStream::connect_addr(addr))
     }
 
-    pub fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        unsupported()
+    pub fn set_read_timeout(&self, t: Option<Duration>) -> io::Result<()> {
+        self.read_timeout.store(dur_to_ns(t), Ordering::Relaxed);
+        Ok(())
     }
-    pub fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        unsupported()
+    pub fn set_write_timeout(&self, t: Option<Duration>) -> io::Result<()> {
+        self.write_timeout.store(dur_to_ns(t), Ordering::Relaxed);
+        Ok(())
     }
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
-        Ok(None)
+        Ok(ns_to_dur(self.read_timeout.load(Ordering::Relaxed)))
     }
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
-        Ok(None)
+        Ok(ns_to_dur(self.write_timeout.load(Ordering::Relaxed)))
     }
 
     pub fn peek(&self, _: &mut [u8]) -> io::Result<usize> {
@@ -357,23 +423,25 @@ impl TcpStream {
     }
 
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
-        self.data.raw_read(buf)
+        with_timeout(self.read_timeout.load(Ordering::Relaxed), || self.data.raw_read(buf))
     }
 
     pub fn read_buf(&self, mut cursor: BorrowedCursor<'_, u8>) -> io::Result<()> {
         // Read into a stack buffer, then append into the cursor (safe; no uninit).
         let mut tmp = [0u8; 8192];
         let cap = cursor.capacity().min(tmp.len());
-        let n = self.data.raw_read(&mut tmp[..cap])?;
+        let t = self.read_timeout.load(Ordering::Relaxed);
+        let n = with_timeout(t, || self.data.raw_read(&mut tmp[..cap]))?;
         cursor.append(&tmp[..n]);
         Ok(())
     }
 
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         // No readv on /net; fill the first non-empty buffer.
+        let t = self.read_timeout.load(Ordering::Relaxed);
         for b in bufs {
             if !b.is_empty() {
-                return self.data.raw_read(b);
+                return with_timeout(t, || self.data.raw_read(b));
             }
         }
         Ok(0)
@@ -383,13 +451,14 @@ impl TcpStream {
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        self.data.raw_write(buf)
+        with_timeout(self.write_timeout.load(Ordering::Relaxed), || self.data.raw_write(buf))
     }
 
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        let t = self.write_timeout.load(Ordering::Relaxed);
         for b in bufs {
             if !b.is_empty() {
-                return self.data.raw_write(b);
+                return with_timeout(t, || self.data.raw_write(b));
             }
         }
         Ok(0)
@@ -563,7 +632,16 @@ impl TcpListener {
         // alive, and TcpStream::ctl() reopens it on demand. Verified on 9front
         // for a dialed connection; the accepted case has the same structure.
         drop(lctl);
-        Ok((TcpStream { data, conn: m, ttl: Ttl::new() }, peer))
+        Ok((
+            TcpStream {
+                data,
+                conn: m,
+                ttl: Ttl::new(),
+                read_timeout: AtomicU64::new(0),
+                write_timeout: AtomicU64::new(0),
+            },
+            peer,
+        ))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
@@ -633,6 +711,8 @@ pub struct UdpSocket {
     conn: u32,
     peer: Mutex<Option<SocketAddr>>, // set by connect(); filters recv(), targets send()
     ttl: Ttl,
+    read_timeout: AtomicU64,  // ns; 0 = none (alarm(2) around the blocking recv)
+    write_timeout: AtomicU64,
 }
 
 impl UdpSocket {
@@ -650,6 +730,8 @@ impl UdpSocket {
             conn,
             peer: Mutex::new(None),
             ttl: Ttl::new(),
+            read_timeout: AtomicU64::new(0),
+            write_timeout: AtomicU64::new(0),
         })
     }
 
@@ -674,7 +756,15 @@ impl UdpSocket {
         // Per-datagram Udphdr framing on the data file (needed for from-addrs).
         ctl.write_all(b"headers")?;
         let data = open_path(&format!("/net/udp/{conn}/data"), O_RDWR)?;
-        Ok(UdpSocket { ctl, data, conn, peer: Mutex::new(None), ttl: Ttl::new() })
+        Ok(UdpSocket {
+            ctl,
+            data,
+            conn,
+            peer: Mutex::new(None),
+            ttl: Ttl::new(),
+            read_timeout: AtomicU64::new(0),
+            write_timeout: AtomicU64::new(0),
+        })
     }
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.peer
@@ -688,7 +778,8 @@ impl UdpSocket {
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         // One datagram per read; anything beyond the buffer is dropped (BSD-style).
         let mut tmp = vec![0u8; UDPHDR_LEN + buf.len().min(UDP_MAX)];
-        let n = self.data.raw_read(&mut tmp)?;
+        let t = self.read_timeout.load(Ordering::Relaxed);
+        let n = with_timeout(t, || self.data.raw_read(&mut tmp))?;
         if n < UDPHDR_LEN {
             return Err(io::const_error!(io::ErrorKind::InvalidData, "short udp header"));
         }
@@ -710,23 +801,26 @@ impl UdpSocket {
         pkt.extend_from_slice(&dst.port().to_be_bytes());
         pkt.extend_from_slice(&[0u8; 2]); // lport
         pkt.extend_from_slice(buf);
-        let n = self.data.raw_write(&pkt)?;
+        let t = self.write_timeout.load(Ordering::Relaxed);
+        let n = with_timeout(t, || self.data.raw_write(&pkt))?;
         Ok(n.saturating_sub(UDPHDR_LEN))
     }
     pub fn duplicate(&self) -> io::Result<UdpSocket> {
         unsupported()
     }
-    pub fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        unsupported()
+    pub fn set_read_timeout(&self, t: Option<Duration>) -> io::Result<()> {
+        self.read_timeout.store(dur_to_ns(t), Ordering::Relaxed);
+        Ok(())
     }
-    pub fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-        unsupported()
+    pub fn set_write_timeout(&self, t: Option<Duration>) -> io::Result<()> {
+        self.write_timeout.store(dur_to_ns(t), Ordering::Relaxed);
+        Ok(())
     }
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
-        unsupported()
+        Ok(ns_to_dur(self.read_timeout.load(Ordering::Relaxed)))
     }
     pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
-        unsupported()
+        Ok(ns_to_dur(self.write_timeout.load(Ordering::Relaxed)))
     }
     pub fn set_broadcast(&self, _: bool) -> io::Result<()> {
         unsupported()

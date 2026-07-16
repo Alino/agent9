@@ -124,6 +124,16 @@ pub struct File {
     fd: i32,
 }
 
+// A plan9 File is one plain fd. Exposing it as AsRawFd is what lets os/fd/raw.rs's
+// `impl AsRawFd for fs::File` resolve here (un-gated for plan9 in that overlay), so
+// `File`/`Stdin`/… all satisfy the `is_terminal(&impl AsRawFd)` bound and isatty works.
+impl crate::os::fd::AsRawFd for File {
+    #[inline]
+    fn as_raw_fd(&self) -> crate::os::fd::RawFd {
+        self.fd
+    }
+}
+
 #[derive(Clone)]
 pub struct FileAttr {
     stat: CStat,
