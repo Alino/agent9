@@ -214,7 +214,7 @@ index 0000000000..4ee4df421e
 +}
 diff --git a/UI/Plan9/CMakeLists.txt b/UI/Plan9/CMakeLists.txt
 new file mode 100644
-index 0000000000..fb5ff1b038
+index 0000000000..acac3bb39d
 --- /dev/null
 +++ b/UI/Plan9/CMakeLists.txt
 @@ -0,0 +1,13 @@
@@ -225,18 +225,230 @@ index 0000000000..fb5ff1b038
 +# input records, fd 1 carries GL9B (BGRA) frames.
 +#
 +
-+add_executable(ladybird main.cpp Application.cpp Plan9WebView.cpp)
++add_executable(ladybird main.cpp Application.cpp Plan9WebView.cpp Plan9BrowserWindow.cpp)
 +target_link_libraries(ladybird PRIVATE LibWebView LibWeb LibGfx LibCore LibMain)
 +
 +# Copies runtime resources (themes, fonts, about pages) to share/Lagom and
 +# defines ladybird_build_resource_files, like the other frameworks do.
 +create_ladybird_bundle(ladybird)
+diff --git a/UI/Plan9/Plan9BrowserWindow.cpp b/UI/Plan9/Plan9BrowserWindow.cpp
+new file mode 100644
+index 0000000000..9c94545327
+--- /dev/null
++++ b/UI/Plan9/Plan9BrowserWindow.cpp
+@@ -0,0 +1,145 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <UI/Plan9/Plan9BrowserWindow.h>
++
++#include <unistd.h>
++
++namespace Ladybird {
++
++static void write_all(int fd, void const* buf, size_t n)
++{
++    auto const* p = static_cast<u8 const*>(buf);
++    while (n > 0) {
++        auto w = ::write(fd, p, n);
++        if (w <= 0)
++            return;
++        p += w;
++        n -= static_cast<size_t>(w);
++    }
++}
++
++Plan9BrowserWindow::Plan9BrowserWindow(Core::AnonymousBuffer theme, Web::DevicePixelSize window_size, int frame_fd)
++    : m_theme(move(theme))
++    , m_window_size(window_size)
++    , m_frame_fd(frame_fd)
++{
++}
++
++void Plan9BrowserWindow::wire_view(Plan9WebView& view)
++{
++    view.on_chrome_state_changed = [this]() { emit_tab_list(); };
++    view.on_quit = [this]() {
++        if (on_quit)
++            on_quit();
++    };
++}
++
++void Plan9BrowserWindow::open_initial_tab(StringView url)
++{
++    new_tab(url);
++}
++
++void Plan9BrowserWindow::new_tab(StringView url)
++{
++    if (!m_tabs.is_empty())
++        m_tabs[m_active]->set_active(false);
++
++    auto view = Plan9WebView::create(m_theme, m_window_size, m_frame_fd);
++    wire_view(*view);
++    m_tabs.append(move(view));
++    m_active = m_tabs.size() - 1;
++
++    auto& active = *m_tabs[m_active];
++    active.set_active(true); // no-op if already (new views default active); ensures state
++    active.navigate(url.is_empty() ? "about:blank"sv : url);
++    emit_tab_list();
++}
++
++void Plan9BrowserWindow::switch_tab(size_t index)
++{
++    if (index >= m_tabs.size() || index == m_active)
++        return;
++    m_tabs[m_active]->set_active(false);
++    m_active = index;
++    m_tabs[m_active]->set_active(true); // re-presents the cached frame + chrome state
++    emit_tab_list();
++}
++
++void Plan9BrowserWindow::close_tab(size_t index)
++{
++    if (index >= m_tabs.size())
++        return;
++
++    // Last tab closed → quit the browser.
++    if (m_tabs.size() == 1) {
++        if (on_quit)
++            on_quit();
++        return;
++    }
++
++    bool closing_active = index == m_active;
++    m_tabs.remove(index);
++    if (m_active >= m_tabs.size())
++        m_active = m_tabs.size() - 1;
++    else if (index < m_active)
++        m_active -= 1;
++
++    if (closing_active) {
++        // The new active tab must take over the surface.
++        m_tabs[m_active]->set_active(true);
++    }
++    emit_tab_list();
++}
++
++void Plan9BrowserWindow::handle_command(u8 subcommand, u32 tab_index, StringView text)
++{
++    switch (subcommand) {
++    case 1: active_view().go_back(); break;
++    case 2: active_view().go_forward(); break;
++    case 3: active_view().reload_page(); break;
++    case 4: active_view().stop(); break;
++    case 5: new_tab({}); break;
++    case 6: switch_tab(tab_index); break;
++    case 7: close_tab(tab_index); break;
++    case 8: active_view().navigate(text); break;
++    default: break;
++    }
++}
++
++void Plan9BrowserWindow::feed_event(u8 type, u8 state, u16 modifiers, u32 a, u32 b)
++{
++    active_view().feed_event(type, state, modifiers, a, b);
++}
++
++void Plan9BrowserWindow::emit_tab_list()
++{
++    // GL9K: magic + u32be count + u32be active + per tab (u32be len + UTF-8 title).
++    auto put_be32 = [](Vector<u8>& v, u32 x) {
++        v.append(static_cast<u8>(x >> 24));
++        v.append(static_cast<u8>(x >> 16));
++        v.append(static_cast<u8>(x >> 8));
++        v.append(static_cast<u8>(x));
++    };
++    Vector<u8> buf;
++    buf.append('G');
++    buf.append('L');
++    buf.append('9');
++    buf.append('K');
++    put_be32(buf, static_cast<u32>(m_tabs.size()));
++    put_be32(buf, static_cast<u32>(m_active));
++    for (auto& tab : m_tabs) {
++        auto title = tab->current_title();
++        if (title.is_empty())
++            title = "New Tab";
++        put_be32(buf, static_cast<u32>(title.length()));
++        for (auto c : title.bytes())
++            buf.append(c);
++    }
++    write_all(m_frame_fd, buf.data(), buf.size());
++}
++
++}
+diff --git a/UI/Plan9/Plan9BrowserWindow.h b/UI/Plan9/Plan9BrowserWindow.h
+new file mode 100644
+index 0000000000..67d360f7ae
+--- /dev/null
++++ b/UI/Plan9/Plan9BrowserWindow.h
+@@ -0,0 +1,55 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Vector.h>
++#include <LibGfx/Size.h>
++#include <UI/Plan9/Plan9WebView.h>
++
++namespace Ladybird {
++
++// The Plan 9 analog of UI/Qt's BrowserWindow: owns the browser's tabs (one
++// Plan9WebView each), tracks the active one, and is the single writer to the
++// gl9win2 presenter's frame pipe. Only the active tab streams frames + its
++// URL/nav state; the tab strip (GL9K) is re-emitted whenever the set of tabs or
++// a title changes. Chrome commands from the presenter (address bar, nav buttons,
++// tab strip) are routed here.
++class Plan9BrowserWindow {
++    AK_MAKE_NONCOPYABLE(Plan9BrowserWindow);
++    AK_MAKE_NONMOVABLE(Plan9BrowserWindow);
++
++public:
++    Plan9BrowserWindow(Core::AnonymousBuffer theme, Web::DevicePixelSize window_size, int frame_fd);
++
++    Plan9WebView& active_view() { return *m_tabs[m_active]; }
++
++    // Presenter command dispatch (type-8 records). `text` only for navigate.
++    void handle_command(u8 subcommand, u32 tab_index, StringView text);
++
++    // Non-chrome input (mouse/key/scroll/resize/focus/quit) → active tab.
++    void feed_event(u8 type, u8 state, u16 modifiers, u32 a, u32 b);
++
++    // Open the first tab (loads `url`, or a blank page if empty).
++    void open_initial_tab(StringView url);
++
++    Function<void()> on_quit;
++
++private:
++    void new_tab(StringView url);
++    void switch_tab(size_t index);
++    void close_tab(size_t index);
++    void wire_view(Plan9WebView&);
++    void emit_tab_list();
++
++    Core::AnonymousBuffer m_theme;
++    Web::DevicePixelSize m_window_size;
++    int m_frame_fd { 1 };
++    Vector<NonnullOwnPtr<Plan9WebView>> m_tabs;
++    size_t m_active { 0 };
++};
++
++}
 diff --git a/UI/Plan9/Plan9WebView.cpp b/UI/Plan9/Plan9WebView.cpp
 new file mode 100644
-index 0000000000..9ae7e559d5
+index 0000000000..a2d0b8b7b2
 --- /dev/null
 +++ b/UI/Plan9/Plan9WebView.cpp
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,290 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -245,9 +457,12 @@ index 0000000000..9ae7e559d5
 +
 +#include <UI/Plan9/Plan9WebView.h>
 +
++#include <AK/Utf16String.h>
 +#include <LibGfx/Bitmap.h>
 +#include <LibGfx/SharedImageBuffer.h>
 +#include <LibWeb/HTML/VisibilityState.h>
++#include <LibWebView/Menu.h>
++#include <LibWebView/URL.h>
 +
 +#include <unistd.h>
 +
@@ -266,6 +481,22 @@ index 0000000000..9ae7e559d5
 +    // take_screenshot, but the interactive path relies on natural paints).
 +    view->set_system_visibility_state(Web::HTML::VisibilityState::Visible);
 +    view->handle_resize();
++
++    // Push chrome state (URL + reload/stop + back/forward) to the presenter as it
++    // changes; title changes ask the coordinator to re-emit the tab list (GL9K).
++    auto* raw = view.ptr();
++    raw->on_url_change = [raw](auto const&) { raw->emit_chrome_state(); };
++    raw->on_load_start = [raw]() { raw->emit_chrome_state(); };
++    raw->on_load_finish = [raw](auto const&) {
++        raw->emit_chrome_state();
++        if (raw->on_chrome_state_changed)
++            raw->on_chrome_state_changed();
++    };
++    raw->on_loading_state_change = [raw](bool) { raw->emit_chrome_state(); };
++    raw->on_title_change = [raw](auto const&) {
++        if (raw->on_chrome_state_changed)
++            raw->on_chrome_state_changed();
++    };
 +    return view;
 +}
 +
@@ -289,8 +520,22 @@ index 0000000000..9ae7e559d5
 +    }
 +}
 +
++// Emit a length-prefixed record: 4-byte magic + u32be len + UTF-8 bytes.
++static void write_lp_record(int fd, char const (&magic)[5], StringView text)
++{
++    u32 len = static_cast<u32>(text.length());
++    u8 hdr[8] = {
++        static_cast<u8>(magic[0]), static_cast<u8>(magic[1]), static_cast<u8>(magic[2]), static_cast<u8>(magic[3]),
++        static_cast<u8>(len >> 24), static_cast<u8>(len >> 16), static_cast<u8>(len >> 8), static_cast<u8>(len)
++    };
++    write_all(fd, hdr, sizeof hdr);
++    write_all(fd, text.characters_without_null_termination(), len);
++}
++
 +void Plan9WebView::present()
 +{
++    if (!m_active)
++        return;
 +    if (!m_client_state.has_usable_bitmap || !m_client_state.front_bitmap.shared_image_buffer)
 +        return;
 +
@@ -445,13 +690,61 @@ index 0000000000..9ae7e559d5
 +    }
 +}
 +
++// ---- Chrome commands (driven by the presenter's address bar / nav buttons) ----
++
++void Plan9WebView::navigate(StringView text)
++{
++    if (auto url = WebView::sanitize_url(text); url.has_value())
++        load(url.release_value());
++    else
++        load_navigation_error_page(text);
++}
++
++void Plan9WebView::go_back() { (void)traverse_the_history_by_delta(-1); }
++void Plan9WebView::go_forward() { (void)traverse_the_history_by_delta(1); }
++void Plan9WebView::reload_page() { reload(); }
++void Plan9WebView::stop() { stop_loading(); }
++
++ByteString Plan9WebView::current_url() const { return url().serialize().to_byte_string(); }
++ByteString Plan9WebView::current_title() const { return title().to_byte_string(); }
++
++void Plan9WebView::set_active(bool active)
++{
++    if (m_active == active)
++        return;
++    m_active = active;
++    if (m_active) {
++        // Newly-active tab: push its current frame + chrome state to the presenter.
++        present();
++        emit_chrome_state();
++    }
++}
++
++void Plan9WebView::emit_chrome_state()
++{
++    if (!m_active)
++        return;
++    // GL9U: the current URL for the address bar.
++    auto url_bytes = current_url();
++    write_lp_record(m_frame_fd, "GL9U", url_bytes.view());
++    // GL9L: loading + back/forward-enabled, driving the reload/stop swap + buttons.
++    u8 rec[8] = {
++        'G', 'L', '9', 'L',
++        static_cast<u8>(is_loading() ? 1 : 0),
++        static_cast<u8>(navigate_back_action().enabled() ? 1 : 0),
++        static_cast<u8>(navigate_forward_action().enabled() ? 1 : 0),
++        0
++    };
++    write_all(m_frame_fd, rec, sizeof rec);
++}
++
 +}
 diff --git a/UI/Plan9/Plan9WebView.h b/UI/Plan9/Plan9WebView.h
 new file mode 100644
-index 0000000000..782fd6a5d0
+index 0000000000..b8d8a7a4fd
 --- /dev/null
 +++ b/UI/Plan9/Plan9WebView.h
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,70 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -481,7 +774,27 @@ index 0000000000..782fd6a5d0
 +    // Decode + dispatch one presenter event record.
 +    void feed_event(u8 type, u8 state, u16 modifiers, u32 a, u32 b);
 +
++    // Chrome commands from the presenter (address bar / nav buttons).
++    void navigate(StringView text);   // sanitize URL-vs-search, then load
++    void go_back();
++    void go_forward();
++    void reload_page();
++    void stop();
++
++    // Only the active tab streams frames + its URL/nav state to the presenter.
++    void set_active(bool);
++    bool is_active() const { return m_active; }
++
++    // For the coordinator's tab-strip (GL9K) + address bar (UTF-8 bytes).
++    ByteString current_title() const;
++    ByteString current_url() const;
++
++    // The coordinator wires this to re-emit the tab list on title changes.
++    Function<void()> on_chrome_state_changed;
 +    Function<void()> on_quit;
++
++    // Emit the active tab's URL (GL9U) + load/nav state (GL9L) to the presenter.
++    void emit_chrome_state();
 +
 +private:
 +    Plan9WebView(Core::AnonymousBuffer theme, Web::DevicePixelSize size, int frame_fd);
@@ -490,6 +803,7 @@ index 0000000000..782fd6a5d0
 +    void dispatch_key(bool down, u32 rune, u16 modifiers);
 +
 +    int m_frame_fd { 1 };
++    bool m_active { true };
 +    Gfx::IntPoint m_mouse;
 +    Web::UIEvents::MouseButton m_buttons { Web::UIEvents::MouseButton::None };
 +
@@ -503,16 +817,18 @@ index 0000000000..782fd6a5d0
 +}
 diff --git a/UI/Plan9/main.cpp b/UI/Plan9/main.cpp
 new file mode 100644
-index 0000000000..dcde46f516
+index 0000000000..f01607c6b8
 --- /dev/null
 +++ b/UI/Plan9/main.cpp
-@@ -0,0 +1,101 @@
+@@ -0,0 +1,125 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
 + * SPDX-License-Identifier: BSD-2-Clause
 + */
 +
++#include <AK/ByteBuffer.h>
++#include <AK/ByteString.h>
 +#include <AK/LexicalPath.h>
 +#include <LibCore/EventLoop.h>
 +#include <LibCore/Notifier.h>
@@ -521,20 +837,21 @@ index 0000000000..dcde46f516
 +#include <LibWebView/Application.h>
 +#include <LibWebView/Utilities.h>
 +#include <UI/Plan9/Application.h>
-+#include <UI/Plan9/Plan9WebView.h>
++#include <UI/Plan9/Plan9BrowserWindow.h>
 +
 +#include <fcntl.h>
 +#include <unistd.h>
 +
-+// Read exactly one 16-byte presenter event record from fd 0; false on EOF.
-+static bool read_event_record(u8 (&rec)[16])
++// Read exactly n bytes from fd 0 (the presenter event stream); false on EOF.
++static bool read_exact(void* buf, size_t n)
 +{
++    auto* p = static_cast<u8*>(buf);
 +    size_t got = 0;
-+    while (got < sizeof rec) {
-+        auto n = ::read(0, rec + got, sizeof rec - got);
-+        if (n <= 0)
++    while (got < n) {
++        auto r = ::read(0, p + got, n - got);
++        if (r <= 0)
 +            return false;
-+        got += static_cast<size_t>(n);
++        got += static_cast<size_t>(r);
 +    }
 +    return true;
 +}
@@ -583,28 +900,49 @@ index 0000000000..dcde46f516
 +    auto theme = TRY(Gfx::load_system_theme(theme_path.string()));
 +
 +    Web::DevicePixelSize window_size { options.window_width, options.window_height };
-+    auto view = Ladybird::Plan9WebView::create(move(theme), window_size, frame_fd);
++    auto window = make<Ladybird::Plan9BrowserWindow>(move(theme), window_size, frame_fd);
 +
 +    auto& event_loop = Core::EventLoop::current();
-+    view->on_quit = [&event_loop]() { event_loop.quit(0); };
++    window->on_quit = [&event_loop]() { event_loop.quit(0); };
 +
-+    // Presenter events (mouse/key/scroll/resize/quit) arrive on fd 0.
++    // Presenter records arrive on fd 0: 16-byte input events (types 1-7) or
++    // 16-byte chrome commands (type 8; navigate/sub-8 has a trailing UTF-8 URL).
 +    auto input_notifier = Core::Notifier::construct(0, Core::Notifier::Type::Read);
-+    input_notifier->on_activation = [&view]() {
++    input_notifier->on_activation = [&window]() {
 +        u8 rec[16];
-+        if (!read_event_record(rec)) {
-+            if (view->on_quit)
-+                view->on_quit();
++        if (!read_exact(rec, sizeof rec)) {
++            if (window->on_quit)
++                window->on_quit();
 +            return;
 +        }
++        u8 type = rec[0];
++        u8 state = rec[1];
 +        u16 mods = static_cast<u16>((rec[2] << 8) | rec[3]);
 +        u32 a = (static_cast<u32>(rec[4]) << 24) | (static_cast<u32>(rec[5]) << 16) | (static_cast<u32>(rec[6]) << 8) | rec[7];
 +        u32 b = (static_cast<u32>(rec[8]) << 24) | (static_cast<u32>(rec[9]) << 16) | (static_cast<u32>(rec[10]) << 8) | rec[11];
-+        view->feed_event(rec[0], rec[1], mods, a, b);
++
++        if (type == 8) {
++            ByteString text;
++            if (state == 8) { // navigate carries u32be len + UTF-8 URL
++                u8 lenbuf[4];
++                if (!read_exact(lenbuf, sizeof lenbuf))
++                    return;
++                u32 len = (static_cast<u32>(lenbuf[0]) << 24) | (static_cast<u32>(lenbuf[1]) << 16) | (static_cast<u32>(lenbuf[2]) << 8) | lenbuf[3];
++                if (len > 0) {
++                    auto payload_or_error = ByteBuffer::create_uninitialized(len);
++                    if (payload_or_error.is_error() || !read_exact(payload_or_error.value().data(), len))
++                        return;
++                    text = ByteString { payload_or_error.value().bytes() };
++                }
++            }
++            window->handle_command(state, a, text);
++            return;
++        }
++        window->feed_event(type, state, mods, a, b);
 +    };
 +
-+    if (!options.urls.is_empty())
-+        view->load(options.urls.first());
++    auto initial_url = options.urls.is_empty() ? ByteString {} : options.urls.first().serialize().to_byte_string();
++    window->open_initial_tab(initial_url);
 +
 +    return app->execute();
 +}

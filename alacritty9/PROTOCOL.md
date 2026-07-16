@@ -35,6 +35,17 @@ Types:
 | 5 | resize | 0 | width px | height px |
 | 6 | focus | 1=gained, 0=lost | 0 | 0 |
 | 7 | quit (window closed) | 0 | 0 | 0 |
+| 8 | chrome command | subcommand (see below) | tab index (u32be) | 0 |
+
+Chrome commands (type 8) let a presenter that draws browser chrome (address bar,
+tabs, nav buttons — ladybird9's gl9win2) drive the app. `state` is the
+subcommand: 1=back, 2=forward, 3=reload, 4=stop, 5=new-tab, 6=switch-tab
+(a=index), 7=close-tab (a=index), 8=navigate. **navigate (8) is the only
+variable-length record:** the 16-byte record is immediately followed by
+`u32be len` + `len` bytes UTF-8 URL/query text (the app resolves URL-vs-search).
+All other records — including other type-8 subcommands — are exactly 16 bytes.
+A presenter that draws no chrome never emits type 8; the app treats it as
+optional.
 
 Modifiers bitmask (tracked by gl9win2 from /dev/kbd down/up runes):
 bit0 shift, bit1 ctrl, bit2 alt, bit3 super (unused on Plan 9, always 0).
@@ -71,8 +82,16 @@ Records are distinguished by 4-byte magic:
   for upward moves). Emitted by gl9egl_scroll before the frame's GL9D rects;
   scroll-down is never emitted (falls back to full/damage frames).
 - `"GL9T"` + u32be len + len bytes UTF-8: set window title (rio /dev/label).
-  Unknown magic is fatal (stream is framed, nothing to resync to). Only
-  these five magics exist.
+- `"GL9U"` + u32be len + len bytes UTF-8: the active tab's current URL — a
+  chrome presenter shows it in the address bar. (app → win, for chrome only.)
+- `"GL9L"` + u8 loading + u8 can_back + u8 can_forward + u8 pad: the active
+  tab's load/nav state — drives the reload↔stop swap + back/forward enablement.
+- `"GL9K"` + u32be count + u32be active + then per tab `u32be len + len bytes
+  UTF-8 title`: the tab list — drives the tab strip. Sent on tab add/remove/
+  switch/title-change.
+  Unknown magic is fatal (stream is framed, nothing to resync to). Only these
+  eight magics exist. A presenter that draws no chrome ignores GL9U/GL9L/GL9K
+  content but must still frame-skip them; ladybird9's gl9win2 consumes them.
 
 Frames may be any size; gl9win2 centers smaller frames and clips larger ones
 (the app is expected to track `resize` events and re-render at window size).

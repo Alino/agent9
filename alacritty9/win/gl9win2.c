@@ -29,16 +29,75 @@ enum {
 	EVFOCUS = 6,
 	EVQUIT = 7,
 
+	EVCMD = 8,	/* chrome command (ladybird9 tabbed UI) */
+
 	MODSHIFT = 1,
 	MODCTL = 2,
 	MODALT = 4,
 
 	MAXDOWN = 16,
+
+	/* EVCMD subcommands (see alacritty9/PROTOCOL.md) */
+	CMDBACK = 1, CMDFWD = 2, CMDRELOAD = 3, CMDSTOP = 4,
+	CMDNEWTAB = 5, CMDSWITCH = 6, CMDCLOSE = 7, CMDNAV = 8,
+
+	MAXTABS = 32,
+	MAXADDR = 2048,
+	PAD = 5,		/* inner padding for chrome rows */
 };
 
 static int evfd;	/* our end of the event pipe */
 static int framefd;	/* our end of the frame pipe */
 static QLock displock;	/* serializes draw ops vs getwindow */
+
+/* ---- chrome (ladybird9 tabbed UI, drawn in a top strip) ----
+ * Enabled the first time the app sends a GL9U/GL9L/GL9K record (alacritty9 and
+ * dosbox9 never do, so they get chromeh==0 and the whole window is their frame).
+ * State is shared by mouseproc/kbdproc/framereader; displock guards both the
+ * state and the strip drawing (a state change always redraws the strip). */
+static int haschrome;		/* 0 until the first chrome record */
+static int chromeh;		/* strip height in px (0 == no chrome) */
+static int rowh;		/* one chrome row (font->height + 2*PAD) */
+static char curl[MAXADDR];	/* current page URL (from GL9U) */
+static char addr[MAXADDR];	/* address-bar edit buffer */
+static int addrn;		/* length of addr */
+static int addrcur;		/* caret index into addr */
+static int addrfocus;		/* address bar has keyboard focus */
+static int loading, canback, canfwd;	/* from GL9L */
+static char tabtitle[MAXTABS][256];
+static int ntabs, activetab;
+static Image *cbg, *ctab, *cact, *ctext, *cfield;	/* chrome colors */
+
+static void put32(uchar *b, ulong v);
+static void drawchrome(void);
+static void drawchrome_locked(void);
+static void enablechrome(void);
+static void chromemouse(int x, int y);
+static int chromekey(Rune r);
+
+/* Emit a chrome command. For CMDNAV the 16-byte record is followed by a
+ * u32be length + UTF-8 text (the typed URL). */
+static void
+emitcmd(int sub, ulong tabidx, char *text)
+{
+	uchar rec[16], len[4];
+	int n;
+
+	memset(rec, 0, sizeof rec);
+	rec[0] = EVCMD;
+	rec[1] = sub;
+	put32(rec + 4, tabidx);
+	if(write(evfd, rec, 16) != 16)
+		threadexitsall("event pipe");
+	if(sub == CMDNAV){
+		n = text ? strlen(text) : 0;
+		put32(len, n);
+		if(write(evfd, len, 4) != 4)
+			threadexitsall("event pipe");
+		if(n > 0 && write(evfd, text, n) != n)
+			threadexitsall("event pipe");
+	}
+}
 
 static void
 put32(uchar *b, ulong v)
@@ -166,6 +225,11 @@ kbdmsg(char *buf)
 		chartorune(&r, buf + 1);
 		if(r == 0)
 			break;
+		/* When the chrome address bar has focus it consumes typed keys
+		 * (printables, backspace, arrows, Enter, Esc) — the app never sees them.
+		 * chromekey() returns 0 when the bar isn't focused, so the app gets them. */
+		if(chromekey(r))
+			break;
 		/* Suppress only the control BYTES of chords already emitted from
 		 * 'k' — never printable runes, so a missed modifier release can't
 		 * silently eat typing. */
@@ -218,8 +282,11 @@ sendresize(void)
 	}
 	w = Dx(screen->r);
 	h = Dy(screen->r);
+	if(haschrome)
+		drawchrome_locked();	/* new window backing store — repaint the strip */
 	qunlock(&displock);
-	emit(EVRESIZE, 0, 0, w, h);
+	/* report the PAGE height (below the chrome strip) so the app lays out right */
+	emit(EVRESIZE, 0, 0, w, h - chromeh);
 }
 
 static void
@@ -246,6 +313,15 @@ mouseproc(void*)
 		x = atoi(buf + 1 + 0*12) - screen->r.min.x;
 		y = atoi(buf + 1 + 1*12) - screen->r.min.y;
 		b = atoi(buf + 1 + 2*12);
+		/* chrome strip owns its region; the app never sees those events. On a
+		 * button-1 press there, act (tab/button/address bar). */
+		if(haschrome && y < chromeh){
+			if((b & 1) && !(ob & 1))
+				chromemouse(x, y);
+			ob = b;
+			continue;
+		}
+		y -= chromeh;	/* page region: report page-relative y (chromeh==0 if none) */
 		emit(EVMOVE, 0, 0, x, y);
 		if((b & 1) != (ob & 1))
 			emit(EVBTN, (b & 1) != 0, 0, 1, 0);
@@ -262,6 +338,198 @@ mouseproc(void*)
 	emit(EVQUIT, 0, 0, 0, 0);
 	sleep(500);
 	threadexitsall(nil);
+}
+
+/* ---- chrome (tabbed browser UI, ladybird9) ---- */
+
+enum { TABW = 150, BTNW = 30 };
+
+static Image*
+solid(ulong rgba)
+{
+	Image *i = allocimage(display, Rect(0, 0, 1, 1), screen->chan, 1, rgba);
+	return i != nil ? i : display->black;
+}
+
+/* displock held. Enable the chrome strip on the first chrome record + tell the
+ * app its usable height shrank by chromeh (so it re-renders below the strip). */
+static void
+enablechrome(void)
+{
+	if(haschrome)
+		return;
+	rowh = font->height + 2*PAD;
+	chromeh = 2*rowh;
+	cbg = solid(0xECECECFF);
+	ctab = solid(0xD4D4D4FF);
+	cact = solid(0xFFFFFFFF);
+	ctext = display->black;
+	cfield = solid(0xFFFFFFFF);
+	haschrome = 1;
+	emit(EVRESIZE, 0, 0, Dx(screen->r), Dy(screen->r) - chromeh);
+}
+
+/* displock held. Draw the whole strip (tab row + toolbar + address bar). */
+static void
+drawchrome_locked(void)
+{
+	Point o;
+	Rectangle r;
+	int i, x0, winw, cx;
+	char *lbl, *s;
+
+	if(!haschrome || screen == nil)
+		return;
+	o = screen->r.min;
+	winw = Dx(screen->r);
+
+	draw(screen, Rect(o.x, o.y, o.x+winw, o.y+chromeh), cbg, nil, ZP);
+
+	/* tab row */
+	for(i = 0; i < ntabs && i < MAXTABS; i++){
+		x0 = i*TABW;
+		if(x0 >= winw)
+			break;
+		r = Rect(o.x+x0, o.y, o.x+x0+TABW-2, o.y+rowh);
+		draw(screen, r, i == activetab ? cact : ctab, nil, ZP);
+		border(screen, r, 1, ctext, ZP);
+		replclipr(screen, 0, insetrect(r, PAD));
+		string(screen, Pt(r.min.x+PAD, r.min.y+PAD), ctext, ZP, font, tabtitle[i]);
+		replclipr(screen, 0, screen->r);
+		string(screen, Pt(r.max.x-11, r.min.y+PAD), ctext, ZP, font, "x");
+	}
+	/* + new-tab */
+	x0 = ntabs*TABW;
+	r = Rect(o.x+x0, o.y, o.x+x0+26, o.y+rowh);
+	draw(screen, r, ctab, nil, ZP);
+	border(screen, r, 1, ctext, ZP);
+	string(screen, Pt(r.min.x+8, r.min.y+PAD), ctext, ZP, font, "+");
+
+	/* toolbar: back / forward / reload-or-stop */
+	for(i = 0; i < 3; i++){
+		r = Rect(o.x+i*BTNW, o.y+rowh, o.x+(i+1)*BTNW-2, o.y+chromeh);
+		draw(screen, r, ctab, nil, ZP);
+		border(screen, r, 1, ctext, ZP);
+		lbl = i == 0 ? "<" : i == 1 ? ">" : loading ? "x" : "r";
+		string(screen, Pt(r.min.x+11, r.min.y+PAD), ctext, ZP, font, lbl);
+	}
+
+	/* address field */
+	r = Rect(o.x+3*BTNW+PAD, o.y+rowh+PAD, o.x+winw-PAD, o.y+chromeh-PAD);
+	draw(screen, r, cfield, nil, ZP);
+	border(screen, r, 1, ctext, ZP);
+	s = addrfocus ? addr : curl;
+	replclipr(screen, 0, insetrect(r, 2));
+	string(screen, Pt(r.min.x+4, r.min.y+2), ctext, ZP, font, s);
+	if(addrfocus){
+		cx = r.min.x+4 + stringnwidth(font, addr, addrcur);
+		draw(screen, Rect(cx, r.min.y+2, cx+1, r.max.y-2), ctext, nil, ZP);
+	}
+	replclipr(screen, 0, screen->r);
+	flushimage(display, 1);
+}
+
+static void
+drawchrome(void)
+{
+	qlock(&displock);
+	drawchrome_locked();
+	qunlock(&displock);
+}
+
+/* A button-1-down in the chrome strip (y < chromeh, window-relative). */
+static void
+chromemouse(int x, int y)
+{
+	int sub, i, focus;
+	ulong idx;
+
+	sub = 0;
+	idx = 0;
+	focus = 0;
+	qlock(&displock);
+	if(y < rowh){
+		i = x / TABW;
+		if(i >= 0 && i < ntabs){
+			if(x >= (i+1)*TABW - 16){ sub = CMDCLOSE; idx = i; }
+			else { sub = CMDSWITCH; idx = i; }
+		}else if(x >= ntabs*TABW && x < ntabs*TABW + 26){
+			sub = CMDNEWTAB;
+		}
+		addrfocus = 0;
+	}else{
+		if(x < BTNW) sub = CMDBACK;
+		else if(x < 2*BTNW) sub = CMDFWD;
+		else if(x < 3*BTNW) sub = loading ? CMDSTOP : CMDRELOAD;
+		else focus = 1;
+	}
+	if(focus){
+		addrfocus = 1;
+		strncpy(addr, curl, sizeof addr - 1);
+		addr[sizeof addr - 1] = 0;
+		addrn = strlen(addr);
+		addrcur = addrn;
+	}
+	drawchrome_locked();
+	qunlock(&displock);
+	if(sub)
+		emitcmd(sub, idx, nil);
+}
+
+/* A key while the address bar has focus; returns 1 if consumed. */
+static int
+chromekey(Rune r)
+{
+	char tmp[UTFmax];
+	int nb, nav;
+
+	if(!addrfocus)
+		return 0;
+	nav = 0;
+	qlock(&displock);
+	switch(r){
+	case '\n':
+	case '\r':
+		addrfocus = 0;
+		nav = 1;
+		break;
+	case Kesc:
+		addrfocus = 0;
+		break;
+	case Kbs:
+		if(addrcur > 0){
+			memmove(addr+addrcur-1, addr+addrcur, addrn-addrcur);
+			addrcur--; addrn--; addr[addrn] = 0;
+		}
+		break;
+	case Kdel:
+		if(addrcur < addrn){
+			memmove(addr+addrcur, addr+addrcur+1, addrn-addrcur-1);
+			addrn--; addr[addrn] = 0;
+		}
+		break;
+	case Kleft:
+		if(addrcur > 0) addrcur--;
+		break;
+	case Kright:
+		if(addrcur < addrn) addrcur++;
+		break;
+	default:
+		if(r >= 0x20 && r < 0xF000){
+			nb = runetochar(tmp, &r);
+			if(addrn + nb < (int)sizeof addr - 1){
+				memmove(addr+addrcur+nb, addr+addrcur, addrn-addrcur);
+				memmove(addr+addrcur, tmp, nb);
+				addrcur += nb; addrn += nb; addr[addrn] = 0;
+			}
+		}
+		break;
+	}
+	drawchrome_locked();
+	qunlock(&displock);
+	if(nav)
+		emitcmd(CMDNAV, 0, addr);
+	return 1;
 }
 
 /* ---- child spawn ---- */
@@ -378,6 +646,75 @@ framereader(void*)
 				break;
 			title[len] = 0;
 			setlabel(title);
+			continue;
+		}
+		if(memcmp(hdr, "GL9U", 4) == 0){	/* address bar URL */
+			char *u;
+			if(readn(framefd, hdr, 4) != 4)
+				break;
+			len = get32(hdr);
+			u = malloc(len + 1);
+			if(u == nil || readn(framefd, u, len) != (long)len){
+				free(u);
+				break;
+			}
+			u[len] = 0;
+			qlock(&displock);
+			enablechrome();
+			strncpy(curl, u, sizeof curl - 1);
+			curl[sizeof curl - 1] = 0;
+			drawchrome_locked();
+			qunlock(&displock);
+			free(u);
+			continue;
+		}
+		if(memcmp(hdr, "GL9L", 4) == 0){	/* loading + back/forward-enabled */
+			if(readn(framefd, hdr, 4) != 4)
+				break;
+			qlock(&displock);
+			enablechrome();
+			loading = hdr[0];
+			canback = hdr[1];
+			canfwd = hdr[2];
+			drawchrome_locked();
+			qunlock(&displock);
+			continue;
+		}
+		if(memcmp(hdr, "GL9K", 4) == 0){	/* tab list */
+			uchar kb[8];
+			ulong count, active, tl;
+			char titles[MAXTABS][256];
+			int i, nt, bad;
+			if(readn(framefd, kb, 8) != 8)
+				break;
+			count = get32(kb);
+			active = get32(kb + 4);
+			nt = 0;
+			bad = 0;
+			for(i = 0; i < (int)count; i++){
+				char *t;
+				if(readn(framefd, hdr, 4) != 4){ bad = 1; break; }
+				tl = get32(hdr);
+				t = malloc(tl + 1);
+				if(t == nil || readn(framefd, t, tl) != (long)tl){ free(t); bad = 1; break; }
+				t[tl] = 0;
+				if(nt < MAXTABS){
+					strncpy(titles[nt], t, 255);
+					titles[nt][255] = 0;
+					nt++;
+				}
+				free(t);
+			}
+			if(bad)
+				break;
+			qlock(&displock);
+			enablechrome();
+			ntabs = nt;
+			activetab = active < (ulong)nt ? (int)active : 0;
+			for(i = 0; i < nt; i++)
+				strcpy(tabtitle[i], titles[i]);
+			drawchrome_locked();
+			qunlock(&displock);
 			continue;
 		}
 		x = y = 0;
@@ -521,7 +858,7 @@ threadmain(int argc, char **argv)
 		}
 
 		qlock(&displock);
-		o = screen->r.min;
+		o = addpt(screen->r.min, Pt(0, chromeh));	/* page starts below the chrome strip */
 		for(; f != nil; f = fnext){
 			fnext = f->next;
 			if(f->scroll){
@@ -566,8 +903,10 @@ threadmain(int argc, char **argv)
 				t0 = kbddebug ? nsec() : 0;
 				loadimage(im, im->r, f->pix, n);
 				t1 = kbddebug ? nsec() : 0;
-				if((int)w < Dx(screen->r) || (int)h < Dy(screen->r))
-					draw(screen, screen->r, display->black, nil, ZP);
+				/* letterbox undersized frames — but only the PAGE region, so the
+				 * chrome strip (drawn above o.y) is never erased. */
+				if((int)w < Dx(screen->r) || (int)h < Dy(screen->r) - chromeh)
+					draw(screen, Rect(screen->r.min.x, o.y, screen->r.max.x, screen->r.max.y), display->black, nil, ZP);
 				draw(screen, rectaddpt(im->r, o), im, nil, ZP);
 				t2 = kbddebug ? nsec() : 0;
 				if(kbddebug)
