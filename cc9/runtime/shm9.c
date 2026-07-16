@@ -101,21 +101,47 @@ static shm_map maps[SHM_MAXMAP];
  * ONE segattach regardless of buffer count. The {name,offset,len} wire triple
  * (offset was always 0 in Phase A) now carries the buffer's offset in the pool.
  *
- * A buffer's offset within the pool is carried in the fd's SEEK POSITION, not
- * an fd-number-keyed table: the IPC layer clones the fd (dup) before
- * cc9_shm_export sees it, and dup(2) shares the file offset, so seek survives
- * the clone while an fd-number lookup would miss and fall back to offset 0
- * (the painter then maps the wrong pool region and reads zeros). AnonymousBuffer
- * only mmaps the fd (never read/write/lseeks it), so the position stays put. */
+ * A buffer's offset within the pool must survive two hazards, so it is recorded
+ * BOTH ways and read back table-first, seek-second:
+ *   - fd-number table (buf_*): reliable whenever export/mmap see the SAME fd
+ *     create/import returned (the common case). But the IPC layer clones the fd
+ *     (dup) before cc9_shm_export sees it, so the clone misses the table.
+ *   - fd SEEK POSITION (shm_*_off): dup(2) shares the file offset, so it
+ *     survives the clone. But not every kernel lets you seek a #g data file, and
+ *     any read/write on the fd would move it — so it's the fallback, not primary.
+ * The union is robust: the table catches the same-fd path (incl. kernels where
+ * #g seek is a no-op), seek catches the dup'd-and-re-exported path. */
 extern long n9_seek(long long *, int, long long, int);
 static void shm_set_off(int fd, unsigned long off) {
 	long long ret;
 	n9_seek(&ret, fd, (long long)off, 0 /*SEEK_SET*/);
 }
-static unsigned long shm_get_off(int fd) {
+static unsigned long shm_seek_off(int fd) {
 	long long ret = 0;
 	if (n9_seek(&ret, fd, 0, 1 /*SEEK_CUR*/) < 0) return 0;
 	return (unsigned long)ret;
+}
+
+typedef struct { int fd; unsigned long off; } shm_buf;
+#define SHM_MAXBUF 4096
+static shm_buf bufs[SHM_MAXBUF];
+static int buf_lookup(int fd, unsigned long *off) {
+	for (int i = 0; i < SHM_MAXBUF; i++)
+		if (bufs[i].fd == fd + 1) { *off = bufs[i].off; return 1; }  /* +1: 0 = empty */
+	return 0;
+}
+static void shm_set_off_both(int fd, unsigned long off) {
+	shm_set_off(fd, off);                       /* dup-safe carrier */
+	shm_buf *b = 0;
+	for (int i = 0; i < SHM_MAXBUF; i++) if (bufs[i].fd == fd + 1) { b = &bufs[i]; break; }
+	if (!b) for (int i = 0; i < SHM_MAXBUF; i++) if (bufs[i].fd == 0) { b = &bufs[i]; break; }
+	if (b) { b->fd = fd + 1; b->off = off; }    /* same-fd fast path */
+}
+/* offset for an fd: table first (reliable), then the dup-shared seek position. */
+static unsigned long shm_get_off(int fd) {
+	unsigned long off;
+	if (buf_lookup(fd, &off)) return off;
+	return shm_seek_off(fd);
 }
 
 #define SHM9_POOL (256ul << 20)     /* 256 MiB per pool; demand-paged, so cheap */
@@ -251,7 +277,7 @@ int cc9_shm_create(unsigned long size) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_set_off((int)fd, off);          /* carry the pool offset in the fd position */
+	shm_set_off_both((int)fd, off);     /* record both ways (table + seek) */
 	shm_trace("create", name, off, len, fd, 0);
 	return (int)fd;
 }
@@ -274,7 +300,7 @@ int cc9_shm_import(const char *name, unsigned long offset, unsigned long len) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); shm_trace("import", name, offset, len, -1, "open-failed"); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_set_off((int)fd, offset);       /* the buffer's offset in the sender's pool */
+	shm_set_off_both((int)fd, offset);  /* record both ways (table + seek) */
 	shm_trace("import", name, offset, len, fd, 0);
 	return (int)fd;
 }
