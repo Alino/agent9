@@ -23,9 +23,17 @@ expected to behave identically to the same-commit host build.
 
 ## Parity measurements (filled per milestone)
 
-- M1 js: test262 smoke subset vs same-commit host `Build/release/bin/js` — TBD
-- M4 LibWeb: text/layout test subset vs host — TBD
-- M6 WPT smoke — TBD
+- M1 js (2026-07-15): m1-smoke.js battery (AsmInt, exceptions, BigInt, promises,
+  private fields, Unicode final-sigma, Intl de-DE/ICU) — BYTE-IDENTICAL to the
+  same-commit host `Build/release/bin/js` on bare-metal cirno.
+- M4/M5 LibWeb text dumps (2026-07-16): `--headless=text` DOM text of two pages
+  (test.html: h1/pre/styled-p; tallpage.html: 79 paragraphs, 4673 bytes) —
+  BYTE-IDENTICAL (same md5) between the pac9-installed browser on the 9front VM
+  and the same-commit host macOS build. Method: host
+  `Ladybird.app/Contents/MacOS/Ladybird --headless=text <file>` vs on-box
+  `ladybird '--headless=text' --temporary-profile --disable-sql-database
+  file://...`, byte compare.
+- M6 WPT smoke — TBD (needs the WPT runner harness; post-release)
 
 ## M4 runtime blockers (headless screenshot) — diagnosed, fix pending
 
