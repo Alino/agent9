@@ -6,7 +6,9 @@
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2
-#define BUFSIZ 1024
+/* MUST match CC9_BUFSIZ in runtime/stdio.c: setbuf(f,b) means
+ * setvbuf(f,b,_IOFBF,BUFSIZ), so a mismatch overruns the caller's array. */
+#define BUFSIZ 4096
 #define FILENAME_MAX 1024
 #define FOPEN_MAX 16
 #define L_tmpnam 1024

@@ -144,21 +144,27 @@ static unsigned wring_space(cc9_pfd *p){ return PFD_WBUF - wring_avail(p); }
 
 static void *reader_main(void *arg){
 	cc9_pfd *p = arg;
-	char tmp[2048];
 	for(;;){
 		while(!p->dead && ring_space(p) == 0)
 			n9_semacquire(&p->space, 1);
 		if(p->dead) break;
-		unsigned want = ring_space(p);
-		if(want > sizeof tmp) want = sizeof tmp;
-		long r = n9_pread(p->fd, tmp, (long)want, -1);
+		/* pread STRAIGHT into the ring's contiguous span (mirror writer_main):
+		 * no bounce buffer, no byte-by-byte copy, no artificial 2K cap — one
+		 * syscall drains up to a full window. ring_space is a conservative lower
+		 * bound (the consumer only frees space), and the consumer never reads past
+		 * head, so writing [head, head+want) without p->lock is safe; we take the
+		 * lock only to advance head after the read completes. */
+		unsigned space = ring_space(p);
+		unsigned off = p->head % PFD_BUF;
+		unsigned cont = PFD_BUF - off;              /* contiguous run to buffer end */
+		unsigned want = space < cont ? space : cont;
+		long r = n9_pread(p->fd, p->buf + off, (long)want, -1);
 		trace("rdthr", p->fd, r);
 		if(r < 0 && was_interrupted() && !p->dead)
 			continue;
 		n9_semacquire(&p->lock, 1);
+		int was_empty = ring_avail(p) == 0;
 		if(r > 0){
-			for(long i = 0; i < r; i++)
-				p->buf[(p->head + i) % PFD_BUF] = tmp[i];
 			p->head += (unsigned)r;
 		} else if(r == 0){
 			p->eof = 1;
@@ -166,7 +172,16 @@ static void *reader_main(void *arg){
 			p->err = 1;
 		}
 		n9_semrelease(&p->lock, 1);
-		n9_semrelease(&poll_sem, 1);
+		/* Wake the poll reactor only on the empty->non-empty EDGE (plus eof/err).
+		 * poll() is level-triggered — it reports POLLIN from ring_avail() under
+		 * p->lock (poll.c ~397) — so a reactor already scanning/draining sees new
+		 * bytes without a token, and poll_sem is a COUNTING semaphore so the edge
+		 * wake can't be lost even if it races the reactor parking. This lets the
+		 * reader build a backlog in the ring before the reactor runs, collapsing
+		 * N per-segment cross-proc handoffs into one large drain (the throughput
+		 * fix). p->data is still pulsed every pass for the blocking-read path. */
+		if(was_empty || r <= 0)
+			n9_semrelease(&poll_sem, 1);
 		n9_semrelease(&p->data, 1);
 		if(r <= 0) break;
 	}
@@ -458,8 +473,54 @@ int fcntl(int fd, int cmd, ...){
 		if(!p){ errno = EMFILE; return -1; }
 		if(arg & O_NONBLOCK) p->flags |= O_NONBLOCK; else p->flags &= ~O_NONBLOCK;
 		return 0;
+	/* Record locks: Plan 9 has NO POSIX byte-range locks, and cc9 does not fake
+	 * one. This arm used to `return 0` for every lock cmd — telling two writers
+	 * they each hold the exclusive lock. That is how a SQLite DB gets corrupted,
+	 * silently, with no error anywhere to find it by.
+	 *
+	 * NOT built on DMEXCL (Plan 9's whole-file exclusive-open bit), deliberately.
+	 * Checked against the vendored sqlite3.c: os_unix.c only ever locks byte
+	 * RANGES — PENDING_BYTE, RESERVED_BYTE, SHARED_FIRST+SHARED_SIZE — and
+	 * l_start==l_len==0 appears solely on the F_UNLCK release-all path. So DMEXCL
+	 * would buy the one caller that matters nothing, while costing plenty: it is
+	 * a PERSISTENT mode bit wstat'd onto the user's file (a crash leaves the DB
+	 * permanently exclusive-use), and the kernel enforces it per open(2), so a
+	 * second connection in OUR OWN process would be refused — breaking the
+	 * single-process case that works today. Wrong granularity, wrong lifetime.
+	 *
+	 * So: refuse, loudly. ENOLCK is spec-legal for F_SETLK/F_SETLKW, and
+	 * sqliteErrorFromPosixError() maps it to SQLITE_BUSY — SQLite reports
+	 * "database is locked" instead of double-writing. A caller needing SQLite in
+	 * one process can use its `unix-none` VFS, which bypasses fcntl entirely. */
+	case F_GETLK: {
+		/* NEVER return from F_GETLK without writing the struct: it is an
+		 * out-parameter call, and a caller branching on stale stack memory is
+		 * worse than any error. The -1/ENOLCK is the real answer ("cannot
+		 * determine"); this fill is only defence for callers that ignore it, so
+		 * it must not be the optimistic direction — claiming F_UNLCK would say
+		 * "range is free, go ahead", the very lie we came here to delete. */
+		struct flock *fl = (struct flock *)arg;
+		if(fl){ fl->l_type = F_WRLCK; fl->l_pid = -1; }
+		errno = ENOLCK;
+		return -1;
+	}
+	case F_SETLK:
+	case F_SETLKW: {
+		struct flock *fl = (struct flock *)arg;
+		if(fl && fl->l_type == F_UNLCK) return 0;   /* we hold none: an honest no-op */
+		errno = ENOLCK;
+		return -1;
+	}
 	default:
-		return 0;   /* locks etc: pretend success (single-writer norm) */
+		/* Unknown cmd. cc9's <fcntl.h> defines only the commands handled above,
+		 * so anything here is a number this target never named; the in-tree users
+		 * of the old `return 0` (F_FULLFSYNC/F_BARRIERFSYNC/F_GETPATH/F_KINFO)
+		 * are all __APPLE__-guarded and never compiled for Plan 9. EINVAL is what
+		 * a real fcntl answers, and it lets optional-cmd callers fall back —
+		 * libuv's uv__fs_fsync drops to fsync() on failure, where a "success"
+		 * that synced nothing would have been a durability lie. */
+		errno = EINVAL;
+		return -1;
 	}
 }
 

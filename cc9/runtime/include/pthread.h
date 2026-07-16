@@ -5,7 +5,19 @@
 /* cc9 pthreads over Plan 9 rfork(RFMEM) + semaphores. pthread_t is the Plan 9
  * pid of the thread (rfork return / read from /dev/pid). */
 typedef unsigned long pthread_t;
-typedef struct { int sem; unsigned long owner; int count; int kind; } pthread_mutex_t;
+/* `held` is the futex word (Drepper's 3-state: 0=free, 1=held, 2=held+waiters);
+ * `sem` is ONLY the sleep channel for real contention. An uncontended lock is one
+ * atomic CAS, no syscall — Plan 9's semacquire/semrelease are syscalls (~1.4us)
+ * even on a free semaphore, which cost ~3.2us per std::sync::Mutex lock+unlock
+ * (measured) vs ~20ns for Linux's futex.
+ *
+ * `held` deliberately occupies the 4 bytes of PADDING that already sat between
+ * sem and owner: sizeof and the offsets of owner/count/kind are UNCHANGED, so
+ * C/C++ objects compiled against the old header (cargo caches mozjs/angle build
+ * output and does not track these headers) keep working. Their static
+ * PTHREAD_MUTEX_INITIALIZER leaves sem=1 rather than 0 — harmless: it's one
+ * spurious token on the sleep channel, which the acquire loop just re-checks. */
+typedef struct { int sem; int held; unsigned long owner; int count; int kind; } pthread_mutex_t;
 /* FIFO waiter queue: each waiter blocks on its OWN semaphore (a node on its
  * stack), so a signal targets a specific already-queued waiter and a newly
  * arriving waiter (appended at the tail) cannot steal it. lk = internal
@@ -15,10 +27,10 @@ typedef int pthread_once_t;
 typedef int pthread_key_t;
 typedef struct { int kind; } pthread_mutexattr_t;
 typedef struct { int unused; } pthread_condattr_t;
-typedef struct { int detachstate; } pthread_attr_t;
+typedef struct { int detachstate; unsigned long stacksize; } pthread_attr_t;
 typedef pthread_mutex_t pthread_rwlock_t;   /* a plain mutex (readers serialize) */
-#define PTHREAD_RWLOCK_INITIALIZER {1,0,0,0}
-#define PTHREAD_MUTEX_INITIALIZER {1,0,0,0}
+#define PTHREAD_RWLOCK_INITIALIZER {0,0,0,0,0}
+#define PTHREAD_MUTEX_INITIALIZER {0,0,0,0,0}
 #define PTHREAD_COND_INITIALIZER {1,0,0,0}
 #define PTHREAD_ONCE_INIT 0
 #define PTHREAD_MUTEX_NORMAL 0

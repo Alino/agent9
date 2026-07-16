@@ -26,7 +26,8 @@ void cc9_exit_common(const char *status);
  * then never allocates its screen -> NULL deref. Linking LLVM (ManagedStatic +
  * cl::opt register hundreds of handlers) blew past the old 256 cap and broke
  * exactly that way. Any LLVM-scale C++ program would hit it again. */
-static struct atexit_ent { void (*fn)(void *); void *arg; } *atexit_tab;
+static struct atexit_ent {
+ void (*fn)(void *); void *arg; } *atexit_tab;
 static int atexit_n = 0, atexit_cap = 0;
 extern void *realloc(void *, unsigned long);
 static int atexit_push(void (*f)(void *), void *arg) {
@@ -121,6 +122,17 @@ int cc9_note_handler(unsigned long framesp)
 	 * note that interrupted a SLEEP syscall returns to user code past the syscall
 	 * (the syscall reports interrupted); nanosleep re-sleeps the remaining time. */
 	if (msg[0]=='a' && msg[1]=='l' && msg[2]=='a' && msg[3]=='r' && msg[4]=='m') {
+		/* CC9_PROF sampling profiler. A note handler runs IN the interrupted proc
+		 * and is handed that context's Ureg, so the pc here is the REAL userspace
+		 * pc — unlike /proc/N/regs, which only ever shows where the proc last
+		 * ENTERED THE KERNEL (that read makes every sample look like a syscall and
+		 * is useless for attributing user code; learned the hard way).
+		 * Ureg sits at framesp+160 = f[20]; within it pc is slot 18 and sp slot 21,
+		 * which is why the fault path below reads sp at f[41] — so pc is f[38]. */
+		extern int cc9_prof_sample(unsigned long pc);
+		unsigned long *uf = (unsigned long *)framesp;
+		if (cc9_prof_sample(uf[38]))
+			return 0;   /* NCONT: profiling owns the alarm; re-armed inside */
 		extern void cc9_run_sigalrm(void);
 		cc9_run_sigalrm();
 		return 0;   /* NCONT */
@@ -303,6 +315,7 @@ void __cc9_run(void)
 	for (cc9_fn *p = __init_array_start; p < __init_array_end; ++p)
 		(*p)();
 	STAGE('g');
+	{ extern void cc9_prof_arm(void); cc9_prof_arm(); }   /* CC9_PROF: start sampling this (main) proc */
 	int rc = main(argc, argv);
 	STAGE('h');
 	cc9_exit_common(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");
@@ -317,6 +330,7 @@ void __cc9_run(void)
 void
 cc9_exit_common(const char *status)
 {
+	{ extern void cc9_prof_dump(void); cc9_prof_dump(); }   /* CC9_PROF: flush samples before we go */
 	/* Run atexit/__cxa_atexit handlers LIFO, RE-READING atexit_n each step so a
 	 * handler that registers a new one (e.g. a thread_local/static object whose
 	 * destructor constructs another) has it run NEXT — [basic.start.term]: an
@@ -440,4 +454,65 @@ __attribute__((naked, used)) void _start(void)
 		/* __cc9_run never returns (n9_exits); spin rather than execute the
 		 * privileged HLT if it somehow does. */
 		"1: jmp 1b");
+}
+
+/* ---- CC9_PROF=<path>: sampling profiler ------------------------------------
+ * Set CC9_PROF and every thread arms a periodic alarm (CC9_PROF_MS, default 5ms);
+ * each note records the interrupted USERSPACE pc. Dump with cc9_prof_dump() (run
+ * from exit) and symbolize on the host with `nm -n` + bisect.
+ * ponytail: flat pc buffer, no stacks — tells you WHERE, not WHO called. Walk
+ * Ureg.bp (f[26]) if callers are ever needed. */
+extern char *getenv(const char *);
+extern long n9_alarm(unsigned long);
+extern long n9_create(const char *, int, unsigned int);
+extern long n9_close(int);
+
+#define PROF_MAX 400000
+static unsigned long prof_buf[PROF_MAX];
+static int prof_n;
+static int prof_on = -1;          /* -1 unchecked, 0 off, 1 on */
+static unsigned long prof_ms = 5;
+
+static int prof_check(void){
+	if(prof_on < 0){
+		char *e = getenv("CC9_PROF");
+		if(e){
+			char *m = getenv("CC9_PROF_MS");
+			if(m){ unsigned long v = 0; for(int i=0; m[i] >= '0' && m[i] <= '9'; i++) v = v*10 + (m[i]-'0'); if(v) prof_ms = v; }
+			prof_on = 1;
+		} else prof_on = 0;
+	}
+	return prof_on;
+}
+
+/* Called from the note handler. Returns 1 if we consumed the alarm. */
+int cc9_prof_sample(unsigned long pc){
+	if(!prof_check()) return 0;
+	int i = __sync_fetch_and_add(&prof_n, 1);
+	if(i < PROF_MAX) prof_buf[i] = pc;
+	n9_alarm(prof_ms);              /* re-arm: keep sampling */
+	return 1;
+}
+
+/* Each thread must arm its own alarm — Plan 9 alarms are per-proc and cc9 threads
+ * ARE procs (rfork). Called from main and from the pthread trampoline. */
+void cc9_prof_arm(void){
+	if(prof_check()) n9_alarm(prof_ms);
+}
+
+void cc9_prof_dump(void){
+	if(!prof_check()) return;
+	char *path = getenv("CC9_PROF");
+	if(!path) return;
+	int fd = (int)n9_create(path, 1 /*OWRITE*/, 0666);
+	if(fd < 0) return;
+	int n = prof_n; if(n > PROF_MAX) n = PROF_MAX;
+	for(int i = 0; i < n; i++){
+		unsigned long v = prof_buf[i];
+		char b[20]; int k = 0;
+		for(int j = 15; j >= 0; j--){ int d = (v>>(j*4)) & 0xf; if(k || d || j == 0) b[k++] = d < 10 ? '0'+d : 'a'+d-10; }
+		b[k++] = '\n';
+		n9_pwrite(fd, b, k, -1);
+	}
+	n9_close(fd);
 }

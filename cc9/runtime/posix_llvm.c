@@ -18,6 +18,8 @@ extern void *memcpy(void *, const void *, n9size_t);
 extern n9size_t strlen(const char *);
 extern long  n9_pread(int, void *, long, long long);
 extern void  n9_exits(const char *);
+extern int *__n9_errno(void);              /* per-thread errno (poll.c) */
+#define errno (*__n9_errno())
 
 /* ---- executable memory: an anonymous PROT_EXEC request (a JIT asking for W^X
  * memory: Mesa's rtasm vertex-fetch codegen, llvmpipe's shader JIT, ORC/MCJIT)
@@ -64,29 +66,52 @@ static int is_exec_map(void *p) {
 	return 0;
 }
 
+/* exec_alloc's state (exec_pool/exec_brk/exec_big/exec_nbig) is shared across all
+ * cc9 threads (rfork(RFMEM)), and mmap(PROT_EXEC) is called concurrently — every
+ * JIT thread allocates code memory. Unguarded, `r = exec_brk; exec_brk += sz;` is
+ * a non-atomic read-modify-write: two threads hand back the SAME address, each
+ * writes its code over the other's, and the loser jumps into clobbered or
+ * never-written (demand-paged) pool memory — a fault with pc INSIDE the exec pool.
+ * The `if (!exec_pool)` init raced the same way (double segattach, clobbered pool).
+ * This is rare and cold (SpiderMonkey makes one big reservation), so a plain
+ * semaphore is fine — no need for the malloc fast-path dance. */
+extern void n9_semacquire(int *, int);   /* matches the decl further down this file */
+extern void n9_semrelease(int *, int);
+static int exec_lock = 1;
+
 static void *exec_alloc(n9size_t len) {
 	n9size_t sz = (len + EXEC_PGSZ - 1) & ~(EXEC_PGSZ - 1);
 	if (!sz) sz = EXEC_PGSZ;
 
+	n9_semacquire(&exec_lock, 1);
+	void *ret = (void *)-1;
+
 	if (sz >= EXEC_BIG_BYTES) {          /* dedicated segment, own arena */
-		if (exec_nbig >= EXEC_MAXBIG) return (void *)-1;
-		void *p = n9_segattach(SG_EXEC, "memory", 0, sz);
-		if (p == (void *)-1) return (void *)-1;
-		exec_big[exec_nbig].lo = (char *)p;
-		exec_big[exec_nbig].hi = (char *)p + sz;
-		exec_nbig++;
-		return p;
+		if (exec_nbig < EXEC_MAXBIG) {
+			void *p = n9_segattach(SG_EXEC, "memory", 0, sz);
+			if (p != (void *)-1) {
+				exec_big[exec_nbig].lo = (char *)p;
+				exec_big[exec_nbig].hi = (char *)p + sz;
+				exec_nbig++;
+				ret = p;
+			}
+		}
+		n9_semrelease(&exec_lock, 1);
+		return ret;
 	}
 
 	if (!exec_pool) {
 		void *p = n9_segattach(SG_EXEC, "memory", 0, EXEC_POOL_BYTES);
-		if (p == (void *)-1) return (void *)-1;
+		if (p == (void *)-1) { n9_semrelease(&exec_lock, 1); return (void *)-1; }
 		exec_pool = exec_brk = (char *)p;
 		exec_end = exec_pool + EXEC_POOL_BYTES;
 	}
-	if (exec_brk + sz > exec_end) return (void *)-1;   /* pool exhausted */
-	char *r = exec_brk; exec_brk += sz;
-	return r;
+	if (exec_brk + sz <= exec_end) {      /* else: pool exhausted */
+		ret = exec_brk;
+		exec_brk += sz;
+	}
+	n9_semrelease(&exec_lock, 1);
+	return ret;
 }
 
 /* Is W^X available? Lets a caller choose a JIT at RUNTIME rather than at build
@@ -309,7 +334,30 @@ int posix_spawnp(int *pid, const char *p, const void *fa, const void *at, char *
 	return spawn_common(pid, b, fa, av, ev);
 }
 unsigned long getauxval(unsigned long t) { return t == 6 ? 4096 : 0; } /* AT_PAGESZ */
-int mprotect(void *p, n9size_t len, int prot) { (void)p; (void)len; (void)prot; return 0; }
+/* mprotect — Plan 9 has no per-page protection call: a segment's permissions are
+ * fixed at segattach(2) time and nothing can change them afterwards. So the ONLY
+ * honest answers are "you already have that" and "-1".
+ *
+ * Two callers, opposite consequences:
+ *   W^X/JIT (LLVM's SectionMemoryManager, SpiderMonkey): mmap'd the region with
+ *     PROT_EXEC, so it came from exec_alloc and is already RWX. A later
+ *     mprotect(RX) only wants to DROP write as hardening; we can't, but the code
+ *     still runs and behavior is unchanged. Return 0 — the justified case.
+ *   Guard page (Rust std installs one below every thread stack, musl/glibc
+ *     pthreads do the same): mprotect(p, n, PROT_NONE) expecting the next stack
+ *     overflow to fault cleanly. Returning 0 here was a LIE with teeth — no guard
+ *     exists, so an overflow silently scribbles over the adjacent heap instead of
+ *     trapping. -1/ENOSYS tells std there is no guard; it has a fallback path,
+ *     it has none for a phantom guard.
+ * PROT_EXEC on memory that did NOT come from exec_alloc can't be granted either
+ * (the kernel NX-enforces the heap) — jumping there faults, so fail and let a JIT
+ * pick its interpreter. */
+int mprotect(void *p, n9size_t len, int prot) {
+	(void)len;
+	if (prot == 0) { errno = 38 /*ENOSYS*/; return -1; }        /* PROT_NONE: no guard pages */
+	if ((prot & 4 /*PROT_EXEC*/) && !is_exec_map(p)) { errno = 38; return -1; }
+	return 0;   /* R/W (and X within the exec pool) are already true of the pages */
+}
 int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; return 0; }
 int msync(void *p, n9size_t len, int fl) { (void)p; (void)len; (void)fl; return 0; }
 
@@ -360,17 +408,207 @@ char *strsignal(int sig) {
 	buf[i] = 0; return buf;
 }
 
-/* qsort — insertion sort, correct for ANY element size (byte-swap, no temp-size
- * cap). A silent no-op on big elements would leave data unsorted and break a
- * later bsearch -> wrong-memory access; never cap. O(n^2) but qsort callers are
- * small. ponytail: swap byte-by-byte to avoid a VLA/alloca. */
-void qsort(void *base, n9size_t n, n9size_t sz, int (*cmp)(const void *, const void *)) {
-	char *a = base;
-	for (n9size_t i = 1; i < n; i++)
-		for (n9size_t j = i; j > 0 && cmp(a + j*sz, a + (j-1)*sz) < 0; j--) {
-			char *x = a + j*sz, *y = a + (j-1)*sz;
-			for (n9size_t k = 0; k < sz; k++) { char t = x[k]; x[k] = y[k]; y[k] = t; }
+/* ---- qsort: musl's smoothsort, ported 1:1 -------------------------------------
+ * src/stdlib/qsort.c + src/stdlib/qsort_nr.c (MIT, Valentin Ochs 2011, integrated
+ * by Rich Felker). Was an insertion sort here, justified by "qsort callers are
+ * small" — false: SQLite sorts result sets and Servo sorts CSS rules / font
+ * fallbacks / glyph runs. At n=1e5 the O(n^2) didn't fail, it HUNG (minutes).
+ * Smoothsort is worst-case O(n log n), near-O(n) when mostly sorted, and — the
+ * reason it's the right upstream to copy — strictly in-place: no alloca, no VLA,
+ * no malloc, and it handles ANY element width (cycle() moves bytes through a
+ * fixed 256-byte buffer). Exactly the constraint the old comment used to justify
+ * insertion sort, already solved upstream.
+ * Plan 9 divergences: musl's `ntz` comes from atomic.h (a_ctz_l) -> __builtin_ctzl
+ * here; size_t -> n9size_t; weak_alias dropped (qsort_r is defined outright). */
+#define ntz(x) __builtin_ctzl((unsigned long)(x))
+typedef int (*cc9_cmpfun)(const void *, const void *, void *);
+
+/* returns index of first bit set, excluding the low bit assumed to always
+ * be set, starting from low bit of p[0] up through high bit of p[1] */
+static inline int pntz(n9size_t p[2]) {
+	if (p[0] != 1) return ntz(p[0] - 1);
+	if (p[1]) return 8*sizeof(n9size_t) + ntz(p[1]);
+	return 0;
+}
+
+static void cycle(n9size_t width, unsigned char *ar[], int n) {
+	unsigned char tmp[256];
+	n9size_t l;
+	int i;
+
+	if (n < 2) return;
+
+	ar[n] = tmp;
+	while (width) {
+		l = sizeof(tmp) < width ? sizeof(tmp) : width;
+		memcpy(ar[n], ar[0], l);
+		for (i = 0; i < n; i++) {
+			memcpy(ar[i], ar[i + 1], l);
+			ar[i] += l;
 		}
+		width -= l;
+	}
+}
+
+/* shl() and shr() need n > 0 */
+static inline void shl(n9size_t p[2], int n) {
+	if (n >= (int)(8 * sizeof(n9size_t))) {
+		n -= 8 * sizeof(n9size_t);
+		p[1] = p[0];
+		p[0] = 0;
+		if (!n) return;
+	}
+	p[1] <<= n;
+	p[1] |= p[0] >> (sizeof(n9size_t) * 8 - n);
+	p[0] <<= n;
+}
+
+static inline void shr(n9size_t p[2], int n) {
+	if (n >= (int)(8 * sizeof(n9size_t))) {
+		n -= 8 * sizeof(n9size_t);
+		p[0] = p[1];
+		p[1] = 0;
+		if (!n) return;
+	}
+	p[0] >>= n;
+	p[0] |= p[1] << (sizeof(n9size_t) * 8 - n);
+	p[1] >>= n;
+}
+
+/* power-of-two length for working array so that we can mask indices and
+ * not depend on any invariant of the algorithm for spatial memory safety.
+ * the original size was just 14*sizeof(size_t)+1 */
+#define AR_LEN  (16 * sizeof(n9size_t))
+#define AR_MASK (AR_LEN - 1)
+
+static void sift(unsigned char *head, n9size_t width, cc9_cmpfun cmp, void *arg, int pshift, n9size_t lp[]) {
+	unsigned char *rt, *lf;
+	unsigned char *ar[AR_LEN];
+	int i = 1;
+
+	ar[0] = head;
+	while (pshift > 1) {
+		rt = head - width;
+		lf = head - width - lp[pshift - 2];
+
+		if (cmp(ar[0], lf, arg) >= 0 && cmp(ar[0], rt, arg) >= 0) break;
+		if (cmp(lf, rt, arg) >= 0) {
+			ar[i++ & AR_MASK] = lf;
+			head = lf;
+			pshift -= 1;
+		} else {
+			ar[i++ & AR_MASK] = rt;
+			head = rt;
+			pshift -= 2;
+		}
+	}
+	cycle(width, ar, i & AR_MASK);
+}
+
+static void trinkle(unsigned char *head, n9size_t width, cc9_cmpfun cmp, void *arg, n9size_t pp[2], int pshift, int trusty, n9size_t lp[]) {
+	unsigned char *stepson, *rt, *lf;
+	n9size_t p[2];
+	unsigned char *ar[AR_LEN];
+	int i = 1;
+	int trail;
+
+	p[0] = pp[0];
+	p[1] = pp[1];
+
+	ar[0] = head;
+	while (p[0] != 1 || p[1] != 0) {
+		stepson = head - lp[pshift];
+		if (cmp(stepson, ar[0], arg) <= 0) break;
+		if (!trusty && pshift > 1) {
+			rt = head - width;
+			lf = head - width - lp[pshift - 2];
+			if (cmp(rt, stepson, arg) >= 0 || cmp(lf, stepson, arg) >= 0) break;
+		}
+
+		ar[i++ & AR_MASK] = stepson;
+		head = stepson;
+		trail = pntz(p);
+		shr(p, trail);
+		pshift += trail;
+		trusty = 0;
+	}
+	if (!trusty) {
+		cycle(width, ar, i & AR_MASK);
+		sift(head, width, cmp, arg, pshift, lp);
+	}
+}
+
+void __qsort_r(void *base, n9size_t nel, n9size_t width, cc9_cmpfun cmp, void *arg) {
+	n9size_t lp[12*sizeof(n9size_t)];
+	n9size_t i, size = width * nel;
+	unsigned char *head, *high;
+	n9size_t p[2] = {1, 0};
+	int pshift = 1;
+	int trail;
+
+	if (!size) return;
+
+	head = base;
+	high = head + size - width;
+
+	/* Precompute Leonardo numbers, scaled by element width */
+	for (lp[0]=lp[1]=width, i=2; (lp[i]=lp[i-2]+lp[i-1]+width) < size; i++);
+
+	while (head < high) {
+		if ((p[0] & 3) == 3) {
+			sift(head, width, cmp, arg, pshift, lp);
+			shr(p, 2);
+			pshift += 2;
+		} else {
+			if (lp[pshift - 1] >= (n9size_t)(high - head)) {
+				trinkle(head, width, cmp, arg, p, pshift, 0, lp);
+			} else {
+				sift(head, width, cmp, arg, pshift, lp);
+			}
+
+			if (pshift == 1) {
+				shl(p, 1);
+				pshift = 0;
+			} else {
+				shl(p, pshift - 1);
+				pshift = 1;
+			}
+		}
+
+		p[0] |= 1;
+		head += width;
+	}
+
+	trinkle(head, width, cmp, arg, p, pshift, 0, lp);
+
+	while (pshift != 1 || p[0] != 1 || p[1] != 0) {
+		if (pshift <= 1) {
+			trail = pntz(p);
+			shr(p, trail);
+			pshift += trail;
+		} else {
+			shl(p, 2);
+			pshift -= 2;
+			p[0] ^= 7;
+			shr(p, 1);
+			trinkle(head - lp[pshift] - width, width, cmp, arg, p, pshift + 1, 1, lp);
+			shl(p, 1);
+			p[0] |= 1;
+			trinkle(head - width, width, cmp, arg, p, pshift, 1, lp);
+		}
+		head -= width;
+	}
+}
+void qsort_r(void *base, n9size_t nel, n9size_t width, cc9_cmpfun cmp, void *arg) {
+	__qsort_r(base, nel, width, cmp, arg);
+}
+/* qsort_nr.c: the plain-qsort ABI is cmp(const void*, const void*) — NO arg —
+ * so it goes through musl's wrapper, with the fn pointer smuggled in as `arg`. */
+static int cc9_qsort_wrapper_cmp(const void *v1, const void *v2, void *cmp) {
+	return ((int (*)(const void *, const void *))cmp)(v1, v2);
+}
+void qsort(void *base, n9size_t nel, n9size_t width, int (*cmp)(const void *, const void *)) {
+	__qsort_r(base, nel, width, cc9_qsort_wrapper_cmp, (void *)cmp);
 }
 
 /* ---- REAL ---- */
@@ -499,8 +737,7 @@ int    getsid(int p) { (void)p; return -1; }
  * execve: envp lands in the child's private /env (fork uses RFENVG), fds
  * marked FD_CLOEXEC (poll.c table) are closed — libuv's spawn error-pipe
  * protocol depends on close-on-exec actually happening. */
-extern int *__n9_errno(void);
-#define errno (*__n9_errno())
+/* errno is hoisted to the top of this file (mprotect needs it). */
 extern int cc9_poll_cloexec(int);
 extern long n9_create(const char *, int, unsigned int);
 extern long n9_close(int);
@@ -782,11 +1019,22 @@ int    kill(int p, int s) {
 	n9_close(fd);
 	return r;
 }
-unsigned int alarm(unsigned int s) { (void)s; return 0; }
+extern long n9_alarm(unsigned long);
+/* alarm(2) POSIX: arm a SIGALRM in `s` seconds, return the seconds left on the
+ * previous alarm. Used to discard `s` and return 0 — i.e. the alarm never fired
+ * and the caller's timeout never happened — while setitimer right below already
+ * did the real work. Same Plan 9 alarm(2) underneath (ms, returns the previous
+ * remaining ms); alarm(0) cancels, in both worlds. Divergence: POSIX rounds the
+ * return UP to whole seconds, so a sub-second remainder reports as 1, never 0
+ * ("no alarm was pending"). */
+unsigned int alarm(unsigned int s) {
+	long prev = n9_alarm((unsigned long)s * 1000);
+	if (prev <= 0) return 0;
+	return (unsigned int)((prev + 999) / 1000);
+}
 /* setitimer over Plan 9 alarm(2): ITIMER_REAL arms n9_alarm(ms); a SIGALRM note
  * then fires (crt0.c note handler). Other timers are accepted as no-ops.
  * Local struct mirrors <sys/time.h> (this file avoids pulling system headers). */
-extern long n9_alarm(unsigned long);
 struct itimerval { struct { long tv_sec, tv_usec; } it_interval, it_value; };
 int setitimer(int which, const struct itimerval *nv, struct itimerval *ov) {
 	(void)ov;
@@ -800,11 +1048,47 @@ int    usleep(unsigned int us) { if (us) n9_sleep((us + 999) / 1000); return 0; 
 unsigned int sleep(unsigned int sec) { n9_sleep((long)sec * 1000); return 0; }
 /* ioctl moved to fs.c (real TIOCGWINSZ over /env/LINES + /env/COLS) */
 /* fcntl moved to poll.c (real O_NONBLOCK/FD_CLOEXEC; locks still "succeed") */
-int    chown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
-int    fchown(int fd, unsigned u, unsigned g) { (void)fd; (void)u; (void)g; return 0; }
-int    lchown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; return 0; }
-unsigned umask(unsigned m) { (void)m; return 022; }
-int    gethostname(char *n, unsigned long l) { if (l) n[0] = 0; return 0; }
+/* chown family: Plan 9 has no chown. A file's uid is set at create(2) from the
+ * creating process and only the host owner (`eve`, on the file server) may wstat
+ * it — a normal process cannot, ever. Returning 0 told installers and tar/rsync
+ * that ownership had been fixed when nothing happened. EPERM is the truth, and
+ * it's exactly what these callers get on Unix as non-root, so their fallback
+ * (warn, or ignore) is already written. */
+int    chown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; errno = 1 /*EPERM*/; return -1; }
+int    fchown(int fd, unsigned u, unsigned g) { (void)fd; (void)u; (void)g; errno = 1; return -1; }
+int    lchown(const char *p, unsigned u, unsigned g) { (void)p; (void)u; (void)g; errno = 1; return -1; }
+
+/* umask: Plan 9 has no umask — create(2) permissions are masked by the parent
+ * directory's bits instead, in the file server, out of our reach. umask()'s
+ * signature has no way to say "unsupported" (it cannot fail), so the one thing we
+ * can be honest about is the VALUE: return the caller's own previous mask.
+ * Fabricating 022 broke the standard save/restore idiom outright —
+ *   old = umask(0); ... ; umask(old);
+ * left the process at 022, a value it had never been set to.
+ * ponytail: advisory — stored and round-tripped, NOT applied. cc9's create path
+ * lives in fs.c; if a caller ever depends on the mask actually masking, fs.c's
+ * open/create should &= ~cc9_umask_get() on the perm argument. */
+static unsigned cc9_umask_val = 022;   /* the conventional startup default */
+unsigned cc9_umask_get(void) { return cc9_umask_val; }
+unsigned umask(unsigned m) { unsigned old = cc9_umask_val; cc9_umask_val = m & 0777; return old; }
+
+/* gethostname: /dev/sysname holds the host's name (no trailing newline). Used to
+ * write "" and report success, so every caller believed it ran on a nameless
+ * host. POSIX: ENAMETOOLONG when the name doesn't fit. */
+int    gethostname(char *n, unsigned long l) {
+	if (!n || !l) { errno = 22 /*EINVAL*/; return -1; }
+	char b[64];
+	long fd = n9_open("/dev/sysname", 0 /*OREAD*/);
+	if (fd < 0) { errno = 2 /*ENOENT*/; return -1; }
+	long got = n9_pread((int)fd, b, (long)sizeof b - 1, 0);
+	n9_close((int)fd);
+	if (got < 0) { errno = 5 /*EIO*/; return -1; }
+	while (got > 0 && (b[got-1] == '\n' || b[got-1] == ' ')) got--;
+	if ((unsigned long)got >= l) { errno = 36 /*ENAMETOOLONG*/; return -1; }
+	memcpy(n, b, (n9size_t)got);
+	n[got] = 0;
+	return 0;
+}
 extern long n9_dup(int, int);
 int    dup2(int o, int n) { return (int)n9_dup(o, n); }
 
@@ -936,17 +1220,71 @@ int socketpair(int af, int type, int proto, int sv[2]) {
 /* sendmsg/recvmsg moved to net9.c and are REAL now (vectored I/O over /net;
  * only ancillary data — SCM_RIGHTS — is refused, with EOPNOTSUPP). */
 
-/* ---- decorative termios (see include/termios.h) ---- */
+/* ---- termios over /dev/consctl (see include/termios.h) ----------------------
+ * Was decorative: cfmakeraw cleared ECHO in the caller's struct and tcsetattr
+ * threw the struct away and returned success. The canonical caller is a PASSWORD
+ * PROMPT (getpass(3), Python's getpass.getpass, ssh, sudo): read the termios,
+ * clear ECHO, tcsetattr, read the line. Succeeding while doing nothing meant the
+ * password echoed to the screen with the program believing echo was off — the
+ * exact failure mode a lie-stub is built to produce, in the worst place.
+ *
+ * Plan 9 has a real knob: /dev/consctl takes "rawon"/"rawoff" (cons(3)). Raw is
+ * the console's single combined ECHO+ICANON off switch — there is no separate
+ * echo bit and no per-c_cc programming — so this maps ECHO|ICANON onto it and
+ * nothing else. The rest of the struct is stored and handed back verbatim.
+ *
+ * PLAN 9 QUIRK: raw is a property of the OPEN consctl FILE, not of the console —
+ * the kernel restores cooked mode when the last consctl fd closes. So the fd is
+ * opened once and deliberately kept open for the life of the process; a
+ * close-after-write would silently undo the very setting we just made. */
 struct cc9_termios { unsigned int i, o, c, l; unsigned char cc[32]; unsigned int is, os; };
+extern int isatty(int);
+static long cc9_consctl_fd = -1;
+static struct cc9_termios cc9_tio;
+static int cc9_tio_valid;
+
+static int cc9_consctl(const char *cmd) {
+	if (cc9_consctl_fd < 0) cc9_consctl_fd = n9_open("/dev/consctl", 1 /*OWRITE*/);
+	if (cc9_consctl_fd < 0) return -1;      /* no console here (a pipe from the
+	                                         * terminal emulator has no consctl) */
+	long n = (long)strlen(cmd);
+	return n9_pwrite((int)cc9_consctl_fd, cmd, n, -1LL) == n ? 0 : -1;
+}
+
 int tcgetattr(int fd, struct cc9_termios *t) {
-	(void)fd;
+	if (!t) { errno = 22 /*EINVAL*/; return -1; }
+	if (!isatty(fd)) { errno = 25 /*ENOTTY*/; return -1; }
+	if (cc9_tio_valid) { *t = cc9_tio; return 0; }   /* report what we actually set */
 	memset(t, 0, sizeof *t);
+	/* the honest default: a fresh Plan 9 console is cooked — it echoes and does
+	 * line editing (backspace/^U/^D) and ^ | delete post notes. */
 	t->i = 0400 /*ICRNL*/; t->o = 0005 /*OPOST|ONLCR*/;
 	t->c = 0260 /*CS8|CREAD*/; t->l = 0173 /*ISIG|ICANON|ECHO...*/;
 	return 0;
 }
-int tcsetattr(int fd, int act, const struct cc9_termios *t) { (void)fd; (void)act; (void)t; return 0; }
-void cfmakeraw(struct cc9_termios *t) { t->i = 0; t->o = 0; t->l = 0; }
+int tcsetattr(int fd, int act, const struct cc9_termios *t) {
+	(void)act;   /* TCSANOW/TCSADRAIN/TCSAFLUSH: Plan 9 has no output queue to
+	              * drain and no input queue we may flush behind cons's back. */
+	if (!t) { errno = 22 /*EINVAL*/; return -1; }
+	if (!isatty(fd)) { errno = 25 /*ENOTTY*/; return -1; }
+	/* raw == neither echo nor line discipline. Either bit cleared means the caller
+	 * wants cons out of the way; only both set is genuinely cooked. */
+	int raw = !(t->l & 0010 /*ECHO*/) || !(t->l & 0002 /*ICANON*/);
+	if (cc9_consctl(raw ? "rawon" : "rawoff") < 0) { errno = 25 /*ENOTTY*/; return -1; }
+	cc9_tio = *t; cc9_tio_valid = 1;
+	return 0;
+}
+/* cfmakeraw — musl src/termios/cfmakeraw.c, 1:1. It only edits the caller's
+ * struct (no syscall); tcsetattr above is what makes it true. */
+void cfmakeraw(struct cc9_termios *t) {
+	t->i &= ~(0001|0002|0010|0040|0100|0200|0400|02000);  /* IGNBRK BRKINT PARMRK ISTRIP INLCR IGNCR ICRNL IXON */
+	t->o &= ~0001;                                        /* OPOST */
+	t->l &= ~(0010|0100|0002|0001|0100000);               /* ECHO ECHONL ICANON ISIG IEXTEN */
+	t->c &= ~(0060|0400);                                 /* CSIZE PARENB */
+	t->c |= 0060;                                         /* CS8 */
+	t->cc[6 /*VMIN*/] = 1;
+	t->cc[5 /*VTIME*/] = 0;
+}
 int tcflush(int fd, int q) { (void)fd; (void)q; return 0; }
 int tcdrain(int fd) { (void)fd; return 0; }
 
@@ -957,11 +1295,49 @@ void *getgrnam(const char *n) { (void)n; return 0; }
 void *getgrgid(unsigned g) { (void)g; return 0; }
 int setgroups(int n, const unsigned *g) { (void)n; (void)g; return 0; }
 int pthread_sigmask(int how, const unsigned long *set, unsigned long *old) { return sigprocmask(how, set, old); }
+/* ---- scheduling priority over /proc/<pid>/ctl -------------------------------
+ * REAL: Plan 9 proc(3) accepts "pri N" on the ctl file, N in 0..19 (Nrq run
+ * queues; higher = more favoured, same direction as POSIX). cc9's pthread_t IS
+ * the Plan 9 pid (include/pthread.h), so a thread's priority is directly
+ * addressable — no tid->pid table needed.
+ * Divergences: Plan 9 has ONE scheduler, so the POSIX policy argument has no
+ * meaning and is ignored (rather than rejected — SCHED_OTHER is what you get);
+ * and the kernel refuses N > PriNormal(10) unless you are eve, which surfaces
+ * here as EPERM. Priority cannot be READ back (ctl is write-only and /proc's
+ * status file doesn't carry it), so pthread_getschedparam fails honestly. */
 struct cc9_sched_param { int sched_priority; };
+static int cc9_proc_ctl(int pid, const char *cmd) {
+	char path[40], *d = path;
+	const char *pre = "/proc/"; while (*pre) *d++ = *pre++;
+	{ int v = pid; char num[16]; int n = 0;
+	  do { num[n++] = '0' + v % 10; v /= 10; } while (v > 0);
+	  while (n) *d++ = num[--n]; }
+	const char *suf = "/ctl"; while (*suf) *d++ = *suf++;
+	*d = 0;
+	int fd = (int)n9_open(path, 1 /*OWRITE*/);
+	if (fd < 0) return -1;
+	long n = (long)strlen(cmd);
+	int r = n9_pwrite(fd, cmd, n, -1LL) == n ? 0 : -1;
+	n9_close(fd);
+	return r;
+}
 int sched_get_priority_min(int p) { (void)p; return 0; }
-int sched_get_priority_max(int p) { (void)p; return 0; }
-int pthread_getschedparam(unsigned long t, int *pol, struct cc9_sched_param *sp) { (void)t; if (pol) *pol = 0; if (sp) sp->sched_priority = 0; return 0; }
-int pthread_setschedparam(unsigned long t, int pol, const struct cc9_sched_param *sp) { (void)t; (void)pol; (void)sp; return 0; }
+int sched_get_priority_max(int p) { (void)p; return 19; }   /* Nrq-1 */
+int pthread_getschedparam(unsigned long t, int *pol, struct cc9_sched_param *sp) {
+	(void)t; (void)pol; (void)sp;
+	return 38 /*ENOSYS*/;   /* Plan 9 exposes no way to read a proc's priority */
+}
+int pthread_setschedparam(unsigned long t, int pol, const struct cc9_sched_param *sp) {
+	(void)pol;
+	if (!sp || sp->sched_priority < 0 || sp->sched_priority > 19) return 22 /*EINVAL*/;
+	char cmd[12], *d = cmd;
+	*d++ = 'p'; *d++ = 'r'; *d++ = 'i'; *d++ = ' ';
+	{ int v = sp->sched_priority; char num[4]; int n = 0;
+	  do { num[n++] = '0' + v % 10; v /= 10; } while (v > 0);
+	  while (n) *d++ = num[--n]; }
+	*d = 0;
+	return cc9_proc_ctl((int)t, cmd) == 0 ? 0 : 1 /*EPERM: pri > PriNormal needs eve*/;
+}
 int getpriority(int which, unsigned int who) { (void)which; (void)who; return 0; }
 int setpriority(int which, unsigned int who, int prio) { (void)which; (void)who; (void)prio; return 0; }
 int getgrgid_r(unsigned g, void *grp, char *buf, unsigned long n, void **res) { (void)g; (void)grp; (void)buf; (void)n; if (res) *res = 0; return 0; }

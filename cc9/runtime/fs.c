@@ -4,6 +4,7 @@
  * POSIX O_RDONLY/WRONLY/RDWR (0/1/2) happen to equal Plan 9 OREAD/OWRITE/ORDWR. */
 typedef unsigned long size_t;
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -350,9 +351,37 @@ static int env_num(const char *name){
  * "kernel driver", in-process. Weak, so ordinary cc9 programs are unaffected. */
 extern int gpu9_ioctl(int fd, unsigned long req, void *arg) __attribute__((weak));
 
-/* BSD flock(2), <sys/file.h>: Plan 9 has no advisory file locks — always
- * succeed, matching the fcntl record-lock stubs (single-writer is the norm). */
-int flock(int fd, int op){ (void)fd; (void)op; return 0; }
+/* BSD flock(2), <sys/file.h>: Plan 9 has no advisory file locks.
+ *
+ * This used to return 0 unconditionally, so every caller was told it holds the
+ * lock: two processes "hold" the same LOCK_EX at once and both walk into the
+ * critical section. Same bug class as the fsync lie below — no symptom until it
+ * has already interleaved two writers over one file.
+ *
+ * DMEXCL is not the way out (the same reasoning that keeps fcntl's record locks
+ * off it): it is a PERSISTENT mode bit wstat'd onto the user's own file, so a
+ * crash leaves the file permanently exclusive-use, and the kernel enforces it
+ * per open(2) — a second open inside our own process gets refused, which would
+ * break working single-process code. Wrong lifetime, wrong granularity.
+ *
+ * ENOLCK: a documented flock(2) error, and literally true here — we cannot
+ * record a lock. It is also what fcntl's F_SETLK answers, so the two agree.
+ * Not EWOULDBLOCK — that asserts a conflicting holder exists (a fresh lie) and
+ * is only legal under LOCK_NB. Not EOPNOTSUPP — not a flock(2) errno at all.
+ *
+ * Callers checked, not assumed: both vendored SQLite copies compile with
+ * SQLITE_ENABLE_LOCKING_STYLE 0, so SQLite never calls flock (it locks via
+ * fcntl); were it ever enabled, sqliteErrorFromPosixError maps ENOLCK ->
+ * SQLITE_BUSY ("database is locked") — loud and retryable, never corrupting.
+ * nvim's only use is flock(dirfd(tempdir), LOCK_SH) with the result ignored.
+ * Python's fcntl.flock raises OSError, which is exactly the point. libuv does
+ * not use flock. */
+int flock(int fd, int op){
+	(void)fd;
+	if(op & LOCK_UN) return 0;   /* we hold none: an honest no-op */
+	errno = ENOLCK;
+	return -1;
+}
 
 int ioctl(int fd, unsigned long req, ...){
 	__builtin_va_list ap; __builtin_va_start(ap, req);
@@ -378,7 +407,52 @@ int ioctl(int fd, unsigned long req, ...){
 	errno = ENOTTY;
 	return -1;
 }
-int fsync(int fd){ (void)fd; return 0; }
+/* fsync — the 9P *null wstat*, which is this protocol's fsync.
+ *
+ * Plan 9 has no fsync(2): it is not in the syscall table (libc/9syscall/sys.h).
+ * The commit primitive lives in the protocol instead. stat(5): "if ALL the
+ * elements of the directory entry in a Twstat message are ``don't touch''
+ * values, the server may interpret it as a request to guarantee that the
+ * contents of the associated file are committed to stable storage before the
+ * Rwstat message is returned." That is fsync's contract, so send it. A
+ * build_wstat() with every field defaulted is bit-for-bit libc's nulldir()
+ * (memset ~0, strings "") — the same shape cc9_set_mtime already builds.
+ *
+ * Checked against the servers rather than assumed:
+ *  - gefs (what this box runs) — fswstat() carries a `nulldir` flag through
+ *    every field it inspects; if it survives it queues AOsync -> sync(), which
+ *    drives arena headers, superblocks and footers through wrbarrier() and only
+ *    then answers Rwstat. A sync failure answers Rerror(Eio). Genuinely
+ *    durable, and genuinely reports failure. No permission is required (the
+ *    nulldir path returns before the permission checks).
+ *  - cwfs — 9p2.c computes the identical flag (spelled `tsync`), then does
+ *    nothing with it and replies ok. So on cwfs this is a no-op reported as
+ *    success. That is the SERVER's answer, not a lie we invented: 9P gives a
+ *    client no way to distinguish "synced" from "ignored", and nothing else
+ *    gets closer. This is the honest ceiling of the platform.
+ *  - ramfs / lib9p servers — every guard is per-field, so a nulldir falls
+ *    through to a plain ok. Correct: RAM has no stable storage to commit to.
+ *
+ * The failure is reported, never swallowed. fsync on something that is not a
+ * file-server file (a pipe, a #-device) fails here — which is also what POSIX
+ * wants; fsync on a pipe is EINVAL on Linux too.
+ *
+ * Why not "return -1 so SQLite knowingly picks a non-durable journal mode":
+ * it does not do that — os_unix.c unixSync() turns any full_fsync() failure
+ * into SQLITE_IOERR_FSYNC and pager.c fails the transaction. Journal mode and
+ * PRAGMA synchronous are chosen by the application, never inferred from a
+ * failing fsync (with synchronous=OFF, sqlite3OsSync() is simply never called).
+ * Failing unconditionally would therefore break every commit on every
+ * filesystem — including gefs, where the sync is real. */
+int fsync(int fd){
+	unsigned char b[128];
+	int n = build_wstat(b, 0, 0xFFFFFFFF, ~0ULL, 0xFFFFFFFF);   /* nulldir == "commit to stable storage" */
+	if(n9_fwstat(fd, b, n) < 0){ errno = cc9_errno_from_errstr_or(EIO); return -1; }
+	return 0;
+}
+/* Plan 9 has no data/metadata split to exploit: the null wstat commits the
+ * file, whole. Same call, same guarantee. */
+int fdatasync(int fd){ return fsync(fd); }
 int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_fwstat(fd,b,n)<0?-1:0; }
 int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_wstat(p,b,n)<0?-1:0; }
 extern long n9_dup(int, int);
@@ -494,10 +568,33 @@ int futimens(int fd, const struct timespec *t){
 	if(!t || t[1].tv_nsec == CC9_UTIME_OMIT) return 0;
 	return cc9_fset_mtime(fd, (unsigned long)t[1].tv_sec);
 }
-/* statvfs: report a generic large filesystem (the values most code only sanity-checks). */
-struct __cc9_statvfs { unsigned long f_bsize,f_frsize,f_blocks,f_bfree,f_bavail,f_files,f_ffree,f_favail,f_fsid,f_flag,f_namemax; };
-int statvfs(const char *p, void *vp){ (void)p; struct __cc9_statvfs *s=vp; memset(s,0,sizeof *s); s->f_bsize=8192; s->f_frsize=8192; s->f_blocks=1<<20; s->f_bfree=1<<19; s->f_bavail=1<<19; s->f_namemax=255; return 0; }
-int fstatvfs(int fd, void *vp){ (void)fd; return statvfs(0,vp); }
+/* statvfs: Plan 9 cannot answer this, so it must not pretend to.
+ *
+ * This used to report a hardcoded 8 GiB total / 4 GiB free for EVERY path,
+ * always, and never fail — so shutil.disk_usage(), every "is there room for
+ * this download?" preflight and Servo's cache-eviction heuristic each got a
+ * confident fabricated number that tracked nothing. A full disk looked
+ * half-empty right up until the write failed.
+ *
+ * There is no honest source for the numbers:
+ *  - No syscall. The whole 9front table (libc/9syscall/sys.h) has no statfs
+ *    analogue: stat/fstat return a per-file Dir and nothing else.
+ *  - No 9P message. stat(5)'s Rstat carries only per-file fields; free space is
+ *    not in the protocol, which is why 9front ships no df(1) at all.
+ *  - The file server knows, but will not tell a client. gefs computes it by
+ *    summing its in-process arenas (cons.c showdf) and prints it as prose on
+ *    the admin console at /srv/gefs.cmd — whole-fs rather than per-path, only
+ *    for the fs owner, and reading that pipe would steal console output from
+ *    whoever else has it open. Not something a libc call may do.
+ *  - fd2path gives a namespace path, not the serving device, so there is not
+ *    even a way to work out WHICH server a path lands on to go asking.
+ *
+ * So: ENOSYS. Callers branch on the failure and use a fallback; they have no
+ * fallback for a plausible lie. (The old struct here was also missing f_flags
+ * and f_type, so its memset left them uninitialized for anyone using the real
+ * <sys/statvfs.h> — moot now that nothing is filled in.) */
+int statvfs(const char *p, void *vp){ (void)p; (void)vp; errno = ENOSYS; return -1; }
+int fstatvfs(int fd, void *vp){ (void)fd; (void)vp; errno = ENOSYS; return -1; }
 
 /* getenv/setenv via Plan 9 /env/<name> (the per-process environment namespace). */
 static void env_path(const char *name, char *path, int n){

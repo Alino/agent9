@@ -47,6 +47,16 @@ extern "C" long n9_sleep(long);
 static int cc9_guard_lock = 1;
 extern "C" int __cxa_guard_acquire(unsigned long long *g) {
 	unsigned char *b = (unsigned char *)g;
+	// Upstream libc++abi (src/cxa_guard_impl.h) opens with exactly this:
+	//     // if guard_byte is non-zero, we have already completed initialization
+	//     return guard_byte.load(_AO_Acquire) != UNSET;
+	// i.e. ONE atomic load and out — the lock is only for the genuinely
+	// uninitialized path, once per static, ever. Without this fast path every
+	// function-local static access (libc++/mozjs/LLVM have thousands, and they
+	// stay hot forever) took a process-global KERNEL semaphore: ~2.7us per call
+	// and every thread convoys on one lock. Release below stores b[0] under the
+	// lock, which pairs with this acquire.
+	if (__atomic_load_n(&b[0], __ATOMIC_ACQUIRE)) return 0;
 	for (;;) {
 		n9_semacquire(&cc9_guard_lock, 1);
 		if (b[0]) { n9_semrelease(&cc9_guard_lock, 1); return 0; }        // already done
@@ -57,7 +67,10 @@ extern "C" int __cxa_guard_acquire(unsigned long long *g) {
 }
 extern "C" void __cxa_guard_release(unsigned long long *g) {
 	unsigned char *b = (unsigned char *)g;
-	n9_semacquire(&cc9_guard_lock, 1); b[0] = 1; b[1] = 0; n9_semrelease(&cc9_guard_lock, 1);
+	n9_semacquire(&cc9_guard_lock, 1);
+	b[1] = 0;
+	__atomic_store_n(&b[0], (unsigned char)1, __ATOMIC_RELEASE);   // pairs w/ the acquire fast path
+	n9_semrelease(&cc9_guard_lock, 1);
 }
 extern "C" void __cxa_guard_abort(unsigned long long *g) {
 	unsigned char *b = (unsigned char *)g;

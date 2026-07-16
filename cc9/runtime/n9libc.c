@@ -71,12 +71,41 @@ static void *malloc_u(size_t nbytes){
 		if(p == kr_freep && (p = kr_morecore(nunits)) == 0) return 0;
 	}
 }
-/* Public allocator: a Plan 9 semaphore serializes the shared heap across threads
- * (cc9 threads share memory via rfork(RFMEM)). Single-threaded programs pay one
- * uncontended semacquire/semrelease per call. */
+/* Public allocator: serializes the shared heap across threads (cc9 threads share
+ * memory via rfork(RFMEM)). Uncontended calls take an atomic, not a syscall. */
 extern int n9_semacquire(int *, int);
 extern int n9_semrelease(int *, int);
-static int malloc_lock = 1;
+static int malloc_lock = 0;      /* kernel sem: ONLY for actual contention */
+
+/* malloc_lock used to be taken with a bare n9_semacquire/n9_semrelease pair. On
+ * Plan 9 those are SYSCALLS even when the semaphore is free, so every malloc and
+ * every free trapped into the kernel TWICE — ~2-4us where the allocation itself
+ * is tens of ns. Servo's parse+layout does millions of allocations per page, so
+ * this alone cost seconds per page load.
+ *
+ * Now: an atomic test-and-set fast path (no syscall when uncontended, the
+ * overwhelmingly common case), a short spin, and only then a real sem sleep.
+ * ponytail: global lock still — per-thread arenas if contention shows up in a
+ * profile; this removes the syscall, not the sharing. */
+static int malloc_held = 0;      /* 0 = free, 1 = held */
+static int malloc_waiters = 0;
+
+static void mlock(void){
+	if(__sync_bool_compare_and_swap(&malloc_held, 0, 1)) return;   /* fast: no syscall */
+	for(int i = 0; i < 256; i++){                                  /* brief spin */
+		if(__sync_bool_compare_and_swap(&malloc_held, 0, 1)) return;
+	}
+	__sync_fetch_and_add(&malloc_waiters, 1);
+	while(!__sync_bool_compare_and_swap(&malloc_held, 0, 1))
+		n9_semacquire(&malloc_lock, 1);   /* sleep; stale tokens just re-loop */
+	__sync_fetch_and_sub(&malloc_waiters, 1);
+}
+
+static void munlock(void){
+	__sync_lock_release(&malloc_held);
+	if(__sync_fetch_and_add(&malloc_waiters, 0) > 0)
+		n9_semrelease(&malloc_lock, 1);   /* only pay the syscall if someone waits */
+}
 #ifdef CC9_RECURSE_PROBE
 /* DEBUG: malloc is THE allocator (clang's libc++ operator new calls it). If hit
  * with the stack already deep (runaway recursion), walk our frame chain and dump
@@ -109,22 +138,107 @@ static void cc9_dump_chain_malloc(void){
  * both heaps). Anything that wants break memory must come through here (or
  * through malloc), under the same lock. Returns (void*)-1 on failure. */
 void *cc9_sbrk(long incr){
-	n9_semacquire(&malloc_lock,1);
+	mlock();
 	void *r = n9_sbrk(incr);
-	n9_semrelease(&malloc_lock,1);
+	munlock();
 	return r;
+}
+
+/* Per-thread small-block cache.
+ *
+ * Removing malloc's unconditional syscall (mlock/munlock above) only exposed the
+ * next ceiling: ONE global heap lock shared by every thread. Profiling a dsl.sk
+ * load (/proc/N/regs sampling, Running/Ready only) showed the two busy layout
+ * threads burning ~66-84% of their on-CPU time in n9_semrelease and only ~11-14%
+ * in free_u — i.e. the lock HANDOFF cost 5x the actual allocator work. munlock
+ * only calls semrelease when a waiter exists, so that profile is a convoy: two
+ * threads allocating hard, serialized through one lock.
+ *
+ * So: small blocks come from a per-thread bin, with NO lock at all. Only a miss
+ * (empty bin) or an overflow (bin full) touches the global heap. This is the
+ * `ponytail:` note above coming due — it is a tcache, not a new allocator; the
+ * K&R heap underneath is unchanged and still the source of truth.
+ *
+ * Size classes are exact multiples of 16 so a block's EXISTING K&R header maps
+ * back to its class with no extra metadata: usable bytes = (hdr.size-1)*16 (the
+ * same arithmetic realloc/malloc_usable_size already rely on), so class index
+ * c = hdr.size-2. A cached block therefore always has >= its class's bytes. */
+#define MC_MAX     512               /* largest request served from the cache */
+#define MC_CLASSES 32                /* 16,32,..,512 */
+#define MC_CAP     32                /* blocks kept per class before giving back */
+typedef struct { void *head[MC_CLASSES]; int n[MC_CLASSES]; } mcache;
+/* Weak: a thread-free program never links pthread.o, and then everything is
+ * "main" and uses main_mc. Returns this thread's cache slot, or 0 for main. */
+extern void **cc9_thread_mcache(void) __attribute__((weak));
+static mcache main_mc;
+
+static mcache *mc_get(void){
+	if(!cc9_thread_mcache) return &main_mc;
+	void **slot = cc9_thread_mcache();
+	if(!slot) return &main_mc;                  /* main thread: sole user, no race */
+	if(!*slot){
+		mlock(); void *m = malloc_u(sizeof(mcache)); munlock();
+		if(!m) return 0;                        /* OOM: caller falls back to the heap */
+		char *z = m; for(size_t i = 0; i < sizeof(mcache); i++) z[i] = 0;
+		*slot = m;
+	}
+	return (mcache *)*slot;
+}
+
+/* Hand a dead thread's cached blocks back to the heap (called from pthread.c when
+ * a th_tab slot is recycled) — otherwise they'd be stranded, not just unsorted. */
+void cc9_mcache_release(void *p){
+	mcache *mc = p;
+	if(!mc) return;
+	mlock();
+	for(int c = 0; c < MC_CLASSES; c++)
+		for(void *b = mc->head[c]; b; ){ void *nx = *(void **)b; free_u(b); b = nx; }
+	free_u(mc);
+	munlock();
 }
 
 void *malloc(size_t n){
 #ifdef CC9_RECURSE_PROBE
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
-	n9_semacquire(&malloc_lock,1); void *r=malloc_u(n); n9_semrelease(&malloc_lock,1); return r; }
+	if(n && n <= MC_MAX){
+		mcache *mc = mc_get();
+		if(mc){
+			int c = (int)((n + 15) >> 4) - 1;   /* 1..512 -> 0..31 */
+			void *p = mc->head[c];
+			if(p){                              /* hit: no lock, no K&R scan */
+				mc->head[c] = *(void **)p;
+				mc->n[c]--;
+				return p;
+			}
+			/* Miss: take a block OF THE CLASS SIZE so its header maps back. */
+			mlock(); void *r = malloc_u((size_t)(c + 1) << 4); munlock();
+			return r;
+		}
+	}
+	mlock(); void *r=malloc_u(n); munlock(); return r; }
 void free(void *p){
 #ifdef CC9_RECURSE_PROBE
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
-	if(!p) return; n9_semacquire(&malloc_lock,1); free_u(p); n9_semrelease(&malloc_lock,1); }
+	if(!p) return;
+	/* aligned_alloc blocks carry a sentinel and a different base — never cache. */
+	if(((unsigned long *)p)[-1] != CC9_ALIGN_MAGIC){
+		size_t nu = ((Header *)p - 1)->s.size;
+		if(nu >= 2 && nu <= MC_CLASSES + 1){    /* fits a class: c = nu-2 */
+			mcache *mc = mc_get();
+			if(mc){
+				int c = (int)nu - 2;
+				if(mc->n[c] < MC_CAP){          /* hit: no lock */
+					*(void **)p = mc->head[c];
+					mc->head[c] = p;
+					mc->n[c]++;
+					return;
+				}
+			}
+		}
+	}
+	mlock(); free_u(p); munlock(); }
 /* malloc_usable_size(p) — the real allocated size of a block, which is >= what
  * was asked for (the request is rounded up to whole Header units).
  *
@@ -182,10 +296,10 @@ void *realloc(void*old,size_t n){
 	} else {
 		Header *bp=(Header*)old-1; oldsz=(bp->s.size-1)*sizeof(Header);
 	}
-	n9_semacquire(&malloc_lock,1);
+	mlock();
 	char *np=malloc_u(n);
 	if(np){ size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i]; free_u(base); }
-	n9_semrelease(&malloc_lock,1);
+	munlock();
 	return np;
 }
 /* abort(): raise SIGABRT first so a user-installed handler runs (POSIX), then

@@ -1,9 +1,13 @@
 #ifndef _TERMIOS_H
 #define _TERMIOS_H
-/* Decorative termios — there is no tty discipline to program on Plan 9; the
- * terminal (alacritty9/vts) keys raw mode on the alt-screen escape instead.
- * tcgetattr fills a sane cooked struct, tcsetattr/cfmakeraw succeed as no-ops
- * (poll.c/fs.c never consult these flags). */
+/* termios over /dev/consctl — Plan 9's console has one raw/cooked switch
+ * ("rawon"/"rawoff", cons(3)) and no per-flag discipline, so tcsetattr maps
+ * ECHO|ICANON onto it and stores the rest of the struct verbatim for tcgetattr
+ * to hand back. This is REAL: getpass and friends turn echo off and echo really
+ * goes off. Everything else in the struct is inert (poll.c/fs.c never consult
+ * these flags), and both calls fail with ENOTTY when the fd isn't a console —
+ * e.g. under alacritty9/vts, whose "tty" is a pipe with no consctl and which
+ * keys raw mode on the alt-screen escape instead. See posix_llvm.c. */
 typedef unsigned int tcflag_t;
 typedef unsigned char cc_t;
 typedef unsigned int speed_t;

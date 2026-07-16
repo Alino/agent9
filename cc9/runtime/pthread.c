@@ -12,6 +12,7 @@ extern long n9_open(const char *, int);
 extern long n9_pread(int, void *, long, long long);
 extern long n9_close(int);
 extern void *malloc(size_t);
+extern void *realloc(void *, size_t);
 extern void free(void *);
 extern void cc9_fpmask(void);   /* mask FP exceptions for this rfork'd thread (crt0.c) */
 extern void n9_exits(const char *);
@@ -52,8 +53,47 @@ static int handoff_sem = 0;       /* child signals it has consumed the handoff *
  * dead entries — Plan 9 reuses pids, and a "kill" note aimed at a finished
  * thread's recycled pid murders an innocent process (this killed webfs and
  * rio's wsys srv during nvim sessions). */
-static struct { int used; int dead; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; int errno_v; char errstr_v[160]; int errstr_errno_v; } th_tab[MAXTH];
+/* etls/etls_n: this thread's emulated-TLS array (upstream emutls.c keeps it in a
+ * pthread key; we hang it here because Plan 9 rfork(RFMEM) has no per-thread %fs).
+ * tsd: this thread's POSIX key array (upstream: pthread_self()->tsd) — same reason. */
+static struct { int used; int dead; unsigned long pid; n9_thread *t; unsigned long stklo, stkhi; int errno_v; char errstr_v[160]; int errstr_errno_v; void **etls; unsigned long etls_n; void **tsd; void *mcache; } th_tab[MAXTH];
 static int th_lock = 1;
+/* High-water mark: highest claimed slot + 1. The %rsp scans below run on EVERY
+ * errno access and EVERY thread_local access (emutls), so scanning all MAXTH=1024
+ * slots — which is what they did — cost microseconds per call. Monotonic and
+ * published (under th_lock) BEFORE `used`, so a scanner that sees a slot's
+ * used=1 also sees a th_hi covering it. A scanner only ever needs to find its
+ * OWN slot, registered before it ran, so a stale (smaller) read is still safe. */
+static int th_hi = 0;
+
+/* Main thread's stack is the BSS array crt0 switches %rsp to — an exact range
+ * check, so main resolves without touching the table at all. */
+extern char __cc9_main_stack[];
+#ifndef CC9_STACK_BYTES
+#define CC9_STACK_BYTES 268435456
+#endif
+static inline int on_main_stack(unsigned long sp){
+	return sp >= (unsigned long)__cc9_main_stack &&
+	       sp <  (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES;
+}
+
+/* th_tab index of the CALLING thread, or -1 for main (whose per-thread state
+ * lives in file-scope main_* below, since main has no slot). This is cc9's
+ * pthread_self()->tcb: upstream reaches per-thread storage with one %fs load,
+ * but rfork(RFMEM) threads share %fs, so %rsp range is the closest we get.
+ * Same lock-free TSO discipline as cur_pid: `used` is read first, the scalar
+ * range after, t is never dereferenced, and th_hi bounds the scan. */
+static int th_slot(void){
+	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
+	if(on_main_stack(sp)) return -1;   /* main: O(1), no scan */
+	int hi = th_hi;
+	for(int i=0;i<hi;i++){
+		if(!th_tab[i].used) continue;
+		__asm__ volatile("":::"memory");   /* acquire: don't hoist range reads before used */
+		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return i;
+	}
+	return -1;
+}
 
 /* Per-thread errno slot, resolved by %rsp stack-range like cur_pid (lock-free,
  * same TSO discipline). Weak-referenced from n9libc's __n9_errno so thread-free
@@ -61,13 +101,8 @@ static int th_lock = 1;
  * global. A slot reused after join could absorb a stale write through a saved
  * errno pointer — errno is written-then-read immediately, so harmless. */
 int *cc9_thread_errno_slot(void){
-	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
-	for(int i=0;i<MAXTH;i++){
-		if(!th_tab[i].used) continue;
-		__asm__ volatile("":::"memory");
-		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return &th_tab[i].errno_v;
-	}
-	return 0;
+	int s = th_slot();
+	return s < 0 ? 0 : &th_tab[s].errno_v;       /* main (or a reaped slot) -> global errno */
 }
 
 /* The errstr text that goes with that errno, resolved the same way.
@@ -220,13 +255,8 @@ static void dead_reap(void){
 
 /* current "pid" = a stable per-thread id derived from which stack %rsp is in. */
 static unsigned long cur_pid(void){
-	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
-	for(int i=0;i<MAXTH;i++){
-		if(!th_tab[i].used) continue;
-		__asm__ volatile("":::"memory");   /* acquire: don't hoist range reads before used (pairs w/ trampoline) */
-		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return th_tab[i].pid;
-	}
-	return 1;   /* main thread */
+	int s = th_slot();
+	return s < 0 ? 1 : th_tab[s].pid;   /* no slot == main thread */
 }
 
 /* Per-thread __cxa_thread_atexit: thread_local destructors + promise::
@@ -247,7 +277,7 @@ int __cxa_thread_atexit(void (*fn)(void *), void *arg, void *dso){
 	return 0;
 }
 int __cxa_thread_atexit_impl(void (*fn)(void *), void *arg, void *dso){ return __cxa_thread_atexit(fn, arg, dso); }
-static void run_thread_keys(unsigned long pid);   /* defined with the TLS table below */
+static void run_thread_keys(void);   /* defined with the TSD arrays below */
 static void run_thread_atexit(unsigned long pid){
 	for(;;){   /* LIFO: highest-index entry for this pid first */
 		void (*fn)(void *)=0; void *arg=0; int idx=-1;
@@ -262,6 +292,7 @@ static void run_thread_atexit(unsigned long pid){
 static void trampoline(void *p){
 	n9_thread *t = (n9_thread *)p;
 	cc9_fpmask();   /* this rfork child has fresh FP state — mask FP exceptions */
+	{ extern void cc9_prof_arm(void); cc9_prof_arm(); }   /* CC9_PROF: alarms are per-proc, and a cc9 thread IS a proc */
 	/* Register (tid, t, stack-range) BEFORE releasing the handoff the creator
 	 * waits on, so by the time pthread_create returns the thread is findable AND
 	 * cur_pid() resolves this thread — both before start() runs. The scalar range
@@ -270,6 +301,19 @@ static void trampoline(void *p){
 	n9_semacquire(&th_lock,1);
 	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){
 		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi; th_tab[i].errno_v=0; th_tab[i].dead=0;
+		/* Slots are recycled after join: drop the previous owner's emutls and TSD
+		 * arrays or this thread would inherit ITS thread_locals / key values. (The
+		 * emutls objects it pointed at leak, as they always have — no destructor
+		 * rounds here; TSD values already went through run_thread_keys at exit.) */
+		if(th_tab[i].etls) free(th_tab[i].etls);
+		th_tab[i].etls=0; th_tab[i].etls_n=0;
+		/* hand the dead thread's cached small blocks back to the heap, else they
+		 * sit stranded in a bin nobody owns */
+		if(th_tab[i].mcache){ extern void cc9_mcache_release(void *); cc9_mcache_release(th_tab[i].mcache); }
+		th_tab[i].mcache=0;
+		if(th_tab[i].tsd) free(th_tab[i].tsd);
+		th_tab[i].tsd=0;
+		if(i >= th_hi) th_hi = i+1;        /* publish before used: bounds the %rsp scans */
 		__asm__ volatile("":::"memory");   /* release: publish range before used (pairs w/ cur_pid) */
 		th_tab[i].used=1; break;
 	}
@@ -280,7 +324,7 @@ static void trampoline(void *p){
 	extern void *cc9_thread_invoke(void *(*)(void *), void *);
 	t->ret = cc9_thread_invoke(t->start, t->arg);
 	run_thread_atexit(t->pid);   /* thread_local dtors + set_value_at_thread_exit */
-	run_thread_keys(t->pid);     /* POSIX TSD destructors (frees __thread_struct etc.) */
+	run_thread_keys();           /* POSIX TSD destructors (frees __thread_struct etc.) */
 	t->done = 1;
 	{ unsigned long mypid = t->pid;
 	  n9_semacquire(&th_lock,1);
@@ -320,7 +364,10 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	static int tid_lock = 1;
 	n9_semacquire(&tid_lock,1); unsigned long tid = ++tid_ctr; n9_semrelease(&tid_lock,1);
 	t->start=start; t->arg=arg; t->ret=0; t->joinsem=0; t->done=0; t->detached=0; t->pid=tid; t->realpid=0;
-	size_t ss = cc9_thread_stack > STACKSIZE ? (size_t)cc9_thread_stack : STACKSIZE;
+	/* attr stacksize wins (POSIX); cc9_set_thread_stack is the legacy global knob
+	 * for callers that can't pass an attr; STACKSIZE is the floor. */
+	size_t ss = attr && attr->stacksize > STACKSIZE ? (size_t)attr->stacksize
+	          : cc9_thread_stack > STACKSIZE ? (size_t)cc9_thread_stack : STACKSIZE;
 	char *stk = malloc(ss); if(!stk){ free(t); return 11; }
 	t->stack=stk; t->stksize=ss;
 	void *top = (void *)(((unsigned long)(stk+ss)) & ~15UL);
@@ -400,25 +447,57 @@ void pthread_exit(void *ret){ unsigned long pid=cur_pid(); n9_thread *t=find_thr
  * -> lost updates under contention. Rust and cc9's PTHREAD_MUTEX_INITIALIZER/
  * pthread_mutex_init both set sem=1, so a valid unlocked mutex is never all-zero.
  * Raw zero-initialized (non-POSIX) mutexes are unsupported and will deadlock. */
-int pthread_mutex_init(pthread_mutex_t *m, const pthread_mutexattr_t *a){ m->sem=1; m->owner=0; m->count=0; m->kind=a?a->kind:0; return 0; }
+int pthread_mutex_init(pthread_mutex_t *m, const pthread_mutexattr_t *a){ m->sem=0; m->held=0; m->owner=0; m->count=0; m->kind=a?a->kind:0; return 0; }
+
+/* Futex-shaped lock/unlock. Uncontended = ONE atomic CAS, no syscall; m->sem is
+ * only the sleep channel. Plan 9's semacquire/semrelease are syscalls (~1.4us)
+ * even when the semaphore is free, so the old unconditional semacquire cost
+ * ~3.2us per Rust std::sync::Mutex lock+unlock (measured on cirno) where Linux's
+ * futex path is ~20ns — and Servo's layout is full of Arc<Mutex<..>>/rayon locks.
+ * Same shape as n9libc's mlock(). Spin bound is deliberately < one syscall's cost.
+ * The sem is a COUNTING semaphore, so a release racing a waiter's park can't be
+ * lost: the token is still there when it acquires, and stale tokens just re-loop. */
+static void mtx_acquire(pthread_mutex_t *m){
+	if(__sync_bool_compare_and_swap(&m->held, 0, 1)) return;   /* uncontended: no syscall */
+	/* Contended. Mark 2 ("held, someone may be waiting") and sleep until we win the
+	 * xchg. Re-marking 2 on every retry is what keeps release honest: the unlocker
+	 * only pays a syscall when it sees 2. */
+	while(__sync_lock_test_and_set(&m->held, 2) != 0)
+		n9_semacquire(&m->sem, 1);        /* stale tokens just re-loop */
+}
+static void mtx_release(pthread_mutex_t *m){
+	if(__sync_lock_test_and_set(&m->held, 0) == 2)
+		n9_semrelease(&m->sem, 1);        /* only pay the syscall if someone waited */
+}
 int pthread_mutex_destroy(pthread_mutex_t *m){ (void)m; return 0; }
 int pthread_mutex_lock(pthread_mutex_t *m){
+	/* Only RECURSIVE/ERRORCHECK ever READ ->owner (here and in unlock); a NORMAL
+	 * mutex — what Rust's std::sync::Mutex and most C++ locks are — used to pay a
+	 * cur_pid() %rsp scan on every lock just to store a value nobody reads. */
+	if(m->kind == PTHREAD_MUTEX_NORMAL){
+		mtx_acquire(m);
+		m->count=1; return 0;
+	}
 	unsigned long self=cur_pid();
 	if(m->kind==PTHREAD_MUTEX_RECURSIVE && m->owner==self){ m->count++; return 0; }
-	n9_semacquire(&m->sem, 1);
+	mtx_acquire(m);
 	m->owner=self; m->count=1; return 0;
 }
 int pthread_mutex_trylock(pthread_mutex_t *m){
+	if(m->kind == PTHREAD_MUTEX_NORMAL){
+		if(!__sync_bool_compare_and_swap(&m->held, 0, 1)) return 16 /*EBUSY*/;
+		m->count=1; return 0;
+	}
 	unsigned long self=cur_pid();
 	if(m->kind==PTHREAD_MUTEX_RECURSIVE && m->owner==self){ m->count++; return 0; }
-	if(n9_semacquire(&m->sem, 0) < 0) return 16 /*EBUSY*/;
+	if(!__sync_bool_compare_and_swap(&m->held, 0, 1)) return 16 /*EBUSY*/;
 	m->owner=self; m->count=1; return 0;
 }
 int pthread_mutex_unlock(pthread_mutex_t *m){
 	if((m->kind==PTHREAD_MUTEX_RECURSIVE || m->kind==PTHREAD_MUTEX_ERRORCHECK)
 	   && m->owner != cur_pid()) return 1 /*EPERM*/;   /* only the owner may unlock */
 	if(m->kind==PTHREAD_MUTEX_RECURSIVE && m->count>1){ m->count--; return 0; }
-	m->owner=0; m->count=0; n9_semrelease(&m->sem, 1); return 0;
+	m->owner=0; m->count=0; mtx_release(m); return 0;
 }
 int pthread_mutexattr_init(pthread_mutexattr_t *a){ a->kind=0; return 0; }
 /* process-shared accepted for real: semaphore-word mutexes work cross-process
@@ -439,15 +518,37 @@ int pthread_mutexattr_settype(pthread_mutexattr_t *a, int k){ a->kind=k; return 
 extern long n9_tsemacquire(int *, long);
 extern int clock_gettime(int, struct timespec *);
 typedef struct cc9_cwaiter { int sem; int dq; struct cc9_cwaiter *next; } cc9_cwaiter;
+/* The condvar's internal lock, futex-shaped — same reason as pthread_mutex: a
+ * bare n9_semacquire/semrelease pair is TWO Plan 9 syscalls (~2.8us) even when
+ * nobody contends, and pthread_cond_signal runs on EVERY Rust channel send
+ * (notify_one), waiter or not. Profiling a dsl.sk load showed ~85% of on-CPU time
+ * in semrelease/semacquire with free_u down at 5% — this is where it goes.
+ *
+ * The futex word is `pad`, NOT `lk`, deliberately: pad is 0 both in the old static
+ * PTHREAD_COND_INITIALIZER {1,0,0,0} and in a zeroed/memset struct, so 0=free is
+ * correct for BOTH init conventions (libc++'s condition_variable uses the static
+ * initializer; other code calloc's). `lk` stays the sleep channel — its leftover
+ * 1 is at most one spurious token, which the retry loop just re-checks. sizeof and
+ * all field offsets are unchanged, so objects compiled against the old header
+ * (cargo caches mozjs/angle and does not track these headers) still work. */
+static void cond_lock(pthread_cond_t *c){
+	if(__sync_bool_compare_and_swap(&c->pad, 0, 1)) return;   /* uncontended: no syscall */
+	while(__sync_lock_test_and_set(&c->pad, 2) != 0)
+		n9_semacquire(&c->lk, 1);
+}
+static void cond_unlock(pthread_cond_t *c){
+	if(__sync_lock_test_and_set(&c->pad, 0) == 2)
+		n9_semrelease(&c->lk, 1);      /* only if someone actually waited */
+}
+
 static void cond_enqueue(pthread_cond_t *c, cc9_cwaiter *w){
 	w->sem=0; w->dq=0; w->next=0;
-	if(c->lk==0) c->lk=1;                 /* defensive: treat 0 as freshly-unlocked */
-	n9_semacquire(&c->lk,1);
+	cond_lock(c);
 	if(c->tail) ((cc9_cwaiter*)c->tail)->next=w; else c->head=w;
 	c->tail=w;
-	n9_semrelease(&c->lk,1);
+	cond_unlock(c);
 }
-int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a){ (void)a; c->lk=1; c->pad=0; c->head=0; c->tail=0; return 0; }
+int pthread_cond_init(pthread_cond_t *c, const pthread_condattr_t *a){ (void)a; c->lk=0; c->pad=0; c->head=0; c->tail=0; return 0; }
 int pthread_cond_destroy(pthread_cond_t *c){ (void)c; return 0; }
 int pthread_cond_wait(pthread_cond_t *c, pthread_mutex_t *m){
 	cc9_cwaiter w;
@@ -470,7 +571,7 @@ int pthread_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct t
 	long r = n9_tsemacquire(&w.sem, ms);
 	int rc = 0;
 	if(r != 1){
-		n9_semacquire(&c->lk,1);
+		cond_lock(c);
 		if(w.dq){                                  /* signal dequeued+posted us as we timed out */
 			n9_tsemacquire(&w.sem, 0);             /* consume the token (non-blocking) */
 			rc = 0;
@@ -480,26 +581,24 @@ int pthread_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m, const struct t
 			if(p==&w){ if(prev) prev->next=w.next; else c->head=w.next; if(c->tail==(void*)&w) c->tail=(void*)prev; }
 			rc = 110 /*ETIMEDOUT*/;
 		}
-		n9_semrelease(&c->lk,1);
+		cond_unlock(c);
 	}
 	pthread_mutex_lock(m);
 	return rc;
 }
 int pthread_cond_signal(pthread_cond_t *c){
-	if(c->lk==0) c->lk=1;
-	n9_semacquire(&c->lk,1);
+	cond_lock(c);
 	cc9_cwaiter *w=(cc9_cwaiter*)c->head;
 	if(w){ c->head=w->next; if(!c->head) c->tail=0; w->dq=1; n9_semrelease(&w->sem,1); }
-	n9_semrelease(&c->lk,1);
+	cond_unlock(c);
 	return 0;
 }
 int pthread_cond_broadcast(pthread_cond_t *c){
-	if(c->lk==0) c->lk=1;
-	n9_semacquire(&c->lk,1);
+	cond_lock(c);
 	cc9_cwaiter *w=(cc9_cwaiter*)c->head;
 	c->head=0; c->tail=0;
 	while(w){ cc9_cwaiter *n=w->next; w->dq=1; n9_semrelease(&w->sem,1); w=n; }
-	n9_semrelease(&c->lk,1);
+	cond_unlock(c);
 	return 0;
 }
 
@@ -519,46 +618,87 @@ int pthread_once(pthread_once_t *o, void (*fn)(void)){
 	}
 }
 
-/* ---- TLS, keyed by pid (RFMEM shares memory, so no real per-thread storage) ---- */
-#define MAXTLS 4096
+/* ---- POSIX thread-specific data (pthread_{get,set}specific) ----
+ * Upstream is `pthread_self()->tsd[key]` — one indexed load off the TCB, no lock.
+ * cc9 used to key a 4096-entry GLOBAL table by (pid,key): a cur_pid() %rsp scan of
+ * all MAXTH=1024 slots, then a scan of the table — plus a kernel semaphore on every
+ * set (a semacquire/semrelease pair is ~2749 ns here) — and EAGAIN once 4096
+ * (thread,key) pairs existed. Now it's what upstream does: th_slot() resolves the
+ * calling thread and the array hangs off its th_tab slot, so both calls are an
+ * indexed load. The array is private to the calling thread => no lock, ever.
+ *
+ * Flat void*[MAXKEYS] rather than a grown-on-demand array (what etls needs, since
+ * emutls indices are unbounded): keys already can't exceed PTHREAD_KEYS_MAX=256, so
+ * the whole array is 2K — smaller and simpler than growth code, and it makes the
+ * bounds check a compile-time constant. Allocated lazily on first setspecific:
+ * threads that never touch a key pay nothing. */
 #define MAXKEYS 256
-static struct { int used; unsigned long pid; int key; void *val; } tls_tab[MAXTLS];
-static int tls_lock = 1;
-static int next_key = 1;
+static int tls_lock = 1;                    /* guards next_key/key_dtor only */
+static int next_key = 1;                    /* never reused: key 0 stays unhanded-out */
 static void (*key_dtor[MAXKEYS])(void *);   /* TSD destructor per key (POSIX) */
-int pthread_key_create(pthread_key_t *k, void (*dtor)(void *)){ n9_semacquire(&tls_lock,1); int key=next_key++; if(key>0&&key<MAXKEYS) key_dtor[key]=dtor; *k=key; n9_semrelease(&tls_lock,1); return 0; }
-/* Run TSD destructors for a thread at its exit: for each key with a non-null
- * value and a registered destructor, null the value and call the destructor;
- * repeat (a destructor may set new values) for a few rounds, then free the
- * thread's slots. Without this, __thread_specific_ptr-held data (e.g. libc++'s
- * per-thread __thread_struct) leaks on every std::thread — tripping the suite's
- * new==delete leak checks. */
-static void run_thread_keys(unsigned long pid){
+static void **main_tsd;                     /* main has no th_tab slot (cf. main_etls) */
+
+int pthread_key_create(pthread_key_t *k, void (*dtor)(void *)){
+	n9_semacquire(&tls_lock,1);
+	int key = next_key;
+	if(key >= MAXKEYS){ n9_semrelease(&tls_lock,1); return 11; }   /* EAGAIN: PTHREAD_KEYS_MAX */
+	next_key++; key_dtor[key]=dtor;
+	n9_semrelease(&tls_lock,1);
+	*k = key; return 0;
+}
+/* POSIX: key_delete runs no destructors and frees no values — the application owns
+ * that storage. So retiring the destructor is the whole job; stale values left in
+ * other threads' arrays are unreachable because next_key never re-hands-out a key
+ * (and reaching into another live thread's array would race its slot being reused). */
+int pthread_key_delete(pthread_key_t k){
+	if(k <= 0 || k >= MAXKEYS) return 22;   /* EINVAL */
+	n9_semacquire(&tls_lock,1); key_dtor[k]=0; n9_semrelease(&tls_lock,1);
+	return 0;
+}
+
+static void **tsd_array(int alloc){
+	int s = th_slot();
+	void ***ap = s < 0 ? &main_tsd : &th_tab[s].tsd;
+	if(!*ap && alloc){
+		void **a = malloc(MAXKEYS * sizeof(void *));
+		if(!a) return 0;
+		for(int i=0;i<MAXKEYS;i++) a[i]=0;
+		*ap = a;
+	}
+	return *ap;
+}
+
+void *pthread_getspecific(pthread_key_t k){
+	void **a = tsd_array(0);
+	if(!a || k <= 0 || k >= MAXKEYS) return 0;   /* unset key (or no array yet) reads NULL */
+	return a[k];
+}
+int pthread_setspecific(pthread_key_t k, const void *v){
+	if(k <= 0 || k >= MAXKEYS) return 22;        /* EINVAL: key_create hands out no such key */
+	void **a = tsd_array(1);
+	if(!a) return 12;                            /* ENOMEM */
+	a[k] = (void *)v;                            /* private to this thread: no lock */
+	return 0;
+}
+
+/* Run this thread's TSD destructors at its exit: for each key with a non-null value
+ * and a registered destructor, null the value and call the destructor; repeat (a
+ * destructor may set new values) for a few rounds. Without this,
+ * __thread_specific_ptr-held data (e.g. libc++'s per-thread __thread_struct) leaks
+ * on every std::thread — tripping the suite's new==delete leak checks.
+ * Runs ON the exiting thread (from the trampoline), so th_slot() resolves it; the
+ * array itself is freed when the th_tab slot is next claimed. */
+static void run_thread_keys(void){
+	void **a = tsd_array(0);
+	if(!a) return;
 	for(int round=0; round<4; round++){
 		int any=0;
-		for(int i=0;i<MAXTLS;i++){
-			void *v=0; void (*d)(void*)=0;
-			n9_semacquire(&tls_lock,1);
-			if(tls_tab[i].used && tls_tab[i].pid==pid && tls_tab[i].val){
-				int key=tls_tab[i].key;
-				if(key>0 && key<MAXKEYS && key_dtor[key]){ v=tls_tab[i].val; d=key_dtor[key]; tls_tab[i].val=0; }
-			}
-			n9_semrelease(&tls_lock,1);
-			if(d){ d(v); any=1; }
+		for(int i=1;i<MAXKEYS;i++){
+			void *v = a[i]; void (*d)(void *) = key_dtor[i];
+			if(v && d){ a[i]=0; d(v); any=1; }
 		}
 		if(!any) break;
 	}
-	n9_semacquire(&tls_lock,1);
-	for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].pid==pid) tls_tab[i].used=0;
-	n9_semrelease(&tls_lock,1);
-}
-int pthread_key_delete(pthread_key_t k){ n9_semacquire(&tls_lock,1); for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].key==k) tls_tab[i].used=0; n9_semrelease(&tls_lock,1); return 0; }
-void *pthread_getspecific(pthread_key_t k){ unsigned long pid=cur_pid(); for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].pid==pid && tls_tab[i].key==k) return tls_tab[i].val; return 0; }
-int pthread_setspecific(pthread_key_t k, const void *v){
-	unsigned long pid=cur_pid(); n9_semacquire(&tls_lock,1);
-	for(int i=0;i<MAXTLS;i++) if(tls_tab[i].used && tls_tab[i].pid==pid && tls_tab[i].key==k){ tls_tab[i].val=(void*)v; n9_semrelease(&tls_lock,1); return 0; }
-	for(int i=0;i<MAXTLS;i++) if(!tls_tab[i].used){ tls_tab[i].used=1; tls_tab[i].pid=pid; tls_tab[i].key=k; tls_tab[i].val=(void*)v; n9_semrelease(&tls_lock,1); return 0; }
-	n9_semrelease(&tls_lock,1); return 11;
 }
 
 /* Emulated TLS (-femulated-tls): the compiler turns each `thread_local` into a
@@ -567,29 +707,87 @@ int pthread_setspecific(pthread_key_t k, const void *v){
  * model doesn't work under rfork(RFMEM) (no per-thread %fs base), but this does. */
 extern void *memcpy(void *, const void *, size_t);
 extern void *memset(void *, int, size_t);
-#define MAXEMUTLS 8192
-static struct { int used; unsigned long pid; void *ctrl; void *mem; } emutls_tab[MAXEMUTLS];
+/* Ported 1:1 from compiler-rt lib/builtins/emutls.c, which is what -femulated-tls
+ * actually calls. Upstream:
+ *     uintptr_t index = emutls_get_index(control);       // control->index, set ONCE
+ *     emutls_address_array *array = emutls_get_address_array(index--);
+ *     if (array->data[index] == NULL)
+ *       array->data[index] = emutls_allocate_object(control);
+ *     return array->data[index];
+ * i.e. an atomic load + a per-thread array index. No lock, no search.
+ *
+ * The control layout (upstream __emutls_control) is:
+ *     c[0]=size  c[1]=align  c[2]=index ("data[index-1] is the object address")  c[3]=value/init
+ *
+ * The previous cc9 version IGNORED c[2] — the whole mechanism — and instead did
+ * cur_pid() (scan of MAXTH slots) + a kernel semaphore + a linear scan of an
+ * 8192-entry global table, on EVERY thread_local access: measured 21779 ns/access
+ * (a plain call is 22 ns). It also died with "emutls table full" once 8192
+ * (thread,var) pairs existed.
+ *
+ * The ONE thing that cannot be 1:1: upstream gets the per-thread array with
+ * pthread_getspecific (one %fs load on Linux). cc9 threads are rfork(RFMEM) procs
+ * with no per-thread %fs base, so we resolve the thread by %rsp range (the same
+ * trick as cur_pid) and hang the array off its th_tab slot. Everything else —
+ * the index, the array, the lazily allocated object — matches upstream.
+ * ponytail: objects still leak at thread exit (as before — no destructor rounds);
+ * add upstream's emutls_key destructor if that ever matters. */
 static int emutls_lock = 1;
+static unsigned long emutls_num_object = 0;      /* guarded by emutls_lock */
+static void **main_etls; static unsigned long main_etls_n;
+
+static unsigned long emutls_get_index(void *control){
+	unsigned long *c = control;                   /* c[2] == index */
+	unsigned long index = __atomic_load_n(&c[2], __ATOMIC_ACQUIRE);
+	if(!index){
+		n9_semacquire(&emutls_lock,1);
+		index = c[2];
+		if(!index){
+			index = ++emutls_num_object;
+			__atomic_store_n(&c[2], index, __ATOMIC_RELEASE);
+		}
+		n9_semrelease(&emutls_lock,1);
+	}
+	return index;
+}
+
+/* This thread's malloc-cache slot (n9libc's tcache), or 0 for main — main has no
+ * th_tab slot and n9libc keeps its own. Same %rsp resolve as everything else. */
+void **cc9_thread_mcache(void){
+	int sl = th_slot();
+	return sl < 0 ? 0 : &th_tab[sl].mcache;
+}
+
+/* upstream's emutls_getspecific(), by %rsp instead of %fs (th_slot). The array is
+ * private to the calling thread, so nothing below needs a lock. */
+static void ***emutls_array_slot(unsigned long **nslot){
+	int s = th_slot();
+	if(s < 0){ *nslot = &main_etls_n; return &main_etls; }
+	*nslot = &th_tab[s].etls_n; return &th_tab[s].etls;
+}
+
 void *__emutls_get_address(void *control){
-	size_t *c = control;
-	size_t size = c[0];
-	void *init = ((void **)control)[3];
-	unsigned long pid = cur_pid();
-	/* Hold the lock across the whole find-or-create (malloc uses a DIFFERENT
-	 * lock, so no deadlock). Dropping it between search and insert let a
-	 * reentrant same-(pid,ctrl) call create a duplicate block (TOCTOU). */
-	n9_semacquire(&emutls_lock,1);
-	for(int i=0;i<MAXEMUTLS;i++)
-		if(emutls_tab[i].used && emutls_tab[i].pid==pid && emutls_tab[i].ctrl==control){
-			void *m=emutls_tab[i].mem; n9_semrelease(&emutls_lock,1); return m; }
-	void *m = malloc(size ? size : 1);
-	if(!m){ n9_semrelease(&emutls_lock,1); n9_exits("cc9: emutls OOM\n"); }
-	if(init) memcpy(m, init, size); else memset(m, 0, size);
-	int placed=0;
-	for(int i=0;i<MAXEMUTLS;i++) if(!emutls_tab[i].used){ emutls_tab[i].used=1; emutls_tab[i].pid=pid; emutls_tab[i].ctrl=control; emutls_tab[i].mem=m; placed=1; break; }
-	n9_semrelease(&emutls_lock,1);
-	if(!placed) n9_exits("cc9: emutls table full\n");   /* would silently lose thread_local identity */
-	return m;
+	unsigned long index = emutls_get_index(control);
+	unsigned long *np; void ***ap = emutls_array_slot(&np);
+	if(index > *np){                              /* grow (upstream: emutls_alloc_array) */
+		unsigned long n = *np ? *np : 64;
+		while(n < index) n *= 2;
+		void **a = realloc(*ap, n * sizeof(void *));
+		if(!a) n9_exits("cc9: emutls OOM\n");
+		for(unsigned long k = *np; k < n; k++) a[k] = 0;
+		*ap = a; *np = n;
+	}
+	void **arr = *ap;
+	if(!arr[index-1]){                            /* upstream: emutls_allocate_object */
+		size_t *c = control;
+		size_t size = c[0];
+		void *init = ((void **)control)[3];
+		void *m = malloc(size ? size : 1);
+		if(!m) n9_exits("cc9: emutls OOM\n");
+		if(init) memcpy(m, init, size); else memset(m, 0, size);
+		arr[index-1] = m;
+	}
+	return arr[index-1];
 }
 
 /* rwlock = plain mutex (readers serialize; fine for libunwind's FDE cache). */
@@ -651,7 +849,7 @@ int pthread_atfork(void (*prep)(void), void (*parent)(void), void (*child)(void)
 
 /* attr/condattr are accepted-and-ignored (thread stacks are fixed-size heap
  * blocks; the only clock is /dev/bintime). rwlock is a mutex, so try = trylock. */
-int pthread_attr_init(pthread_attr_t *a){ if(a) a->detachstate = PTHREAD_CREATE_JOINABLE; return 0; }
+int pthread_attr_init(pthread_attr_t *a){ if(a){ a->detachstate = PTHREAD_CREATE_JOINABLE; a->stacksize = 0; } return 0; }
 int pthread_attr_destroy(pthread_attr_t *a){ (void)a; return 0; }
 /* detachstate is the one attr we actually honor — pthread_create applies it.
  * stacksize below is still a no-op (cc9_thread_stack is the real knob). */
@@ -664,8 +862,15 @@ int pthread_attr_getdetachstate(const pthread_attr_t *a, int *s){
 	if(!a || !s) return 22;
 	*s = a->detachstate; return 0;
 }
-int pthread_attr_setstacksize(pthread_attr_t *a, size_t s){ (void)a; (void)s; return 0; }
-int pthread_attr_getstacksize(const pthread_attr_t *a, size_t *s){ (void)a; *s = 1<<20; return 0; }
+/* These used to be no-op stubs that ACCEPTED a stack size and threw it away, so
+ * every thread silently got STACKSIZE — Rust's Builder::stack_size(8MB) (rayon /
+ * stylo layout workers) got a success return and a 256 KB stack, then smashed its
+ * return address recursing on deep DOM and faulted with pc pointing into the stack. */
+int pthread_attr_setstacksize(pthread_attr_t *a, size_t s){ if(a) a->stacksize = s; return 0; }
+int pthread_attr_getstacksize(const pthread_attr_t *a, size_t *s){
+	*s = a && a->stacksize ? a->stacksize : (size_t)STACKSIZE;
+	return 0;
+}
 int pthread_condattr_init(pthread_condattr_t *a){ (void)a; return 0; }
 int pthread_condattr_destroy(pthread_condattr_t *a){ (void)a; return 0; }
 int pthread_condattr_setclock(pthread_condattr_t *a, int c){ (void)a; (void)c; return 0; }

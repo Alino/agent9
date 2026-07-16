@@ -33,8 +33,10 @@
 #define F_SETLKW 7
 #define F_DUPFD_CLOEXEC 1030
 #define FD_CLOEXEC 1
-/* advisory record locks (LLVM Path.inc lockFile/unlockFile). cc9's fcntl is a
- * stub returning 0, so locks always "succeed" — single-writer is the norm. */
+/* advisory record locks (LLVM Path.inc lockFile/unlockFile). Plan 9 has no
+ * POSIX record locks and cc9 does not fake them: F_SETLK/F_SETLKW/F_GETLK all
+ * fail with ENOLCK (F_UNLCK succeeds — we hold nothing to release). See the
+ * lock arm of fcntl() in poll.c for why DMEXCL is not a substitute. */
 #define F_RDLCK 0
 #define F_WRLCK 1
 #define F_UNLCK 2
