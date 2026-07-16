@@ -170,3 +170,22 @@ screenshot after N seconds" on cirno. Four bugs were fixed to get the PNG:
    with. Fix: open the widest mode that works — O_RDWR (bidirectional sockets,
    the common case), then O_RDONLY, then O_WRONLY. RDWR-first never downgrades a
    real socket. (The srvfd_gate passed because it posts a bidirectional pipe.)
+
+## M5.3 on-screen gl9win2 window — status (2026-07-16)
+
+Interactive RENDERING is proven (M5.2): the Plan9WebView streams the correctly
+-rendered page as GL9B frames, captured off fd 1 and decoded pixel-identical to
+the M4/M6 renders — validated by running `ladybird` with manual fd redirects
+(`{sleep N; cat quitrec} | ladybird ... >frames.bin`).
+
+NOT yet validated: the full gl9win2-spawns-browser integration displayed on a
+real rio window. On the dev VM, `mount /srv/rio.glenda.N /n/w 'new -r ...';
+bind -b /n/w /dev; gl9win2 ladybird <url>` opens the window (visible via HMP
+screendump, focused) and gl9win2 runs with no error, but no browser frame blits
+to it within ~3 min (the window keeps rio's default terminal content). The
+gl9win2→browser pipe path (fd0 events / fd1 frames set up by gl9win2, vs the
+manual redirects used for the frame-capture proof) is the untested seam; the VM
+is also ~5x slower than cirno. Next: trace whether the browser streams a frame
+to gl9win2's fd 1 under the presenter (add a byte counter in gl9win2's
+framereader), and whether gl9win2 blits (kbddebug). Likely a small fd/pipe or
+first-frame-timing issue, not a rendering defect.
