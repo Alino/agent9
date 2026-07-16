@@ -345,21 +345,22 @@ index 3952280eb5..7817c7512e 100644
      set(_possible_guis "AppKit" "Qt")
      set(_default_gui "AppKit")
 diff --git a/UI/cmake/ResourceFiles.cmake b/UI/cmake/ResourceFiles.cmake
-index 99d21fc6ab..de6aca9f8f 100644
+index 99d21fc6ab..48409b8d6b 100644
 --- a/UI/cmake/ResourceFiles.cmake
 +++ b/UI/cmake/ResourceFiles.cmake
-@@ -2,6 +2,15 @@ set(FONTS
+@@ -2,6 +2,16 @@ set(FONTS
      NotoEmoji.ttf
      SerenitySans-Regular.ttf
  )
 +if (PLAN9)
-+    # ladybird9: SerenitySans has no monospace; without a fixed-width family
-+    # FontPlugin's VERIFY(m_default_fixed_width_font) aborts WebContent. Other
-+    # platforms get one from fontconfig/system dirs; Plan 9 has none, so bundle
-+    # DejaVu Sans Mono (its internal name is in the monospace fallback list).
-+    # PLAN9-gated so a same-commit host parity build (which has system mono) does
-+    # not require this ttf to be present in Base/res/fonts.
-+    list(APPEND FONTS DejaVuSansMono.ttf)
++    # ladybird9: Plan 9 has no system fonts, so bundle a normal, broad-coverage
++    # family for the CSS generics instead of falling back to the hand-drawn
++    # SerenitySans (see FontPlugin.cpp PLAN9 arm). DejaVu Sans/Serif/Mono cover
++    # Latin/Cyrillic/Greek + symbols and read normally. Also required: without a
++    # fixed-width family FontPlugin's VERIFY(m_default_fixed_width_font) aborts
++    # WebContent. PLAN9-gated so a same-commit host parity build (which has system
++    # fonts) does not require these ttfs in Base/res/fonts.
++    list(APPEND FONTS DejaVuSans.ttf DejaVuSerif.ttf DejaVuSansMono.ttf)
 +endif()
  list(TRANSFORM FONTS PREPEND "${LADYBIRD_SOURCE_DIR}/Base/res/fonts/")
  

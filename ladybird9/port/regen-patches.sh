@@ -23,6 +23,7 @@ gen 0003-libcore-plan9.patch \
   Libraries/LibCore/StandardPaths.cpp Libraries/LibCore/System.cpp \
   Libraries/LibCore/System.h Libraries/LibCore/SystemServerTakeover.cpp \
   Libraries/LibCore/CMakeLists.txt \
+  Libraries/LibDatabase/Database.cpp \
   Libraries/LibGC/BlockAllocator.cpp Libraries/LibGC/PrimitiveStorage.h
 
 gen 0004-buildsystem-plan9.patch \

@@ -335,6 +335,45 @@ index 09047f66ff..fe41c4292a 100644
  
      auto socket = TRY(Core::LocalSocket::adopt_fd(fd));
      // It had to be !CLOEXEC for obvious reasons, but we
+diff --git a/Libraries/LibDatabase/Database.cpp b/Libraries/LibDatabase/Database.cpp
+index d32a73ab63..4ea5aeedbb 100644
+--- a/Libraries/LibDatabase/Database.cpp
++++ b/Libraries/LibDatabase/Database.cpp
+@@ -67,7 +67,19 @@ ErrorOr<NonnullRefPtr<Database>> Database::create(ByteString const& directory, S
+     TRY(Core::Directory::create(directory, Core::Directory::CreateDirectories::Yes));
+     LexicalPath database_path { ByteString::formatted("{}/{}.db", directory, name) };
+     sqlite3* sql_database { nullptr };
++#if defined(AK_OS_PLAN9)
++    // Plan 9: cc9 honestly refuses fcntl record locks (ENOLCK), so SQLite's
++    // default unix VFS fails DB open with the "locking protocol" errstr. Use the
++    // built-in "unix-none" VFS (no-op locking) — safe here because the browser is
++    // single-writer per profile. Paired with a non-WAL journal in the create()
++    // overload below (WAL's shared-memory index also needs fcntl locking that
++    // unix-none does not provide). This is what lets history/cookies persist
++    // without --disable-sql-database / --temporary-profile.
++    SQL_TRY(sqlite3_open_v2(database_path.string().characters(), &sql_database,
++        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, "unix-none"));
++#else
+     SQL_TRY(sqlite3_open(database_path.string().characters(), &sql_database));
++#endif
+     return create(sql_database, database_path);
+ }
+ 
+@@ -76,7 +88,14 @@ ErrorOr<NonnullRefPtr<Database>> Database::create(sqlite3* sql_database, Optiona
+     auto database = TRY(adopt_nonnull_ref_or_enomem(new (nothrow) Database(sql_database, move(database_path))));
+ 
+     // Enable the WAL and set the synchronous pragma to normal by default for performance.
++#if defined(AK_OS_PLAN9)
++    // WAL needs fcntl-based shared-memory index locking, which the "unix-none" VFS
++    // (see create() above) does not provide on Plan 9. Use a rollback journal
++    // instead — single-process, so WAL's concurrent-reader benefit is moot.
++    TRY(database->set_journal_mode_pragma(JournalMode::Truncate));
++#else
+     TRY(database->set_journal_mode_pragma(JournalMode::WriteAheadLog));
++#endif
+     TRY(database->set_synchronous_pragma(Synchronous::Normal));
+ 
+     return database;
 diff --git a/Libraries/LibGC/BlockAllocator.cpp b/Libraries/LibGC/BlockAllocator.cpp
 index cb8f11cff6..832e81a3cb 100644
 --- a/Libraries/LibGC/BlockAllocator.cpp

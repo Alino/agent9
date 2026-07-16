@@ -62,18 +62,18 @@ chmod +x "$P/bin/gl9win2"
 
 # Launcher: run the browser interactively under the gl9win2 presenter (the
 # package-private copy — see the header note about the /amd64/bin collision).
-# --disable-sql-database avoids the Plan 9 SQLite "locking protocol" (deferral);
-# --temporary-profile because the persistent profile takes a Plan 9 exclusive
-# lock that a crashed prior run (or a second window) still holds — the launch
-# then dies with "locking protocol". Drop both once the cc9 SQLite VFS lock
-# shim + profile-lock recovery land; until then no history/cookies persist.
+# LibDatabase now opens SQLite with the "unix-none" VFS on Plan 9 (no fcntl
+# locks) so a persistent profile CAN open — but reopening it on the next launch
+# currently wedges (a teardown-leftover holds the store), so we keep
+# --temporary-profile for reliable startup until that's hardened. SQL itself
+# works, so --disable-sql-database is dropped (cookies/storage work in-session).
 cat > "$STAGE/rc/bin/ladybird" <<'EOF'
 #!/bin/rc
 # ladybird9: the real Ladybird browser on 9front (interactive, via gl9win2).
 #   ladybird https://example.com     open a page
 #   ladybird --headless --screenshot-path shot.png <url>   (run the binary directly)
 ICU_DATA=/usr/glenda/ladybird9/share/icu
-exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' '--disable-sql-database' $*
+exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' $*
 EOF
 chmod +x "$STAGE/rc/bin/ladybird"
 
