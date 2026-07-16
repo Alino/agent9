@@ -100,18 +100,34 @@ screenshot after 8 seconds" on cirno. Two render-stage bugs remain before a PNG:
      backing bitmap is null because ITS mmap of the backing store segattach-
      failed too. One bug, two symptoms.
 
-   Leading hypothesis: **VA collision.** shm9.c pins every segment at a fixed VA
-   `SHM9_BASE + ((getpid()&0xFFFF)<<30) + bump` and all importers must map at
-   that same VA (a #g global segment can't relocate). `getpid()&0xFFFF` gives
-   only 64K slabs; with pid recycling across many procs, two live creators can
-   share a slab and mint overlapping VAs, so an importer's 2nd segattach lands
-   on an occupied VA and fails. Fix direction: a collision-free GLOBAL VA
-   allocator (a well-known #g counter segment handing out non-overlapping
-   ranges), replacing the pid-keyed slab. Confirm first with an env-gated trace
-   in cc9_shm_try_map logging {name, va, seglen, segattach result, errstr}
-   (read errstr non-destructively via the n9_errstr swap trick, poll.c:129) —
-   relinking JUST the `ladybird` main against the traced libcc9cxx.a is enough
-   to capture the import-side failure + the colliding VAs.
+   **CONFIRMED root cause (CC9_SHM_TRACE run, 2026-07-16): the Plan 9
+   per-process segment limit (NSEG).** The trace shows the receiver attaching
+   segments successfully — its own two, then imported .0/.1/.2 — then the SIXTH
+   segattach fails:
+     `SHM9 attach ... name=shm.1077858.3 va=0x4c988367a000 len=0x495000
+      res=-1 err=virtual memory allocation failed`  (Plan 9 Enovmem)
+   The VAs are all distinct and NON-overlapping (adjacent segments like .1→.2
+   both succeed), so it is NOT a VA collision and NOT the earlier VA-slab
+   hypothesis. It is a hard per-process cap on the number of attached segments
+   (Plan 9 `Proc.seg[NSEG]`, ~10-12 total incl. text/data/bss/stack). A page
+   render allocates one #g segment PER backing-store bitmap (the Compositor made
+   6: sizes 0x2ac000 and 0x495000 for a 1000x700 shot), and each of WebContent +
+   Compositor + UI must attach them all → the ~6th attach in a process fails →
+   null bitmap → RefPtr.h:275 crash + the UI decode ENOENT above.
+
+   **Fix = the Phase B pool allocator** (already specified in
+   docs/plans/2026-07-15-ladybird9-browser.md): per-process pool segments
+   `lbp.<pid>.<k>` (e.g. 256 MiB, demand-paged), sub-allocate many bitmaps out
+   of ONE segattach, page-aligned carvings, header page w/ refcounts. The
+   {name,offset,len} wire format ALREADY carries the offset field (Phase A
+   always sends 0) — Phase B just makes offset meaningful, so TransportPlan9 and
+   Core::System::anon_create need no change; it is contained to shm9.c +
+   posix_llvm.c mmap routing. This collapses N bitmaps → few segments/proc,
+   under NSEG. (A 1-line kernel NSEG bump would also work but needs a patched
+   kernel + reboot on cirno — the userspace pool is the stock-kernel fix.)
+   Diagnostic tooling in place: CC9_SHM_TRACE env in shm9.c logs every
+   create/import/attach {name, va, len, result, errstr} to stderr (off by
+   default); errstr read non-destructively via the n9_errstr swap (poll.c:129).
 
    NOTE — headless needs `--temporary-profile`: the per-profile SQLite store is
    opened with a Plan 9 exclusive lock; a prior run's process holding it makes

@@ -16,7 +16,7 @@ LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 LIBCXX="${CC9_LIBCXX:-/tmp/libcxx-thr/include/c++/v1}"
 LLD="${CC9_LLD:-$(brew --prefix lld 2>/dev/null)/bin/ld.lld}"
 INC="$CC9/runtime/include"
-LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
+LIB="${CC9_LIBCC9CXX:-$CC9/lib/libcc9cxx.a}"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
 SHIM="${CC9_SHIM_INC:-}"     # optional extra -isystem (per-port shims)
 
 case "${0##*/}" in

@@ -50,6 +50,22 @@ extern void n9_semacquire(int *, int);
 extern void n9_semrelease(int *, int);
 extern int cc9_errno_from_errstr(void);
 extern int getpid(void);
+extern long n9_errstr(char *, unsigned long);
+
+/* CC9_SHM_TRACE diagnostic (off by default): one line per create/import/attach
+ * to fd 2, so a browser run's stderr shows every segment name + VA + segattach
+ * result. ponytail: pure diagnostic; drop once the #g attach bug is fixed. */
+static void shm_trace(const char *op, const char *name, unsigned long va,
+                      unsigned long len, long res, const char *err) {
+	static int on = -1;
+	if (on < 0) on = getenv("CC9_SHM_TRACE") ? 1 : 0;
+	if (!on) return;
+	char m[224];
+	int n = snprintf(m, sizeof m, "SHM9 %-6s pid=%d name=%s va=0x%lx len=0x%lx res=%ld%s%s\n",
+	                 op, getpid(), name ? name : "-", va, len, res,
+	                 err && err[0] ? " err=" : "", err ? err : "");
+	n9_pwrite(2, m, n, -1);
+}
 
 enum {
 	OREAD   = 0,
@@ -170,6 +186,7 @@ int cc9_shm_create(unsigned long size) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); goto fail_rm; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
+	shm_trace("create", name, va, len, fd, 0);
 	return (int)fd;
 
 fail_rm:
@@ -196,8 +213,9 @@ int cc9_shm_import(const char *name, unsigned long offset, unsigned long len) {
 	char path[64];
 	snprintf(path, sizeof path, "#g/%s/data", name);
 	long fd = n9_open(path, ORDWR);
-	if (fd < 0) { errno = cc9_errno_from_errstr(); return -1; }
+	if (fd < 0) { errno = cc9_errno_from_errstr(); shm_trace("import", name, 0, 0, -1, "open-failed"); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
+	shm_trace("import", name, 0, 0, fd, 0);
 	return (int)fd;
 }
 
@@ -232,10 +250,15 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 	 * Exec-clean semantics come from cc9_shm_detach_all() in execve. */
 	void *got = n9_segattach(0, name, 0, 0);
 	if ((long)got < 0 || got == 0) {
+		char eb[96]; eb[0] = 0;
+		n9_errstr(eb, sizeof eb);          /* read + CLEAR kernel errstr */
+		shm_trace("attach", name, va, seglen, (long)got, eb);
+		n9_errstr(eb, sizeof eb);          /* swap back so the map below sees it */
 		n9_semrelease(&shm_lock, 1);
 		errno = cc9_errno_from_errstr();
 		return (void *)-1;
 	}
+	shm_trace("attach", name, va, seglen, (long)got, 0);
 	strcpy(free_slot->name, name);
 	free_slot->va = (unsigned long)got;
 	free_slot->len = seglen;
