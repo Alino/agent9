@@ -44,7 +44,25 @@ extern "C" void __cxa_deleted_virtual()
 extern "C" int n9_semacquire(int *, int);
 extern "C" int n9_semrelease(int *, int);
 extern "C" long n9_sleep(long);
+extern "C" long n9_pwrite(int, const void *, long, long long);
+extern "C" unsigned long pthread_self(void);   // cc9's pthread_t is the synthetic tid
 static int cc9_guard_lock = 1;
+// The guard is 8 bytes: b[0]=initialized (the byte the compiler's fast path reads),
+// b[1]=in-progress. The 6 spare bytes b[2..7] hold the constructing thread's id,
+// stamped under the lock when b[1] is claimed — so a SAME-thread re-entry of a
+// still-pending guard is recursive static init. libc++abi (InitByteFutex) records
+// the owner and reports "recursive_init" rather than deadlocking; matching that here
+// turns an infinite spin into a clean abort. [Itanium C++ ABI 3.3.2]. 48 bits is
+// ample for a monotonic tid counter (no program spawns 2^48 threads), so distinct
+// threads never collide -> no false recursive_init.
+static void cc9_guard_set_owner(unsigned char *b, unsigned long tid) {
+	for (int i = 0; i < 6; i++) b[2 + i] = (unsigned char)(tid >> (i * 8));
+}
+static unsigned long cc9_guard_owner(unsigned char *b) {
+	unsigned long tid = 0;
+	for (int i = 0; i < 6; i++) tid |= (unsigned long)b[2 + i] << (i * 8);
+	return tid;
+}
 extern "C" int __cxa_guard_acquire(unsigned long long *g) {
 	unsigned char *b = (unsigned char *)g;
 	// Upstream libc++abi (src/cxa_guard_impl.h) opens with exactly this:
@@ -57,11 +75,19 @@ extern "C" int __cxa_guard_acquire(unsigned long long *g) {
 	// and every thread convoys on one lock. Release below stores b[0] under the
 	// lock, which pairs with this acquire.
 	if (__atomic_load_n(&b[0], __ATOMIC_ACQUIRE)) return 0;
+	unsigned long self = pthread_self();   // stable for this thread; computed once, off the hot path
 	for (;;) {
 		n9_semacquire(&cc9_guard_lock, 1);
-		if (b[0]) { n9_semrelease(&cc9_guard_lock, 1); return 0; }        // already done
-		if (!b[1]) { b[1] = 1; n9_semrelease(&cc9_guard_lock, 1); return 1; } // we construct
-		n9_semrelease(&cc9_guard_lock, 1);                               // another thread is constructing
+		if (b[0]) { n9_semrelease(&cc9_guard_lock, 1); return 0; }                          // already done
+		if (!b[1]) { b[1] = 1; cc9_guard_set_owner(b, self);
+		             n9_semrelease(&cc9_guard_lock, 1); return 1; }                         // we construct
+		if (cc9_guard_owner(b) == self) {                                                   // WE are already constructing it
+			n9_semrelease(&cc9_guard_lock, 1);
+			static const char m[] = "cc9: recursive static initialization (recursive_init)\n";
+			n9_pwrite(2, m, sizeof m - 1, -1);
+			n9_exits("cc9: recursive_init");                                               // abort — never returns
+		}
+		n9_semrelease(&cc9_guard_lock, 1);                                                  // another thread is constructing
 		n9_sleep(0);
 	}
 }

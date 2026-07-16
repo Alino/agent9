@@ -167,7 +167,17 @@ void *mmap(void *addr, n9size_t len, int prot, int flags, int fd, long off) {
 		void *p = cc9_shm_try_map(fd, len, &handled);
 		if (handled) return p ? p : (void *)-1;
 	}
-	(void)prot;
+	/* MAP_SHARED|PROT_WRITE of a regular (non-#g) fd: honestly unsupported. Plan 9
+	 * has no mmap; the fallback below is a PRIVATE malloc+pread copy, so writes
+	 * would never reach the file — silent data loss. Real write-back can't be done
+	 * safely either: we'd have to pwrite the copy on msync/munmap, but the fd may be
+	 * closed by then (LMDB does mmap();close(fd)) or, worse, RECYCLED to an unrelated
+	 * file — corrupting it. So fail with ENODEV; callers fall back to read/write.
+	 * (MAP_PRIVATE and read-only MAP_SHARED still use the copy path below; true
+	 * cross-process sharing is the #g path above.) */
+	if ((flags & 0x1 /*MAP_SHARED*/) && (prot & 2 /*PROT_WRITE*/) && fd >= 0) {
+		errno = 19 /*ENODEV*/; return (void *)-1;
+	}
 	/* Allocate len+1 and zero the trailing byte. Real mmap zero-pads the file's
 	 * last page past EOF; clang's MemoryBuffer maps exactly FileSize bytes and then
 	 * asserts the byte AT [FileSize] is 0 (its null terminator). A bare malloc(len)
@@ -201,10 +211,45 @@ int shm_unlink(const char *n) { (void)n; return -1; }
 int sigaltstack(const void *a, void *b) { (void)a; (void)b; return 0; }
 struct mallinfo  mallinfo(void)  { struct mallinfo  m; memset(&m, 0, sizeof m); return m; }
 struct mallinfo2 mallinfo2(void) { struct mallinfo2 m; memset(&m, 0, sizeof m); return m; }
-extern int rand(void);
-unsigned arc4random(void) { return ((unsigned)rand() << 16) ^ (unsigned)rand(); }
-unsigned arc4random_uniform(unsigned u) { return u ? arc4random() % u : 0; }
-void arc4random_buf(void *b, unsigned long n) { unsigned char *p = b; for (unsigned long i = 0; i < n; i++) p[i] = (unsigned char)rand(); }
+/* arc4random family — a CSPRNG, NOT rand(). rand() here is a FIXED-SEED xorshift
+ * (deterministic); funnelling arc4random through it made every "unpredictable"
+ * value predictable — ASLR cookies, hash seeds, temp-name salt, TLS nonces.
+ * Draw real entropy from /dev/random (the same source __cc9_ssp_init and mkstemp
+ * use), cache the fd. A CSPRNG that cannot reach its entropy source must FAIL
+ * LOUDLY — silently falling back to rand() is exactly the bug being fixed. */
+static long cc9_rand_fd = -1;
+static int cc9_rand_lk = 1;
+static void cc9_getrandom(void *buf, unsigned long n) {
+	n9_semacquire(&cc9_rand_lk, 1);
+	unsigned char *p = buf; unsigned long got = 0;
+	int reopens = 0;
+	while (got < n) {
+		if (cc9_rand_fd < 0 && (cc9_rand_fd = n9_open("/dev/random", 0 /*OREAD*/)) < 0) {
+			n9_semrelease(&cc9_rand_lk, 1);
+			n9_exits("cc9: arc4random: /dev/random unavailable (no CSPRNG entropy)");
+		}
+		long r = n9_pread((int)cc9_rand_fd, p + got, (long)(n - got), -1LL);
+		if (r > 0) { got += (unsigned long)r; continue; }
+		/* Cached fd went bad — the app closed it or dup2'd over the number. Drop it
+		 * and reopen ONCE; a second failure is a real entropy outage -> hard fail.
+		 * (A read that SUCCEEDS on a recycled non-random fd can't be caught here;
+		 * that's the residual cost of caching an fd the app can clobber.) */
+		cc9_rand_fd = -1;
+		if (++reopens > 1) { n9_semrelease(&cc9_rand_lk, 1); n9_exits("cc9: arc4random: /dev/random read failed"); }
+	}
+	n9_semrelease(&cc9_rand_lk, 1);
+}
+unsigned arc4random(void) { unsigned v; cc9_getrandom(&v, sizeof v); return v; }
+/* unbiased: rejection-sample away modulo bias (a plain % skews toward small
+ * values when u does not divide 2^32). OpenBSD's arc4random_uniform algorithm. */
+unsigned arc4random_uniform(unsigned u) {
+	if (u < 2) return 0;
+	unsigned min = -u % u;                 /* 2^32 mod u: reject any r < min */
+	unsigned r;
+	do { cc9_getrandom(&r, sizeof r); } while (r < min);
+	return r % u;
+}
+void arc4random_buf(void *b, unsigned long n) { cc9_getrandom(b, n); }
 /* JIT unwind-frame registration (__register_frame/__deregister_frame) now
  * comes from libunwind's UnwindLevel1-gcc-ext.o (build-runtime.sh) — the real
  * thing, not the old no-op stubs (JIT'd code still never throws; Rust's
@@ -348,7 +393,14 @@ unsigned long getauxval(unsigned long t) { return t == 6 ? 4096 : 0; } /* AT_PAG
  *     overflow to fault cleanly. Returning 0 here was a LIE with teeth — no guard
  *     exists, so an overflow silently scribbles over the adjacent heap instead of
  *     trapping. -1/ENOSYS tells std there is no guard; it has a fallback path,
- *     it has none for a phantom guard.
+ *     it has none for a phantom guard. This is the ONE case we fail.
+ * Sub-RW reductions (RW->RO GC/JS write-barrier, write-only): cc9 CANNOT enforce
+ * these — the page stays writable whatever we return, so a trap-reliant write
+ * barrier will not fire (a Plan 9 platform limit, not something we can fix here).
+ * But we return 0, NOT ENOSYS: we don't claim to enforce the protection, we just
+ * don't fail the call — because callers that only need the API to succeed
+ * (servo9's memmap2 make_read_only(), which propagates the error) would otherwise
+ * break, for no behavioral gain (the memory is writable either way).
  * PROT_EXEC on memory that did NOT come from exec_alloc can't be granted either
  * (the kernel NX-enforces the heap) — jumping there faults, so fail and let a JIT
  * pick its interpreter. */
@@ -356,7 +408,9 @@ int mprotect(void *p, n9size_t len, int prot) {
 	(void)len;
 	if (prot == 0) { errno = 38 /*ENOSYS*/; return -1; }        /* PROT_NONE: no guard pages */
 	if ((prot & 4 /*PROT_EXEC*/) && !is_exec_map(p)) { errno = 38; return -1; }
-	return 0;   /* R/W (and X within the exec pool) are already true of the pages */
+	/* R/W, RO, WO, and X-within-the-exec-pool: the pages already permit at least
+	 * this; sub-RW narrowing is unenforceable (see above) but we don't fail it. */
+	return 0;
 }
 int madvise(void *p, n9size_t len, int adv) { (void)p; (void)len; (void)adv; return 0; }
 int msync(void *p, n9size_t len, int fl) { (void)p; (void)len; (void)fl; return 0; }
@@ -1090,7 +1144,28 @@ int    gethostname(char *n, unsigned long l) {
 	return 0;
 }
 extern long n9_dup(int, int);
-int    dup2(int o, int n) { return (int)n9_dup(o, n); }
+/* dup2(o,n): POSIX atomically closes n first. n9_dup does the kernel close+rebind
+ * atomically (no TOCTOU), but n's USERSPACE state survives it — a poll reader
+ * thread + ring still bound to n would feed the re-dup'd fd stale bytes; a net
+ * socket record or shm mapping likewise dangles. Run the same teardown a real
+ * close(n) runs (fs.c close: poll onclose flushes+stops the threads, then net/shm
+ * forget), BEFORE the rebind. onclose — not the spawn path's forget — because
+ * here (unlike a fork child) the reader/writer threads DO exist and must be
+ * stopped, not merely orphaned. Only when n is a different, open fd (n==o is a
+ * POSIX no-op; the hooks self-skip an fd they don't own). */
+int    dup2(int o, int n) {
+	if (n != o && n >= 0) {
+		extern void cc9_poll_onclose(int);
+		extern void cc9_net_onclose(int);
+		extern void cc9_shm_forget_fd(int);
+		extern void cc9_append_onclose(int);   /* drop n's stale O_APPEND flag (fs.c) */
+		cc9_poll_onclose(n);
+		cc9_net_onclose(n);
+		cc9_shm_forget_fd(n);
+		cc9_append_onclose(n);
+	}
+	return (int)n9_dup(o, n);
+}
 
 /* time breakdown: gmtime/localtime (LLVM uses them for diagnostic timestamps).
  * No timezone db on Plan 9 -> local == UTC. Civil-from-days (Hinnant). */
@@ -1162,11 +1237,50 @@ int sigdelset(unsigned long *s, int n) { if (s) *s &= ~(1ul << (n & 63)); return
 int sigismember(const unsigned long *s, int n) { return s ? (int)((*s >> (n & 63)) & 1) : 0; }
 int sigprocmask(int how, const unsigned long *set, unsigned long *old) { (void)how; (void)set; if (old) *old = 0; return 0; }
 extern void cc9_set_sigh(int, void (*)(int));
+/* sigaction. The shared handler table (n9_sigtab, n9libc.c) stores only a bare
+ * void(*)(int); an SA_SIGINFO handler stashed there and later invoked as h(sig)
+ * reads garbage registers for its siginfo_t and context args and faults. So keep a
+ * richer table HERE (handler + sa_flags + sa_mask) and register a 1-arg
+ * TRAMPOLINE into n9_sigtab; when raise()/the crt0 note path calls the trampoline
+ * (correct ABI), it re-dispatches to the caller's handler with the arity
+ * SA_SIGINFO demands. SIG_DFL/SIG_IGN pass through verbatim so cc9_sig_has_handler
+ * still sees the default-die / ignore-swallow meaning the SIGINT/SIGHUP note path
+ * relies on. Layout mirrors <signal.h> struct sigaction / siginfo_t (this file
+ * avoids pulling system headers). */
+struct cc9_sigaction { void (*handler)(int); unsigned long mask; int flags; void (*restorer)(void); };
+struct cc9_siginfo { int si_signo, si_code, si_errno, si_pid; unsigned si_uid; void *si_addr; int si_status; };
+static struct { void (*h)(int); unsigned long mask; int flags; } cc9_satab[32];
+
+static void cc9_sa_trampoline(int sig) {
+	if (sig < 0 || sig >= 32) return;
+	void (*h)(int) = cc9_satab[sig].h;
+	if (!h || h == (void (*)(int))1) return;         /* SIG_DFL/SIG_IGN: nothing to run */
+	if (cc9_satab[sig].flags & 4 /*SA_SIGINFO*/) {   /* 3-arg sa_sigaction form */
+		struct cc9_siginfo si;
+		memset(&si, 0, sizeof si); si.si_signo = sig;   /* minimal siginfo; NULL ucontext */
+		((void (*)(int, struct cc9_siginfo *, void *))h)(sig, &si, 0);
+	} else {
+		h(sig);                                       /* 1-arg sa_handler form */
+	}
+}
+
 int sigaction(int sig, const void *act, void *old) {
-	(void)old;
-	/* struct sigaction begins with the sa_handler union (a fn pointer); register
-	 * it so a matching Plan 9 note (e.g. SIGALRM from setitimer) dispatches it. */
-	if (act) cc9_set_sigh(sig, *(void (*const *)(int))act);
+	if (sig < 0 || sig >= 32) { errno = 22 /*EINVAL*/; return -1; }   /* also guards cc9_satab[] */
+	if (old) {   /* report the PRIOR registration (the real handler, not the trampoline) */
+		struct cc9_sigaction *o = old;
+		o->handler = cc9_satab[sig].h; o->mask = cc9_satab[sig].mask;
+		o->flags = cc9_satab[sig].flags; o->restorer = 0;
+	}
+	if (act) {
+		const struct cc9_sigaction *a = act;
+		cc9_satab[sig].h = a->handler; cc9_satab[sig].mask = a->mask; cc9_satab[sig].flags = a->flags;
+		/* SIG_DFL(0)/SIG_IGN(1) go straight into n9_sigtab so cc9_sig_has_handler
+		 * keeps its default-die / ignore meaning; a real handler gets the trampoline. */
+		if (a->handler == (void (*)(int))0 || a->handler == (void (*)(int))1)
+			cc9_set_sigh(sig, a->handler);
+		else
+			cc9_set_sigh(sig, cc9_sa_trampoline);
+	}
 	return 0;
 }
 
@@ -1184,7 +1298,12 @@ int setrlimit(int r, const void *rl) {
 	if (r == 6 /*RLIMIT_NPROC*/ && rl) { const unsigned long *p = rl; cc9_set_nproc_limit((long)p[0]); }
 	return 0;
 }
-int getrusage(int who, void *ru) { (void)who; (void)ru; return 0; }
+/* getrusage: was `return 0` WITHOUT touching *ru, so the caller read uninitialized
+ * stack as CPU time / maxrss. Plan 9 exposes little accounting cheaply, so the
+ * honest floor is a fully zeroed struct (POSIX permits unsupported fields to read
+ * 0). Layout mirrors <sys/resource.h> struct rusage: two timevals then 14 longs. */
+struct cc9_rusage { struct { long tv_sec, tv_usec; } ru_utime, ru_stime; long r[14]; };
+int getrusage(int who, void *ru) { (void)who; if (ru) memset(ru, 0, sizeof(struct cc9_rusage)); return 0; }
 
 /* passwd db: none. getpwuid* return failure so LLVM falls back to $HOME/cwd. */
 void *getpwuid(unsigned uid) { (void)uid; return 0; }

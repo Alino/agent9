@@ -628,6 +628,20 @@ static unsigned long long n9_ustrto(const char *nptr, char **e, int base, int *n
 	if(ov){ n9_errno_v = 34; /* ERANGE */ r = ~0ULL; }
 	return r;
 }
+/* Clamp the unsigned magnitude to a SIGNED range + set ERANGE, per C strtol/strtoll.
+ * Was missing: a value over LONG_MAX but under ULLONG_MAX (e.g. 9999999999999999999)
+ * used to cast-wrap to a negative number with errno CLEAR, and a value past ULLONG_MAX
+ * returned -1/1 instead of the LONG_MAX/LONG_MIN the contract requires. `smax` is the
+ * type's max (__LONG_MAX__ / __LONG_LONG_MAX__), so this is correct on LP64 and ILP32. */
+static long long n9_clamp_signed(unsigned long long r, int neg, unsigned long long smax){
+	if(neg){
+		if(r > smax + 1ULL){ n9_errno_v = 34; return -(long long)smax - 1; } /* < min -> min, ERANGE */
+		if(r == smax + 1ULL) return -(long long)smax - 1;                     /* exactly min (no error) */
+		return -(long long)r;
+	}
+	if(r > smax){ n9_errno_v = 34; return (long long)smax; }                   /* > max -> max, ERANGE */
+	return (long long)r;
+}
 /* openlibm helpers (libcc9m.a) for the correctly-rounded float parser below. */
 long double powl(long double, long double);
 long double scalbnl(long double, int);
@@ -740,7 +754,7 @@ double strtod(const char *nptr, char **e){
 	else if(nz && d==0.0) n9_errno_v = 34;             /* underflow -> ERANGE */
 	return neg?-d:d;
 }
-long strtol(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-(long)r:(long)r; }
+long strtol(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return (long)n9_clamp_signed(r,neg,(unsigned long long)__LONG_MAX__); }
 
 /* ctype + strtold for libc++/json */
 int isdigit(int c){ return c>='0'&&c<='9'; }
@@ -784,7 +798,7 @@ long double strtold(const char *nptr, char **e){
 }
 
 unsigned long long strtoull(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-r:r; }
-long long strtoll(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?-(long long)r:(long long)r; }
+long long strtoll(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return n9_clamp_signed(r,neg,(unsigned long long)__LONG_LONG_MAX__); }
 unsigned long strtoul(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?(unsigned long)-r:(unsigned long)r; }
 
 void *memchr(const void *s, int c, size_t n){ const unsigned char *p=s; for(size_t i=0;i<n;i++) if(p[i]==(unsigned char)c) return (void*)(p+i); return 0; }
@@ -939,22 +953,30 @@ long clock(void){
  * real in runtime/fenv.c — the no-op stubs that used to shadow it lived here and
  * were deleted so fenv.o gets linked. */
 
-/* Generic GCC atomic library calls — emitted for atomics that aren't inline
- * lock-free (large/odd-size types). cc9 is single-threaded, so they reduce to
- * plain memory ops; the memory-order arg is irrelevant on a serial machine.
- * The names are builtins, so we define under cc9_ names with __asm__ labels
- * that emit the real __atomic_* symbols (clang won't let us redeclare builtins). */
+/* Generic GCC atomic library calls — emitted only for atomics the compiler CAN'T
+ * do inline lock-free (size > 16, or a non-power-of-two type). cc9 has REAL
+ * rfork(RFMEM) threads (that's why the malloc lock, per-thread errno and pthread.c
+ * exist), so the old "single-threaded, just memcpy" versions were NOT atomic — two
+ * threads on a `std::atomic<Vec3d>` (24 bytes) tore reads / lost updates. Serialize
+ * them under a lock; the memory-order arg is then irrelevant (full barrier at the
+ * sem). ponytail: ONE global lock — these libcalls are rare (big/odd structs), so a
+ * per-address lock table (compiler-rt style) is only worth it if contention shows.
+ * The names are builtins, so we define under cc9_ names with __asm__ labels that
+ * emit the real __atomic_* symbols (clang won't let us redeclare builtins). */
+static int atom_lock = 1;
 void cc9_atomic_load(size_t n,const void*src,void*dst,int m) __asm__("__atomic_load");
 void cc9_atomic_store(size_t n,void*dst,const void*src,int m) __asm__("__atomic_store");
 void cc9_atomic_exchange(size_t n,void*ptr,const void*val,void*ret,int m) __asm__("__atomic_exchange");
 int cc9_atomic_cas(size_t n,void*ptr,void*exp,const void*des,int s,int f) __asm__("__atomic_compare_exchange");
-void cc9_atomic_load(size_t n,const void*src,void*dst,int m){ (void)m; memcpy(dst,src,n); }
-void cc9_atomic_store(size_t n,void*dst,const void*src,int m){ (void)m; memcpy(dst,src,n); }
-void cc9_atomic_exchange(size_t n,void*ptr,const void*val,void*ret,int m){ (void)m; memcpy(ret,ptr,n); memcpy(ptr,val,n); }
+void cc9_atomic_load(size_t n,const void*src,void*dst,int m){ (void)m; n9_semacquire(&atom_lock,1); memcpy(dst,src,n); n9_semrelease(&atom_lock,1); }
+void cc9_atomic_store(size_t n,void*dst,const void*src,int m){ (void)m; n9_semacquire(&atom_lock,1); memcpy(dst,src,n); n9_semrelease(&atom_lock,1); }
+void cc9_atomic_exchange(size_t n,void*ptr,const void*val,void*ret,int m){ (void)m; n9_semacquire(&atom_lock,1); memcpy(ret,ptr,n); memcpy(ptr,val,n); n9_semrelease(&atom_lock,1); }
 int cc9_atomic_cas(size_t n,void*ptr,void*exp,const void*des,int s,int f){
-	(void)s; (void)f;
-	if(memcmp(ptr,exp,n)==0){ memcpy(ptr,des,n); return 1; }
-	memcpy(exp,ptr,n); return 0;
+	(void)s; (void)f; int r;
+	n9_semacquire(&atom_lock,1);
+	if(memcmp(ptr,exp,n)==0){ memcpy(ptr,des,n); r=1; } else { memcpy(exp,ptr,n); r=0; }
+	n9_semrelease(&atom_lock,1);
+	return r;
 }
 
 /* strings.h */

@@ -40,6 +40,8 @@ extern long n9_pwrite(int, const void *, long, long long);
 extern long n9_dup(int, int);
 extern int cc9_errno_from_errstr(void);
 extern int cc9_errno_from_errstr_or(int);
+extern void n9_semacquire(int *, int);
+extern void n9_semrelease(int *, int);
 
 #define NS_MAX 64
 
@@ -49,7 +51,6 @@ typedef struct {
 	int conn;        /* /net conn number */
 	int type;        /* SOCK_STREAM / SOCK_DGRAM */
 	int state;       /* 0 fresh, 1 bound, 2 announced, 3 connected, 4 udp-headers */
-	int lock;        /* reserved */
 	int err;         /* latched connect errno, read-and-cleared by SO_ERROR */
 	int ka_on;       /* SO_KEEPALIVE requested (pending until Established) */
 	int ka_ms;       /* TCP_KEEPIDLE interval in ms, 0 = /net default */
@@ -59,38 +60,61 @@ typedef struct {
 
 static ns_ent ns_tab[NS_MAX];
 static int ns_inited;
+/* ONE global lock over the whole ns_tab. Contract: held ONLY around structural
+ * table ops (init/lookup/alloc/free), which are O(NS_MAX) scans with no blocking
+ * I/O — NEVER across the /net ctl reads/writes in connect/accept/bind that sleep,
+ * or all socket I/O would serialize. The known connect-vs-close race (a helper in
+ * connect(fd) while another thread closes fd) is out of scope: ns_get hands back a
+ * pointer that outlives the lock. ponytail: single lock; per-entry only if socket
+ * churn ever shows contention. */
+static int ns_lock = 1;
 
-static void ns_init(void) {
+static void ns_init(void) {   /* caller holds ns_lock */
 	if (ns_inited) return;
 	for (int i = 0; i < NS_MAX; i++) ns_tab[i].fd = -1;
 	ns_inited = 1;
 }
 
-static ns_ent *ns_get(int fd) {
+/* lock-free scan; caller must hold ns_lock */
+static ns_ent *ns_find(int fd) {
 	if (!ns_inited) return 0;
 	for (int i = 0; i < NS_MAX; i++)
 		if (ns_tab[i].fd == fd) return &ns_tab[i];
 	return 0;
 }
 
+static ns_ent *ns_get(int fd) {
+	n9_semacquire(&ns_lock, 1);
+	ns_ent *e = ns_find(fd);
+	n9_semrelease(&ns_lock, 1);
+	return e;
+}
+
 static ns_ent *ns_new(int fd) {
+	n9_semacquire(&ns_lock, 1);   /* scan-for-free + claim must be atomic, else two
+	                                 socket()s double-claim one slot */
 	ns_init();
 	for (int i = 0; i < NS_MAX; i++)
 		if (ns_tab[i].fd < 0) {
 			memset(&ns_tab[i], 0, sizeof ns_tab[i]);
 			ns_tab[i].fd = fd;
 			ns_tab[i].ctl = -1;
+			n9_semrelease(&ns_lock, 1);
 			return &ns_tab[i];
 		}
+	n9_semrelease(&ns_lock, 1);
 	return 0;
 }
 
-/* fs.c close() calls this so a reused fd number can't hit a stale entry */
+/* fs.c close() calls this so a reused fd number can't hit a stale entry. Frees the
+ * slot under the lock; closes the parked ctl OUTSIDE it (close is I/O). */
 void cc9_net_onclose(int fd) {
-	ns_ent *e = ns_get(fd);
-	if (!e) return;
-	if (e->ctl >= 0) n9_close(e->ctl);
-	e->fd = -1;
+	int ctl = -1;
+	n9_semacquire(&ns_lock, 1);
+	ns_ent *e = ns_find(fd);
+	if (e) { ctl = e->ctl; e->fd = -1; }
+	n9_semrelease(&ns_lock, 1);
+	if (ctl >= 0) n9_close(ctl);
 }
 
 static const char *ns_proto(const ns_ent *e) {
@@ -358,24 +382,52 @@ int getpeername(int fd, struct sockaddr *sa, socklen_t *salen) {
 }
 
 int shutdown(int fd, int how) {
-	(void)how;
 	ns_ent *e = ns_get(fd);
 	if (!e) { errno = ENOTSOCK; return -1; }
-	if (e->ctl >= 0) {
-		n9_pwrite(e->ctl, "hangup", 6, -1);
-		return 0;
-	}
+	/* /net has no half-close: the only teardown is "hangup", which closes BOTH
+	 * directions. So (mirroring rust9's net overlay):
+	 *  - SHUT_RD: no-op. Hanging up here would also kill the WRITE side and break
+	 *    send-then-read-response / TLS close_notify. (Trade-off: shutdown(RD) can no
+	 *    longer unblock another thread's blocking read; use a timeout / close.)
+	 *  - SHUT_WR / SHUT_RDWR: hangup. Lossy for SHUT_WR (it also stops reads), but
+	 *    it's the only way to signal EOF to the peer on /net. */
+	if (how == SHUT_RD) return 0;
+	if (e->ctl >= 0) n9_pwrite(e->ctl, "hangup", 6, -1);
 	return 0;
 }
 
+/* MSG_* on a /net read. /net has neither a peek nor a per-read non-block knob:
+ *  - MSG_PEEK:     EOPNOTSUPP. A /net read CONSUMES the bytes; faking a peek would
+ *                  silently eat the caller's stream, so refuse honestly instead.
+ *  - MSG_WAITALL:  loop until the whole buffer is filled (or EOF/error).
+ *  - MSG_DONTWAIT: no true one-shot non-block on /net; the read stays BLOCKING —
+ *                  documented, not pretended. Other MSG_* bits are ignored. */
+static long net_read_flags(int fd, void *buf, unsigned long n, int flags) {
+	if (flags & MSG_PEEK) { errno = EOPNOTSUPP; return -1; }
+	if ((flags & MSG_WAITALL) && n) {
+		unsigned long got = 0;
+		while (got < n) {
+			long r = read(fd, (char *)buf + got, n - got);
+			if (r < 0) return got ? (long)got : -1;   /* report progress; errno on retry */
+			if (r == 0) break;                         /* EOF: short count */
+			got += (unsigned long)r;
+		}
+		return (long)got;
+	}
+	return read(fd, buf, n);
+}
+
 long send(int fd, const void *buf, unsigned long n, int flags) {
-	(void)flags;
+	/* /net has no urgent/out-of-band channel, so MSG_OOB can't be honored — refuse
+	 * rather than sending it inline as normal data. MSG_NOSIGNAL (Plan 9 write just
+	 * errors, no SIGPIPE) and MSG_MORE (a coalescing hint) are safe to ignore;
+	 * MSG_DONTWAIT stays blocking (see net_read_flags). */
+	if (flags & MSG_OOB) { errno = EOPNOTSUPP; return -1; }
 	return write(fd, buf, n);
 }
 
 long recv(int fd, void *buf, unsigned long n, int flags) {
-	(void)flags;
-	return read(fd, buf, n);
+	return net_read_flags(fd, buf, n, flags);
 }
 
 /* ---- socket options ---------------------------------------------------------
@@ -506,10 +558,10 @@ long sendto(int fd, const void *buf, unsigned long n, int flags,
 long recvfrom(int fd, void *buf, unsigned long n, int flags,
               void *sa0, socklen_t *salen) {
 	void *sa = sa0;
-	(void)flags;
 	ns_ent *e = ns_get(fd);
 	if (!e) { errno = ENOTSOCK; return -1; }
-	if (e->state == 3 || (!sa && e->state != 4)) return read(fd, buf, n);
+	if (flags & MSG_PEEK) { errno = EOPNOTSUPP; return -1; }   /* /net reads consume; no peek */
+	if (e->state == 3 || (!sa && e->state != 4)) return net_read_flags(fd, buf, n, flags);
 	if (e->state != 4) { errno = ENOTCONN; return -1; }
 	unsigned char pkt[UDPHDR + 65536];
 	unsigned long want = n > sizeof pkt - UDPHDR ? sizeof pkt : n + UDPHDR;

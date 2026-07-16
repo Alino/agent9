@@ -30,14 +30,24 @@ static struct atexit_ent {
  void (*fn)(void *); void *arg; } *atexit_tab;
 static int atexit_n = 0, atexit_cap = 0;
 extern void *realloc(void *, unsigned long);
+extern int n9_semacquire(int *, int);
+extern int n9_semrelease(int *, int);
+static int atexit_lock = 1;
 static int atexit_push(void (*f)(void *), void *arg) {
+	/* Lock: the Itanium ABI requires __cxa_atexit to be thread-safe, and cxxrt's
+	 * static-init guard runs the constructor WITHOUT its lock (deliberately) — so
+	 * two threads first-constructing DIFFERENT function-local statics (Meyers
+	 * singletons, ubiquitous) both reach here at once and raced the realloc +
+	 * atexit_n++ -> a dtor registration lost, or the table freed-then-used. */
+	n9_semacquire(&atexit_lock, 1);
 	if (atexit_n == atexit_cap) {
 		int ncap = atexit_cap ? atexit_cap * 2 : 64;
 		void *p = realloc(atexit_tab, (unsigned long)ncap * sizeof *atexit_tab);
-		if (!p) return -1;                  /* genuine OOM: report it honestly */
+		if (!p) { n9_semrelease(&atexit_lock, 1); return -1; }   /* genuine OOM: honest */
 		atexit_tab = p; atexit_cap = ncap;
 	}
 	atexit_tab[atexit_n].fn = f; atexit_tab[atexit_n].arg = arg; atexit_n++;
+	n9_semrelease(&atexit_lock, 1);
 	return 0;
 }
 int atexit(cc9_fn f) { return atexit_push((void (*)(void *))f, 0); }
@@ -140,7 +150,16 @@ int cc9_note_handler(unsigned long framesp)
 	/* "interrupt" (DEL key / notepg from a terminal like alacritty9) -> SIGINT;
 	 * "hangup" -> SIGHUP. If a handler is registered, run it and resume; else
 	 * NDFLT (die) — the POSIX default for both. The interrupted syscall returns
-	 * "interrupted", which read/pread retry paths (poll.c) already handle. */
+	 * "interrupted", which read/pread retry paths (poll.c) already handle.
+	 *
+	 * KNOWN LIMITATION: raise(nsig) runs the handler SYNCHRONOUSLY here, before the
+	 * `return 0` reaches noted(NCONT). POSIX permits siglongjmp() out of a handler,
+	 * but if this handler longjmps (the canonical REPL Ctrl-C idiom) or throws,
+	 * noted() is never called and Plan 9 leaves notes DISABLED for the proc — so
+	 * SIGINT/alarm/profiler never fire again. Fixing it properly means deferring the
+	 * handler to run on the INTERRUPTED stack after noted(NCONT) (Ureg manipulation
+	 * in the note trampoline, APE-style) — deep, whole-signal-path-risking surgery
+	 * left out of this pass. Handlers that RETURN normally are unaffected. */
 	{
 		extern int raise(int);
 		extern int cc9_sig_has_handler(int);
@@ -340,6 +359,23 @@ void __cc9_run(void)
 void
 cc9_exit_common(const char *status)
 {
+	/* Concurrent/recursive exit guard: two threads calling exit() at once both used
+	 * to drain the LIFO + fini_array (handlers run twice, dtors double-execute), and
+	 * exit() from INSIDE a fini handler re-entered and restarted the loop. Let only
+	 * the FIRST entrant drain; a later or recursive one just terminates its proc. */
+	static int exit_lock = 1;
+	static int exited = 0;
+	n9_semacquire(&exit_lock, 1);
+	if (exited) {
+		n9_semrelease(&exit_lock, 1);
+		/* A recursive exit() (from a handler) abandons the outer drain, so still reap
+		 * worker threads here — otherwise this path skips cc9_kill_threads and leaks
+		 * the orphan pread'ers on fd 0 that this whole epilogue exists to prevent. */
+		{ extern void cc9_kill_threads(void) __attribute__((weak)); if (cc9_kill_threads) cc9_kill_threads(); }
+		n9_exits(status);
+	}
+	exited = 1;
+	n9_semrelease(&exit_lock, 1);
 	{ extern void cc9_prof_dump(void); cc9_prof_dump(); }   /* CC9_PROF: flush samples before we go */
 	/* Run atexit/__cxa_atexit handlers LIFO, RE-READING atexit_n each step so a
 	 * handler that registers a new one (e.g. a thread_local/static object whose
@@ -350,18 +386,25 @@ cc9_exit_common(const char *status)
 	 * nm) — the last line printed names the one that wedged. */
 	int extrace = 0;
 	{ extern char *getenv(const char *); extrace = getenv("CC9_EXIT_TRACE") != 0; }
-	while (atexit_n > 0) {
-		int i = --atexit_n;
+	for (;;) {
+		/* Pop + COPY the entry out under atexit_lock: a still-running non-exiting
+		 * thread calling atexit() during the drain would realloc (free) atexit_tab
+		 * under us -> use-after-free. Re-reading atexit_n each pass keeps the LIFO
+		 * "handler that registers a new one runs it next" semantics. */
+		n9_semacquire(&atexit_lock, 1);
+		if (atexit_n <= 0) { n9_semrelease(&atexit_lock, 1); break; }
+		struct atexit_ent e = atexit_tab[--atexit_n];
+		n9_semrelease(&atexit_lock, 1);
 		if (extrace) {
 			char b[32]; int k = 0;
 			b[k++]='a'; b[k++]='t'; b[k++]='x'; b[k++]=' ';
-			unsigned long v = (unsigned long)atexit_tab[i].fn;
+			unsigned long v = (unsigned long)e.fn;
 			for (int s = 60; s >= 0; s -= 4) b[k++] = "0123456789abcdef"[(v>>s)&0xf];
 			b[k++]='\n';
 			extern long n9_pwrite(int, const void *, long, long long);
 			n9_pwrite(2, b, k, -1);
 		}
-		atexit_tab[i].fn(atexit_tab[i].arg);
+		e.fn(e.arg);   /* OUTSIDE the lock — the handler may register a new atexit */
 	}
 	if (extrace) { extern long n9_pwrite(int, const void *, long, long long); n9_pwrite(2, "atx done\n", 9, -1); }
 	for (cc9_fn *p = __fini_array_end; p > __fini_array_start; )

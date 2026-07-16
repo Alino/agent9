@@ -1,13 +1,15 @@
 /* netcompat.c — the no-kernel-needed slice of the BSD net API.
  *
  * inet_pton/ntop/aton/ntoa are pure string<->bytes conversions, implemented
- * for real. The resolver (gethostby-star, getservby-star) and datagram
- * send/recv are honest failures until the /net-backed socket layer lands
- * (they follow posix_llvm.c's "sockets are ENOSYS" line). */
+ * for real. gethostbyname is now real too, layered on net9.c's getaddrinfo
+ * (/net/cs). gethostbyaddr and getservby-star remain honest failures — reverse
+ * DNS and a services db aren't wired. Datagram send/recv live in net9.c. */
 
 #include <errno.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#include <netinet/in.h>
+#include <string.h>
 
 extern int sprintf(char *, const char *, ...);
 extern int snprintf(char *, unsigned long, const char *, ...);
@@ -148,7 +150,7 @@ const char *inet_ntop(int af, const void *src, char *dst, socklen_t size) {
 	return 0;
 }
 
-/* ---- resolver + dgram: honest failures until the /net socket layer ---- */
+/* ---- resolver: gethostbyname over getaddrinfo; the rest honest-fail ---- */
 
 const char *hstrerror(int e) {
 	switch (e) {
@@ -160,7 +162,43 @@ const char *hstrerror(int e) {
 	return "resolver error";
 }
 
-struct hostent *gethostbyname(const char *n) { (void)n; h_errno = NO_RECOVERY; return 0; }
+/* gethostbyname: classic contract — NOT thread-safe, returns a pointer into static
+ * storage that the next call overwrites. Real now: resolves via getaddrinfo
+ * (/net/cs) and reports the first IPv4 answer. */
+struct hostent *gethostbyname(const char *n) {
+	static struct hostent he;
+	static char namebuf[256];
+	static struct in_addr addr;
+	static char *addr_list[2];
+	static char *aliases[1];
+	struct addrinfo hints, *res = 0, *ai;
+
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_INET;
+	if (!n || getaddrinfo(n, 0, &hints, &res) != 0 || !res) {
+		h_errno = HOST_NOT_FOUND;
+		return 0;
+	}
+	for (ai = res; ai; ai = ai->ai_next)
+		if (ai->ai_family == AF_INET) break;
+	if (!ai) { freeaddrinfo(res); h_errno = NO_DATA; return 0; }
+	addr = ((struct sockaddr_in *)ai->ai_addr)->sin_addr;
+	freeaddrinfo(res);
+
+	snprintf(namebuf, sizeof namebuf, "%s", n);
+	aliases[0] = 0;
+	addr_list[0] = (char *)&addr;
+	addr_list[1] = 0;
+	he.h_name = namebuf;
+	he.h_aliases = aliases;
+	he.h_addrtype = AF_INET;
+	he.h_length = 4;
+	he.h_addr_list = addr_list;
+	return &he;
+}
+/* gethostbyaddr: reverse (PTR) lookup needs a /net/dns round-trip that isn't wired,
+ * and getnameinfo only reformats the numeric address — nothing honest to return, so
+ * kept failing rather than handing back a fake name. */
 struct hostent *gethostbyaddr(const void *a, socklen_t l, int t) { (void)a; (void)l; (void)t; h_errno = NO_RECOVERY; return 0; }
 struct servent *getservbyname(const char *n, const char *p) { (void)n; (void)p; return 0; }
 struct servent *getservbyport(int p, const char *pr) { (void)p; (void)pr; return 0; }

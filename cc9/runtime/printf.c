@@ -267,12 +267,20 @@ int vsnprintf(char *out, size_t n, const char *f, va_list ap){
 		else if(c=='%'){ tmp[0]='%'; tlen=1; }
 		else if((c|0x20)=='f'||(c|0x20)=='e'||(c|0x20)=='g'||(c|0x20)=='a'){
 			long double x = isL? __builtin_va_arg(ap,long double): (long double)__builtin_va_arg(ap,double);
-			struct buf fb; char fbuf[400]; fb.p=fbuf; fb.n=sizeof fbuf; fb.len=0;
+			/* Staging buffer big enough for a full-magnitude long double: LDBL_MAX is
+			 * ~1.19e4932, so %Lf of it needs ~4933 integer digits. Was 400, which
+			 * OVERFLOWED — bput stops storing at capacity but keeps advancing fb.len,
+			 * and the bputs(fbuf,l) below then read PAST the buffer (OOB stack read,
+			 * reachable via setprecision(500)). Buffer sized + the l clamp fix it. */
+			struct buf fb; char fbuf[5200]; fb.p=fbuf; fb.n=sizeof fbuf; fb.len=0;
 			char fs=0; if(x<0||(x==0&&1.0L/x<0)){ fs='-'; x=-x; } else if(plus)fs='+'; else if(space)fs=' ';
 			if(__n9_isnanl(x)){ const char*nn=(c<'a')?"NAN":"nan"; bputs(&fb,nn,3); }
-			else if(x > 1.0e4900L){ const char*ii=(c<'a')?"INF":"inf"; bputs(&fb,ii,3); }
+			else if(__builtin_isinf(x)){ const char*ii=(c<'a')?"INF":"inf"; bputs(&fb,ii,3); }  /* real inf, not a magnitude guess */
 			else fmt_float(&fb, x, prec, c, alt, isL, 0);
-			int l=(int)fb.len; int total=l+(fs?1:0); int pad=width-total;
+			/* Clamp to what was actually STORED (bput advances len past fb.n on
+			 * overflow) so bputs never reads uninitialized/past-buffer bytes. */
+			int l = fb.len < fb.n ? (int)fb.len : (int)fb.n - 1;
+			int total=l+(fs?1:0); int pad=width-total;
 			if(!left && !zero) while(pad-->0) bput(&b,' ');
 			if(fs)bput(&b,fs);
 			if(!left && zero) while(pad-->0) bput(&b,'0');
@@ -332,21 +340,36 @@ int vsscanf(const char *s, const char *f, va_list ap){
 		f++;
 		int suppress=0; if(*f=='*'){ suppress=1; f++; }
 		int width=0; while(*f>='0'&&*f<='9'){ width=width*10+(*f-'0'); f++; }
-		int lng=0; while(*f=='l'){lng++;f++;} if(*f=='h')f++; int isL=0; if(*f=='L'){isL=1;f++;} if(*f=='z'||*f=='j')f++;
+		/* Record h/hh: they used to be consumed but discarded, so %hd fell through to
+		 * `*(int*)p` — a 4-byte write into the caller's `short` (2-byte OOB). */
+		int lng=0; while(*f=='l'){lng++;f++;} int shrt=0; while(*f=='h'){shrt++;f++;} int isL=0; if(*f=='L'){isL=1;f++;} if(*f=='z'||*f=='j'||*f=='t')f++;
 		char c=*f;
 		if(c!='c' && c!='%') while(isspace((unsigned char)*s)) s++;
+		/* Honor field width: strto* used to run on the WHOLE remaining string, so
+		 * `%2d` on "12345" wrongly yielded 12345 and over-consumed. Parse at most
+		 * `width` chars via a bounded copy, then advance s by what was consumed. */
+		char wbuf[130]; const char *scan = s;
+		if(width>0 && (c=='d'||c=='i'||c=='u'||c=='x'||c=='X'||c=='o'||c=='f'||c=='e'||c=='g'||c=='F'||c=='E'||c=='G'||c=='a')){
+			int w = width < (int)sizeof wbuf - 1 ? width : (int)sizeof wbuf - 1;
+			int i=0; while(i<w && s[i]){ wbuf[i]=s[i]; i++; } wbuf[i]=0; scan=wbuf;
+		}
 		if(c=='d'||c=='i'||c=='u'||c=='x'||c=='X'||c=='o'){
 			char *end; int base=(c=='x'||c=='X')?16:(c=='o')?8:(c=='i')?0:10;
 			int uns=(c=='u'||c=='x'||c=='X'||c=='o');
-			unsigned long long v = uns ? strtoull(s,&end,base) : (unsigned long long)strtoll(s,&end,base);
-			if(end==s) break;
-			if(!suppress){ void*p=__builtin_va_arg(ap,void*); if(lng>=2)*(long long*)p=(long long)v; else if(lng==1)*(long*)p=(long)v; else *(int*)p=(int)v; }
-			s=end; count++;
+			unsigned long long v = uns ? strtoull(scan,&end,base) : (unsigned long long)strtoll(scan,&end,base);
+			if(end==scan) break;
+			if(!suppress){ void*p=__builtin_va_arg(ap,void*);
+				if(lng>=2)*(long long*)p=(long long)v;
+				else if(lng==1)*(long*)p=(long)v;
+				else if(shrt>=2)*(char*)p=(char)v;       /* %hh */
+				else if(shrt==1)*(short*)p=(short)v;     /* %h  */
+				else *(int*)p=(int)v; }
+			s += (end - scan); count++;
 		} else if(c=='f'||c=='e'||c=='g'||c=='F'||c=='E'||c=='G'||c=='a'){
 			char *end;
-			if(isL){ long double v=strtold(s,&end); if(end==s)break; if(!suppress)*(long double*)__builtin_va_arg(ap,void*)=v; }
-			else { double v=strtod(s,&end); if(end==s)break; if(!suppress){ void*p=__builtin_va_arg(ap,void*); if(lng)*(double*)p=v; else *(float*)p=(float)v; } }
-			s=end; count++;
+			if(isL){ long double v=strtold(scan,&end); if(end==scan)break; if(!suppress)*(long double*)__builtin_va_arg(ap,void*)=v; }
+			else { double v=strtod(scan,&end); if(end==scan)break; if(!suppress){ void*p=__builtin_va_arg(ap,void*); if(lng)*(double*)p=v; else *(float*)p=(float)v; } }
+			s += (end - scan); count++;
 		} else if(c=='s'){
 			char *out=suppress?0:__builtin_va_arg(ap,char*); int n=0;
 			while(*s && !isspace((unsigned char)*s) && (width==0||n<width)){ if(out)out[n]=*s; n++; s++; }

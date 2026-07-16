@@ -74,6 +74,28 @@ static const char *at_path(int dfd, const char *path, char *buf, int bufsz){
 	buf[i]=0; return buf;
 }
 
+/* O_APPEND: Plan 9 has no per-fd append mode, and write() below uses
+ * n9_pwrite(fd,...,-1) = the fd's CURRENT offset — which is 0 after a fresh open, so
+ * an "append" open silently OVERWRITES from the start (every fopen("a")/OpenOptions
+ * ::append/Python 'a'). Track O_APPEND fds and seek to EOF before each write so every
+ * write lands at the current end. Correct for the single-writer case; for concurrent
+ * appenders it re-seeks per write (the closest Plan 9 offers — there is no atomic
+ * append primitive on /). */
+#define APPEND_MAX 8192
+static unsigned long append_bits[APPEND_MAX/64];
+static void append_set(int fd, int on){
+	if(fd < 0 || fd >= APPEND_MAX) return;
+	if(on) append_bits[fd>>6] |=  (1UL<<(fd&63));
+	else   append_bits[fd>>6] &= ~(1UL<<(fd&63));
+}
+static int append_get(int fd){
+	if(fd < 0 || fd >= APPEND_MAX) return 0;
+	return (int)((append_bits[fd>>6] >> (fd&63)) & 1);
+}
+/* Drop fd's O_APPEND flag — called by close() and by dup2 (posix_llvm.c), which
+ * rebinds fd to a different file that must not inherit the old append behavior. */
+void cc9_append_onclose(int fd){ append_set(fd, 0); }
+
 int open(const char *path, int flags, ...){
 	if(streq(path,"/dev/urandom")) path="/dev/random";   /* Plan 9 entropy source */
 	int omode = flags & O_ACCMODE;        /* OREAD/OWRITE/ORDWR == 0/1/2 */
@@ -101,6 +123,10 @@ int open(const char *path, int flags, ...){
 	 * errstr was never stashed so the caller could not even see the real message.
 	 * Callers branch on this (std::fs, libc++ filesystem), so it has to be true. */
 	if(fd < 0){ errno = cc9_errno_from_errstr_or((flags & O_CREAT) ? EACCES : ENOENT); return -1; }
+	if(flags & O_APPEND){                   /* O_APPEND: start at EOF, and mark for per-write seek */
+		append_set((int)fd, 1);
+		long long e = 0; n9_seek(&e, (int)fd, 0, 2 /*SEEK_END*/);
+	}
 	return (int)fd;
 }
 int openat(int dfd, const char *path, int flags, ...){ char b[1024]; return open(at_path(dfd,path,b,sizeof b), flags); }
@@ -111,7 +137,7 @@ extern long cc9_poll_read(int, void *, long);
 extern void cc9_poll_onclose(int);
 extern void cc9_net_onclose(int);
 extern void cc9_shm_forget_fd(int);
-int close(int fd){ cc9_poll_onclose(fd); cc9_net_onclose(fd); cc9_shm_forget_fd(fd); return n9_close(fd) < 0 ? -1 : 0; }
+int close(int fd){ append_set(fd, 0); cc9_poll_onclose(fd); cc9_net_onclose(fd); cc9_shm_forget_fd(fd); return n9_close(fd) < 0 ? -1 : 0; }
 /* EIO is the FALLBACK, not the answer. These carry socket traffic (net9.c reads
  * and writes /net data fds through them), where the difference between a peer
  * hangup (ECONNRESET) and a generic I/O error decides whether the caller retries,
@@ -125,6 +151,7 @@ extern int cc9_poll_wowned(int);
 extern long cc9_poll_write(int, const void *, long);
 long write(int fd, const void *buf, size_t n){
 	if(cc9_poll_wowned(fd)) return cc9_poll_write(fd, buf, (long)n);  /* O_NONBLOCK: ring + honest POLLOUT */
+	if(append_get(fd)){ long long e=0; n9_seek(&e, fd, 0, 2 /*SEEK_END*/); }  /* O_APPEND: write at current EOF */
 	long r=n9_pwrite(fd,buf,(long)n,-1); cc9_trace("write", fd, r); if(r<0)errno=cc9_errno_from_errstr_or(EIO); return r; }
 long pread(int fd, void *buf, size_t n, long off){ return n9_pread(fd,buf,(long)n,off); }
 long pwrite(int fd, const void *buf, size_t n, long off){ return n9_pwrite(fd,buf,(long)n,off); }
@@ -321,7 +348,18 @@ int rmdir(const char *path){
 int unlinkat(int dfd, const char *path, int flag){ (void)flag; char b[1024]; return unlink(at_path(dfd,path,b,sizeof b)); }
 int remove(const char *path){ return unlink(path); }
 int chdir(const char *path){ return n9_chdir(path)<0 ? -1 : 0; }
-int access(const char *path, int mode){ (void)mode; struct stat st; return stat(path,&st)==0?0:-1; }
+int access(const char *path, int mode){
+	struct stat st;
+	if(stat(path,&st) != 0) return -1;   /* stat set errno (ENOENT/…) */
+	/* F_OK (0) = existence only. Plan 9 is effectively single-user, so we can't do a
+	 * per-uid check — require the requested permission BIT to be present at all,
+	 * which is far better than the old (void)mode that called a data file executable
+	 * and an unwritable file writable. (X_OK=1 W_OK=2 R_OK=4) */
+	if((mode & 1) && !(st.st_mode & 0111)){ errno = EACCES; return -1; }
+	if((mode & 2) && !(st.st_mode & 0222)){ errno = EACCES; return -1; }
+	if((mode & 4) && !(st.st_mode & 0444)){ errno = EACCES; return -1; }
+	return 0;
+}
 /* Plan 9 has no ttys; the terminal (alacritty9/vts/9term) talks to us over
  * pipes. Heuristic: fds 0-2 count as a tty when $TERM is set — that's exactly
  * the environment a terminal emulator provides, and it's what lets nvim's TUI
@@ -488,10 +526,42 @@ long readlinkat(int d,const char*p,char*b,size_t n){ (void)d;(void)p;(void)b;(vo
 /* Identity canonicalization (Plan 9 paths are already clean; no symlinks to
  * resolve). POSIX: out==NULL means "malloc the result" — LibFileSystem's
  * real_path() uses exactly that form, so it must be honored, not return 0. */
+char *getcwd(char *buf, size_t n);   /* defined below; realpath relativizes with it */
 char *realpath(const char *p, char *out){
-	size_t i=0; while(p[i]) i++;
-	if(!out){ out = malloc(i+1); if(!out) return 0; }
-	for(size_t j=0;j<=i;j++) out[j]=p[j];
+	/* Absolute + lexically cleaned (. .. //) so a canonicalize-then-check-prefix
+	 * sandbox can't be fooled by "root/../etc"; Plan 9 has no symlinks, so lexical ==
+	 * canonical. POSIX also requires the result to EXIST -> ENOENT otherwise (the old
+	 * identity copy returned nonexistent paths, and left ../. unresolved). */
+	char abs[1024]; size_t n = 0;
+	if(p[0] != '/'){                                  /* relativize against cwd */
+		if(!getcwd(abs, sizeof abs)) return 0;
+		n = strlen(abs);
+		if(n > 0 && abs[n-1] != '/' && n < sizeof abs - 1) abs[n++] = '/';
+	}
+	for(size_t i=0; p[i]; i++){ if(n < sizeof abs - 1) abs[n++] = p[i]; }
+	abs[n] = 0;
+	char clean[1024]; size_t o = 0;                   /* build cleaned components */
+	for(size_t i=0; abs[i]; ){
+		while(abs[i]=='/') i++;                        /* collapse slashes */
+		if(!abs[i]) break;
+		size_t s=i; while(abs[i] && abs[i]!='/') i++;  /* component [s,i) */
+		size_t clen = i - s;
+		if(clen==1 && abs[s]=='.') continue;           /* "." -> drop */
+		if(clen==2 && abs[s]=='.' && abs[s+1]=='.'){   /* ".." -> pop last */
+			while(o>0 && clean[o-1] != '/') o--;
+			if(o>0) o--;
+			continue;
+		}
+		if(o + 1 + clen >= sizeof clean) break;
+		clean[o++]='/';
+		for(size_t k=0;k<clen;k++) clean[o++]=abs[s+k];
+	}
+	if(o==0) clean[o++]='/';                           /* root */
+	clean[o]=0;
+	struct stat st;
+	if(stat(clean,&st) != 0){ errno = ENOENT; return 0; }
+	if(!out){ out = malloc(o+1); if(!out) return 0; }
+	for(size_t k=0;k<=o;k++) out[k]=clean[k];
 	return out;
 }
 char *getcwd(char *buf, size_t n){ long fd=n9_open(".",0); if(fd<0)return 0; long r=n9_fd2path((int)fd,buf,(int)n); n9_close((int)fd); return r<0?0:buf; }
@@ -840,8 +910,17 @@ char *mkdtemp(char *tpl){
 	size_t len = strlen(tpl);
 	if(len < 6){ errno = EINVAL; return 0; }
 	char *x = tpl + len - 6;
-	for(int attempt = 0; attempt < 100; attempt++){
-		for(int i = 0; i < 6; i++) x[i] = 'a' + rand() % 26;
+	/* Seed from /dev/random like mkstemp — NOT fixed-seed rand(), which made two
+	 * freshly-started processes generate identical, predictable name sequences
+	 * (collisions + a security leak for parallel build workers). */
+	static const char cs[] = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+	static unsigned long seq = 0;
+	unsigned long seed = 0;
+	int rf = n9_open("/dev/random", 0);
+	if(rf >= 0){ n9_pread(rf, &seed, sizeof seed, -1); n9_close(rf); }
+	for(int attempt = 0; attempt < 4096; attempt++){
+		unsigned long v = seed + (seq++ * 0x9E3779B97F4A7C15UL) + (unsigned)attempt;
+		for(int i = 0; i < 6; i++){ x[i] = cs[v % 62]; v /= 62; }
 		if(mkdir(tpl, 0700) == 0) return tpl;
 	}
 	errno = EEXIST;

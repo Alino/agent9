@@ -338,6 +338,20 @@ static void dead_park(void *stack, n9_thread *t){
 	if(dead_n < MAXTH){ dead_tab[dead_n].stack=stack; dead_tab[dead_n].t=t; dead_n++; }
 	n9_semrelease(&dead_lock,1);   /* table full -> leak rather than free-in-thread */
 }
+/* KNOWN NARROW RACE (documented, not fixed — the clean fix is outside these two
+ * files). A detached thread calls dead_park(t->stack,t) and then RETURNS into the
+ * n9_rfork_thread asm epilogue (n9syscall.s), which does `subq $16,%rsp; movq
+ * $0,8(%rsp); EXITS` — ONE 8-byte store at top-8 of t->stack, AFTER the park. If a
+ * concurrent pthread_create runs dead_reap() and free()s that same t->stack inside
+ * the ~3-instruction gap between the park and that store, the store lands in freed
+ * (possibly already re-handed-out) memory. The window is those 3 instructions AND
+ * requires malloc to have recycled the exact block first — astronomically narrow,
+ * but real. It cannot be closed in C: Plan 9's EXITS must write its status arg to
+ * the stack (syscall ABI) and that stack IS the thread's own. The real fix lives in
+ * n9syscall.s — switch %rsp to a tiny per-proc scratch before EXITS. A /proc/realpid
+ * liveness gate here was rejected: Plan 9 REUSES pids, so a recycled realpid reads as
+ * "still alive" forever and would leak the entry (the pid-reuse hazard cc9_kill_threads
+ * already guards against). Left as-is deliberately rather than half-fixed. */
 static void dead_reap(void){
 	n9_semacquire(&dead_lock,1);
 	for(int i=0;i<dead_n;i++){ free(dead_tab[i].stack); free(dead_tab[i].t); }
@@ -357,14 +371,30 @@ static unsigned long cur_pid(void){
  * start() returns. Main thread (pid 1) routes to the process atexit, as before. */
 extern int __cxa_atexit(void (*)(void *), void *, void *);
 struct n9_tae { unsigned long pid; void (*fn)(void *); void *arg; int used; };
-#define MAXTAE 4096
-static struct n9_tae tae_tab[MAXTAE];
+/* GROWABLE (like crt0.c's atexit): a fixed cap silently DROPPED every
+ * registration past it and returned 0=success, so the thread_local dtor never
+ * ran. Slots freed at a thread's exit (used=0) are reused; only a genuinely full
+ * table grows via realloc, and a real OOM is reported (ENOMEM), never swallowed.
+ * Shared across threads -> every access is under tae_lock. */
+static struct n9_tae *tae_tab;
+static int tae_n = 0, tae_cap = 0;
 static int tae_lock = 1;
 int __cxa_thread_atexit(void (*fn)(void *), void *arg, void *dso){
 	unsigned long pid = cur_pid();
 	if(pid == 1) return __cxa_atexit(fn, arg, dso);   /* main: run at process exit */
 	n9_semacquire(&tae_lock,1);
-	for(int i=0;i<MAXTAE;i++) if(!tae_tab[i].used){ tae_tab[i].pid=pid; tae_tab[i].fn=fn; tae_tab[i].arg=arg; tae_tab[i].used=1; break; }
+	int i;
+	for(i=0;i<tae_n;i++) if(!tae_tab[i].used) break;   /* reuse a slot freed at some thread's exit */
+	if(i == tae_n){                                    /* no free slot: append, growing if needed */
+		if(tae_n == tae_cap){
+			int ncap = tae_cap ? tae_cap*2 : 64;
+			void *p = realloc(tae_tab, (unsigned long)ncap * sizeof *tae_tab);
+			if(!p){ n9_semrelease(&tae_lock,1); return 12; }   /* ENOMEM: honest, not a silent drop */
+			tae_tab = p; tae_cap = ncap;
+		}
+		tae_n++;
+	}
+	tae_tab[i].pid=pid; tae_tab[i].fn=fn; tae_tab[i].arg=arg; tae_tab[i].used=1;
 	n9_semrelease(&tae_lock,1);
 	return 0;
 }
@@ -374,11 +404,42 @@ static void run_thread_atexit(unsigned long pid){
 	for(;;){   /* LIFO: highest-index entry for this pid first */
 		void (*fn)(void *)=0; void *arg=0; int idx=-1;
 		n9_semacquire(&tae_lock,1);
-		for(int i=MAXTAE-1;i>=0;i--) if(tae_tab[i].used && tae_tab[i].pid==pid){ fn=tae_tab[i].fn; arg=tae_tab[i].arg; tae_tab[i].used=0; idx=i; break; }
+		for(int i=tae_n-1;i>=0;i--) if(tae_tab[i].used && tae_tab[i].pid==pid){ fn=tae_tab[i].fn; arg=tae_tab[i].arg; tae_tab[i].used=0; idx=i; break; }
 		n9_semrelease(&tae_lock,1);
 		if(idx<0) break;
 		fn(arg);
 	}
+}
+
+/* Shared thread-exit teardown, factored out of the trampoline so pthread_exit and
+ * a normal return from the thread function run the IDENTICAL sequence and can't
+ * drift. Runs ON the exiting thread's own stack and MUST be the last thing that
+ * touches thread state before the proc terminates: once the joinsem is released
+ * (or the detached park is done) the joiner is free to free(t->stack)/free(t), so
+ * the caller must go straight to EXITS and touch nothing more. t->ret must already
+ * be set by the caller. Contract: thread_local + set_value_at_thread_exit dtors
+ * and POSIX TSD dtors run at thread exit, exactly once [basic.start.term]/[thread]. */
+static void thread_teardown(n9_thread *t){
+	run_thread_atexit(t->pid);   /* thread_local dtors + set_value_at_thread_exit */
+	run_thread_keys();           /* POSIX TSD destructors (frees __thread_struct etc.) */
+	/* S1: on Plan 9's contiguous heap an overflow usually corrupts SILENTLY (the
+	 * memory below the stack is mapped) — check the canary now and abort the whole
+	 * process loudly instead of letting the damage surface later. Never returns. */
+	{ unsigned long *rz = (unsigned long *)t->stkbase;
+	  if(rz[-1]!=STK_CANARY || rz[-2]!=STK_CANARY || rz[-3]!=STK_CANARY)
+		cc9_stack_overflow_abort(t); }
+	t->done = 1;
+	{ unsigned long mypid = t->pid;
+	  n9_semacquire(&th_lock,1);
+	  for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==mypid){ th_tab[i].dead=1; break; }
+	  n9_semrelease(&th_lock,1); }
+	if(t->detached){
+		/* nobody will join. Can't free our own running stack here — park it for a
+		 * later create/join to reclaim. reap_slot makes the park single-owner. */
+		if(reap_slot(t->pid)) dead_park(t->stack, t);
+		return;
+	}
+	n9_semrelease(&t->joinsem, 1);    /* wake any joiner; touch NO stack state after this */
 }
 
 static void trampoline(void *p){
@@ -416,28 +477,8 @@ static void trampoline(void *p){
 	 * unwinder can't unwind off the top of this C trampoline) — [thread.constr]. */
 	extern void *cc9_thread_invoke(void *(*)(void *), void *);
 	t->ret = cc9_thread_invoke(t->start, t->arg);
-	run_thread_atexit(t->pid);   /* thread_local dtors + set_value_at_thread_exit */
-	run_thread_keys();           /* POSIX TSD destructors (frees __thread_struct etc.) */
-	/* S1: on Plan 9's contiguous heap an overflow usually corrupts SILENTLY
-	 * (the memory below the stack is mapped) — check the canary now that the
-	 * thread is done and abort the whole process loudly, instead of letting the
-	 * damage surface at a random pc later. Once per thread lifetime: costs
-	 * nothing. cc9_stack_overflow_abort never returns. */
-	{ unsigned long *rz = (unsigned long *)lo;
-	  if(rz[-1]!=STK_CANARY || rz[-2]!=STK_CANARY || rz[-3]!=STK_CANARY)
-		cc9_stack_overflow_abort(t); }
-	t->done = 1;
-	{ unsigned long mypid = t->pid;
-	  n9_semacquire(&th_lock,1);
-	  for(int i=0;i<MAXTH;i++) if(th_tab[i].used && th_tab[i].pid==mypid){ th_tab[i].dead=1; break; }
-	  n9_semrelease(&th_lock,1); }
-	if(t->detached){
-		/* nobody will join. Can't free our own running stack here — park it for a
-		 * later create/join to reclaim. reap_slot makes the park single-owner. */
-		if(reap_slot(t->pid)) dead_park(t->stack, t);
-		return;
-	}
-	n9_semrelease(&t->joinsem, 1);    /* wake any joiner */
+	thread_teardown(t);   /* dtors + TSD + canary + hand off to joiner / park (shared w/ pthread_exit) */
+	/* return -> the n9_rfork_thread asm wrapper runs EXITS for this proc. */
 }
 
 /* RLIMIT_NPROC emulation: 9front has no per-process thread cap, but the suite's
@@ -561,7 +602,41 @@ int pthread_detach(pthread_t pid){
 }
 pthread_t pthread_self(void){ return (pthread_t)cur_pid(); }
 int pthread_equal(pthread_t a, pthread_t b){ return a==b; }
-void pthread_exit(void *ret){ unsigned long pid=cur_pid(); n9_thread *t=find_thread(pid); if(t){ t->ret=ret; t->done=1; n9_semrelease(&t->joinsem,1);} for(;;) n9_sleep(1000); }
+/* pthread_exit: end the CALLING thread, running the SAME teardown as a normal
+ * return from the thread function (thread_teardown) so the two paths can't drift.
+ * The old version ran NO destructors (skipped thread_local + TSD dtors) and then
+ * spun in n9_sleep FOREVER on t->stack — leaking a live proc AND a use-after-free
+ * (the joiner's free(t->stack) reclaimed the very stack these n9_sleep frames kept
+ * running on). A worker now terminates its proc with n9_exits right after handing
+ * off to the joiner — so the proc is (all but) dead before the joiner frees the
+ * stack, the same narrow window the trampoline's asm EXITS already has, no worse.
+ * pthread_exit from main keeps the process alive until every other thread finishes,
+ * then exit(0) [support.runtime]/pthread_exit. */
+void pthread_exit(void *ret){
+	unsigned long pid = cur_pid();
+	n9_thread *t = find_thread(pid);
+	if(t){
+		t->ret = ret;
+		thread_teardown(t);   /* releases joinsem last; no stack use after it returns */
+		n9_exits(0);          /* terminate this proc (nil status = normal exit) */
+	}
+	/* main has no th_tab slot and no malloc'd stack to free: block until no worker
+	 * is still running, then end the process via exit(0) — NOT n9_exits — so crt0's
+	 * atexit/__cxa_atexit chain + fini_array run. pthread_exit from main must behave
+	 * like return-from-main/exit(0) [support.runtime], and __cxa_thread_atexit routes
+	 * main's (pid==1) thread_local dtors to the PROCESS atexit, so skipping it would
+	 * drop them. (Workers still use n9_exits: their finalizers already ran in teardown.) */
+	extern void exit(int);
+	for(;;){
+		int live=0;
+		n9_semacquire(&th_lock,1);
+		for(int i=0;i<MAXTH;i++) if(th_tab[i].used && !th_tab[i].dead){ live=1; break; }
+		n9_semrelease(&th_lock,1);
+		if(!live) break;
+		n9_sleep(50);
+	}
+	exit(0);
+}
 
 /* ---- mutex (binary semaphore + optional recursion) ---- */
 /* NOTE: there is deliberately NO lazy "ensure sem!=0" init here. A prior version
@@ -915,12 +990,105 @@ void *__emutls_get_address(void *control){
 	return arr[index-1];
 }
 
-/* rwlock = plain mutex (readers serialize; fine for libunwind's FDE cache). */
-int pthread_rwlock_init(pthread_rwlock_t *l, const void *a){ return pthread_mutex_init(l,(const pthread_mutexattr_t*)a); }
-int pthread_rwlock_destroy(pthread_rwlock_t *l){ return pthread_mutex_destroy(l); }
-int pthread_rwlock_rdlock(pthread_rwlock_t *l){ return pthread_mutex_lock(l); }
-int pthread_rwlock_wrlock(pthread_rwlock_t *l){ return pthread_mutex_lock(l); }
-int pthread_rwlock_unlock(pthread_rwlock_t *l){ return pthread_mutex_unlock(l); }
+/* ---- reader/writer lock: real shared/exclusive (READER preference) ----
+ * The old code made rdlock == mutex_lock, so concurrent readers SERIALIZED and a
+ * thread that rdlocked twice self-deadlocked — POSIX requires N concurrent readers.
+ * pthread_rwlock_t is a typedef of pthread_mutex_t (24 bytes, fixed by the ABI
+ * header we can't grow), so the real state lives in a lazily-malloc'd control block
+ * whose pointer we stash in the lock's `owner` field (0 = not built yet, which is
+ * exactly what PTHREAD_RWLOCK_INITIALIZER and a calloc'd lock already are). The
+ * block is a plain monitor built from cc9's OWN mutex+condvars, which already carry
+ * the FIFO / no-lost-wakeup discipline (pthread_cond_* above).
+ *
+ * READER preference (glibc's PTHREAD_RWLOCK_PREFER_READER default): a rdlock blocks
+ * ONLY while a writer holds, so readers never serialize and a recursive rdlock can't
+ * self-deadlock. Mutual exclusion: `writer=1` is set only when readers==0, and
+ * `readers++` only when writer==0, both under c->mtx — never simultaneously.
+ * Residual limits, stated honestly:
+ *   - writers can starve under a continuous stream of readers (the price of reader
+ *     preference; acceptable for the read-mostly in-tree user, libunwind's FDE cache);
+ *   - the control block is process-local heap, so a pshared rwlock placed in shm9
+ *     does NOT work across processes (mutexes still do — this is a rwlock-only gap). */
+typedef struct { pthread_mutex_t mtx; pthread_cond_t rok, wok; int readers; int writer; } cc9_rw;
+static int rw_glock = 1;   /* guards the first-touch allocation of a lock's control block */
+
+static cc9_rw *rw_ctl(pthread_rwlock_t *l){
+	cc9_rw *c = (cc9_rw *)__atomic_load_n(&l->owner, __ATOMIC_ACQUIRE);
+	if(c) return c;                               /* fast path: already built */
+	n9_semacquire(&rw_glock,1);
+	c = (cc9_rw *)l->owner;                        /* re-check under the lock */
+	if(!c){
+		c = malloc(sizeof *c);
+		if(c){
+			pthread_mutex_init(&c->mtx, 0);        /* NORMAL: the fast futex path */
+			pthread_cond_init(&c->rok, 0);
+			pthread_cond_init(&c->wok, 0);
+			c->readers = 0; c->writer = 0;
+			__atomic_store_n(&l->owner, (unsigned long)c, __ATOMIC_RELEASE);
+		}
+	}
+	n9_semrelease(&rw_glock,1);
+	return c;
+}
+int pthread_rwlock_init(pthread_rwlock_t *l, const void *a){
+	(void)a;   /* rwlockattr carries only pshared (meaningless under RFMEM) and is NOT
+	              a mutexattr — the old code cast it to one and read a bogus ->kind. */
+	/* POSIX-UB to re-init an already-initialized lock; we deliberately DON'T free an
+	 * existing block (owner!=0), so re-init of a live lock leaks it — caller's bug. */
+	l->sem=0; l->held=0; l->owner=0; l->count=0; l->kind=0; return 0;
+}
+int pthread_rwlock_destroy(pthread_rwlock_t *l){
+	/* POSIX precondition: no thread holds/references the lock at destroy — so the
+	 * unlocked read+free below is race-free by contract, not by luck. */
+	cc9_rw *c = (cc9_rw *)l->owner;
+	if(c){ free(c); l->owner=0; }   /* mutex/cond destroy are no-ops; just free the block */
+	return 0;
+}
+int pthread_rwlock_rdlock(pthread_rwlock_t *l){
+	cc9_rw *c = rw_ctl(l); if(!c) return 12;   /* ENOMEM */
+	pthread_mutex_lock(&c->mtx);
+	while(c->writer) pthread_cond_wait(&c->rok, &c->mtx);   /* reader pref: wait only for a writer */
+	c->readers++;
+	pthread_mutex_unlock(&c->mtx);
+	return 0;
+}
+int pthread_rwlock_wrlock(pthread_rwlock_t *l){
+	cc9_rw *c = rw_ctl(l); if(!c) return 12;
+	pthread_mutex_lock(&c->mtx);
+	while(c->writer || c->readers>0) pthread_cond_wait(&c->wok, &c->mtx);
+	c->writer = 1;
+	pthread_mutex_unlock(&c->mtx);
+	return 0;
+}
+int pthread_rwlock_unlock(pthread_rwlock_t *l){
+	cc9_rw *c = rw_ctl(l); if(!c) return 0;
+	pthread_mutex_lock(&c->mtx);
+	if(c->writer){                          /* writer releasing: wake all readers + one writer */
+		c->writer = 0;
+		pthread_cond_broadcast(&c->rok);    /* readers preferred; a woken writer re-checks & re-waits */
+		pthread_cond_signal(&c->wok);       /* if no readers were waiting, a writer proceeds */
+	} else if(c->readers > 0 && --c->readers == 0){
+		pthread_cond_signal(&c->wok);       /* last reader out: a waiting writer may proceed */
+	}
+	pthread_mutex_unlock(&c->mtx);
+	return 0;
+}
+int pthread_rwlock_tryrdlock(pthread_rwlock_t *l){
+	cc9_rw *c = rw_ctl(l); if(!c) return 12;
+	int r = 16;   /* EBUSY */
+	pthread_mutex_lock(&c->mtx);
+	if(!c->writer){ c->readers++; r = 0; }
+	pthread_mutex_unlock(&c->mtx);
+	return r;
+}
+int pthread_rwlock_trywrlock(pthread_rwlock_t *l){
+	cc9_rw *c = rw_ctl(l); if(!c) return 12;
+	int r = 16;   /* EBUSY */
+	pthread_mutex_lock(&c->mtx);
+	if(!c->writer && c->readers==0){ c->writer = 1; r = 0; }
+	pthread_mutex_unlock(&c->mtx);
+	return r;
+}
 
 int sched_yield(void){ n9_sleep(0); return 0; }
 int nanosleep(const struct timespec *req, struct timespec *rem){
@@ -973,7 +1141,7 @@ int pthread_atfork(void (*prep)(void), void (*parent)(void), void (*child)(void)
 }
 
 /* attr/condattr are accepted-and-ignored (thread stacks are fixed-size heap
- * blocks; the only clock is /dev/bintime). rwlock is a mutex, so try = trylock. */
+ * blocks; the only clock is /dev/bintime). rwlock try* live with the rwlock above. */
 int pthread_attr_init(pthread_attr_t *a){ if(a){ a->detachstate = PTHREAD_CREATE_JOINABLE; a->stacksize = 0; } return 0; }
 int pthread_attr_destroy(pthread_attr_t *a){ (void)a; return 0; }
 /* detachstate is the one attr we actually honor — pthread_create applies it.
@@ -999,7 +1167,5 @@ int pthread_attr_getstacksize(const pthread_attr_t *a, size_t *s){
 int pthread_condattr_init(pthread_condattr_t *a){ (void)a; return 0; }
 int pthread_condattr_destroy(pthread_condattr_t *a){ (void)a; return 0; }
 int pthread_condattr_setclock(pthread_condattr_t *a, int c){ (void)a; (void)c; return 0; }
-int pthread_rwlock_tryrdlock(pthread_rwlock_t *l){ return pthread_mutex_trylock(l); }
-int pthread_rwlock_trywrlock(pthread_rwlock_t *l){ return pthread_mutex_trylock(l); }
 int pthread_setname_np(pthread_t t, const char *n){ (void)t; (void)n; return 0; }
 int pthread_getname_np(pthread_t t, char *buf, size_t n){ (void)t; if(n) buf[0]=0; return 0; }
