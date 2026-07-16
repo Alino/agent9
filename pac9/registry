@@ -113,3 +113,11 @@ dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9-v0
 # control-plane handshake (TLS to controlplane.tailscale.com, node key
 # registered, login URL issued).
 tailscale9	-	.	tarball https://github.com/Alino/agent9/releases/download/tailscale9-v1.100.0/tailscale9-amd64.tar.gz	-	1.100.0
+# ladybird9 — the real Ladybird browser engine (pinned master 8cc5d7a5ff) cross-
+# built to native Plan 9 amd64: LibWeb + LibJS (AsmInt) + Skia CPU raster + ICU +
+# curl/OpenSSL + the Rust crates, as UI + 5 helper procs over TransportPlan9 (shm
+# via #g segments, fd-pass via /srv). `ladybird <url>` opens a libdraw window via
+# the gl9win2 presenter; `ladybird --headless --screenshot-path shot.png <url>`.
+# No browser chrome yet (single-URL viewport); <video>/WebGL deferred, SQL off +
+# temporary profile. ~150 MB download. `pac9 changelog ladybird9`.
+ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.1.0/ladybird9-amd64.tar.gz	-	0.1.0
