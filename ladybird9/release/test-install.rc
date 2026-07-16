@@ -1,0 +1,18 @@
+#!/bin/rc
+# ladybird9 pac9 install test — point the registry at a locally-served tarball,
+# install, and prove the browser + presenter + launcher landed. Serve the
+# tarball from the Mac first, e.g.:  cd ladybird9/release && python3 -m http.server 8901
+# then run this on the 9front box (adjust the host IP to the Mac).
+MAC=192.168.88.10
+if(test -d /usr/glenda/ladybird9) mv /usr/glenda/ladybird9 /usr/glenda/ladybird9.premanaged
+grep -v '^ladybird9' /sys/lib/pac9/registry > /tmp/reg.new
+echo 'ladybird9	-	.	tarball http://'^$MAC^':8901/ladybird9-amd64.tar.gz' >> /tmp/reg.new
+cp /tmp/reg.new /sys/lib/pac9/registry
+pac9 install ladybird9
+echo INSTALL-STATUS $status
+echo '--- installed layout ---'
+ls /usr/glenda/ladybird9/bin/ladybird /usr/glenda/ladybird9/libexec /amd64/bin/gl9win2 /rc/bin/ladybird
+grep ladybird9 /sys/lib/pac9/installed
+echo '--- headless smoke (renders a PNG, no window) ---'
+ICU_DATA=/usr/glenda/ladybird9/share/icu /usr/glenda/ladybird9/bin/ladybird --headless --temporary-profile --disable-sql-database --screenshot-path /tmp/lb9-pkg-shot.png http://example.com >/tmp/lb9-pkg.out >[2=1] &
+echo DONE-INSTALL

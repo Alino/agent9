@@ -1,0 +1,19 @@
+ladybird9 — the Ladybird browser on 9front
+
+v0.1.0
+  First release. A real multi-process Ladybird (LadybirdBrowser/ladybird,
+  pinned master 8cc5d7a5ff) cross-compiled to native Plan 9 amd64 a.out via
+  the cc9 toolchain — the full engine: LibWeb, LibJS (AsmInt), Skia CPU raster,
+  ICU, curl+OpenSSL, the 10 Rust crates. Runs as UI + WebContent + Compositor +
+  RequestServer + ImageDecoder over TransportPlan9 IPC (shm via #g named
+  segments, fd-passing via /srv).
+
+  - Headless: `ladybird --headless --screenshot-path shot.png <url>` renders a
+    live page to a PNG (run the binary at /usr/glenda/ladybird9/bin/ladybird).
+  - Interactive: `ladybird <url>` opens a libdraw window via the gl9win2
+    presenter (Skia BGRA frames streamed as GL9B; mouse/keyboard/scroll flow
+    back).
+
+  Known limitations (see ladybird9/parity/deferrals.md): no <video>/<audio>
+  (ffmpeg not built), no WebGL (no GPU), no JPEG-XL/AVIF; SQL database disabled
+  (Plan 9 SQLite locking) — the launcher passes --disable-sql-database.

@@ -62,3 +62,7 @@ hermes9/
 auth.json
 tailscale9/release/stage/
 tailscale9/release/*.tar.gz
+
+# ladybird9 release build artifacts (large; rebuild via release/make-tarball.sh)
+ladybird9/release/ladybird9-amd64.tar.gz
+ladybird9/release/stage/
