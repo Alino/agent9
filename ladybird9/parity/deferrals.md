@@ -54,10 +54,21 @@ page over TLS; verified 2026-07-15). Two runtime issues gate the headless PNG:
    gl9win2/swgl9 procs I first suspected were a concurrent servo9 session's,
    not ladybird's.
 
-## M4 render-stage blockers (after the IPC deadlock was fixed, 2026-07-16)
+## M4 DONE — Ladybird renders a live page on bare-metal 9front (2026-07-16)
+
+`screenshots/m4-headless-test-page.png` is a real 1000x700 render by the full
+multi-process stack (UI + WebContent + Compositor + RequestServer +
+ImageDecoder) on cirno: SerenitySans h1, DejaVu Sans Mono <pre>, CSS colors and
+layout all correct. Reproduce:
+  ladybird --headless --temporary-profile --disable-sql-database \
+    --screenshot-path shot.png --window-width 1000 --window-height 700 \
+    file:///usr/glenda/lb9/lb/test.html
+The four render-stage blockers below were all resolved (kept for the record):
+
+## M4 render-stage blockers — ALL RESOLVED
 
 The full multi-process stack now spawns, connects, and reaches "Taking
-screenshot after 8 seconds" on cirno. Two render-stage bugs remain before a PNG:
+screenshot after N seconds" on cirno. Four bugs were fixed to get the PNG:
 
 3. **No monospace font → WebContent VERIFY crash. [FIXED — commit fdbcbd2]**
    FontPlugin.cpp:56 `VERIFY(m_default_fixed_width_font)` failed: bundled fonts
@@ -135,3 +146,27 @@ screenshot after 8 seconds" on cirno. Two render-stage bugs remain before a PNG:
    A temporary/fresh profile sidesteps the contended lock. (Also fixed this
    session: deploy9.sh extracted the Lagom resource tar with `tar xf -`, which
    Plan 9 tar rejects — must be `/fd/0` — so resources silently never landed.)
+
+   **RESOLVED (cc9 702e3b9): Phase B pool allocator built** exactly as specified
+   (pool segment `#g/shmp.<pid>`, per-buffer offsets, one segattach/pool). Trace
+   confirmed the receiver imports a sender's pool 4x but attaches it once — the
+   Enovmem is gone and DidAllocateBackingStores decodes.
+
+5. **No sans-serif/serif generic → null default font → StyleComputer crash.
+   [FIXED — patch 0007]** After the pool fix, WebContent crashed at RefPtr.h:275
+   (`as_nonnull_ptr`). Stack-walked via the cc9 fault-file dump to
+   `StyleComputer::StyleComputer` → `FontPlugin::default_font(16)->pixel_metrics()`.
+   default_font resolves GenericFont::UiSansSerif; compute_generic_font_name
+   returned an unloaded family ("Arial") because SerenitySans is in NO fallback
+   list and Plan 9 has no fontconfig to resolve "sans-serif" via
+   TypefaceSkia::resolve_generic_family. Fix: append the bundled SerenitySans to
+   the sans-serif and serif fallback lists on plan9 (monospace already had DejaVu).
+
+6. **/srv fd-pass: read-only channel re-opened O_RDWR → EACCES.
+   [FIXED — patch 0005]** Non-shm fd attachments travel via /srv (cc9_srv_post).
+   The receiver's `open("/srv/<name>", O_RDWR)` failed with Plan 9 "permission
+   denied" for fds whose posted channel is read-only (e.g. a pipe read end) —
+   Plan 9 rejects re-opening a /srv channel with a WIDER mode than it was posted
+   with. Fix: open the widest mode that works — O_RDWR (bidirectional sockets,
+   the common case), then O_RDONLY, then O_WRONLY. RDWR-first never downgrades a
+   real socket. (The srvfd_gate passed because it posts a bidirectional pipe.)
