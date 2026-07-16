@@ -611,7 +611,19 @@ static const char *env_default(const char *name){
 	return 0;
 }
 char *getenv(const char *name){
-	static char val[1024]; char path[300];
+	/* Per-thread buffer (__thread → emutls): getenv returns a pointer into this,
+	 * and std::env::var copies out of it AFTER the call returns, so a shared static
+	 * let a concurrent getenv on another thread overwrite the value mid-copy (torn
+	 * read). Per-thread storage removes that race. Buffer is 8K (was 1K) so typical
+	 * PATH/RUSTFLAGS/LS_COLORS values no longer silently truncate; larger values
+	 * still cap here (getenv's contract is a pointer to fixed internal storage).
+	 * TRADEOFF: cc9's emutls never frees per-thread objects at thread exit, so the
+	 * first getenv on each thread leaks 8K for that thread's lifetime+ (the same
+	 * leak every __thread var has here). Bounded for the common FIXED-pool model
+	 * (rayon/tokio: 8K × workers, one-time); a thread-per-request server that calls
+	 * getenv is the pathological case. The torn-read + truncation it fixes are real;
+	 * this is the accepted cost until emutls learns to free. */
+	static __thread char val[8192]; char path[300];
 	env_path(name, path, sizeof path);
 	long fd=n9_open(path, 0); if(fd<0) return (char*)env_default(name);
 	long n=n9_pread((int)fd, val, sizeof val - 1, -1); n9_close((int)fd);

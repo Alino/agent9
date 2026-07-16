@@ -25,10 +25,16 @@ unsafe extern "C" {
     fn close(fd: i32) -> i32;
     fn write(fd: i32, buf: *const u8, n: usize) -> isize;
     fn setenv(name: *const u8, value: *const u8, overwrite: i32) -> i32;
+    fn unsetenv(name: *const u8) -> i32;
 }
 
 const RFPROC: i32 = 0x10;
 const RFFDG: i32 = 0x04;
+// Env groups: RFENVG copies the parent's /env into a PRIVATE group, RFCENVG gives
+// a fresh empty one. Either way the child's setenv/unsetenv can no longer mutate
+// the parent's environment (the leak bug). Both verified working on 9front.
+const RFENVG: i32 = 0x02;
+const RFCENVG: i32 = 0x800;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Command
@@ -127,14 +133,29 @@ impl Command {
             Some(d) => Some(cstr(d)?),
             None => None,
         };
-        // env: cc9 shares /env across rfork unless RFENVG; apply the deltas via
-        // setenv in the child (writes /env/NAME). Capture (key,val) C strings up front.
-        let mut envs: Vec<(CString, CString)> = Vec::new();
-        for (k, v) in self.get_envs() {
-            if let Some(v) = v {
-                envs.push((cstr(k)?, cstr(v)?));
+        // env: give the child a PRIVATE env group so its setenv/unsetenv can't leak
+        // into (or scrub) the parent's environment. Two shapes, both leak-free:
+        //  - env_clear(): RFCENVG (empty group) + setenv the fully-captured env, so
+        //    the child sees ONLY the explicitly-set vars.
+        //  - otherwise:  RFENVG (private copy of parent /env) + apply the deltas —
+        //    Some(v) => setenv, None => unsetenv (env_remove, previously dropped).
+        // All allocation/CString conversion happens HERE in the parent.
+        let clear = self.get_env_clear();
+        let mut env_sets: Vec<(CString, CString)> = Vec::new();
+        let mut env_removes: Vec<CString> = Vec::new();
+        if clear {
+            for (k, v) in self.env.capture() {
+                env_sets.push((cstr(&k)?, cstr(&v)?));
+            }
+        } else {
+            for (k, v) in self.get_envs() {
+                match v {
+                    Some(v) => env_sets.push((cstr(k)?, cstr(v)?)),
+                    None => env_removes.push(cstr(k)?),
+                }
             }
         }
+        let env_flag = if clear { RFCENVG } else { RFENVG };
 
         // Resolve each stream to a (dup-from-fd -> std-fd) plan + close lists, and
         // build any parent-side pipe ends. All allocation happens HERE, in the parent.
@@ -184,11 +205,7 @@ impl Command {
             }
         }
 
-        // NOTE: env_clear() is NOT honored. RFCENVG gives the child a fresh empty
-        // env group, but after it cc9's setenv() no longer populates the child's
-        // /env (the deltas vanish) — worse than ignoring the clear. Left as a gap
-        // pending a cc9 runtime fix for /env after RFCENVG.
-        let pid = unsafe { n9_rfork(RFPROC | RFFDG) };
+        let pid = unsafe { n9_rfork(RFPROC | RFFDG | env_flag) };
         if pid < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -206,7 +223,10 @@ impl Command {
                 if let Some(ref d) = cwd {
                     chdir(d.as_ptr() as *const u8);
                 }
-                for (k, v) in &envs {
+                for k in &env_removes {
+                    unsetenv(k.as_ptr() as *const u8);
+                }
+                for (k, v) in &env_sets {
                     setenv(k.as_ptr() as *const u8, v.as_ptr() as *const u8, 1);
                 }
                 n9_exec(program.as_ptr() as *const u8, argv.as_ptr());

@@ -34,7 +34,9 @@ void cc9_set_thread_stack(long n){ cc9_thread_stack = n; }
  * (/proc/2/note, /proc/3/note...): on a fresh boot those are real early
  * system processes (webfs! rio!) — every threaded cc9 program exit was
  * murdering them — while the actual threads never died. */
-typedef struct { void *(*start)(void *); void *arg; void *ret; int joinsem; int done; int detached; void *stack; unsigned long stksize; unsigned long pid; unsigned long realpid; } n9_thread;
+/* stack = the raw malloc pointer (what gets freed); stkbase = the pow2-aligned
+ * base the thread actually runs above (see the TL1 redzone in pthread_create). */
+typedef struct { void *(*start)(void *); void *arg; void *ret; int joinsem; int done; int detached; void *stack; unsigned long stkbase; unsigned long stksize; unsigned long pid; unsigned long realpid; } n9_thread;
 
 /* Identify the current thread WITHOUT a real getpid (/dev/pid isn't in the
  * listener namespace, and main's BSS stack has no kernel TOS). Each thread has a
@@ -77,15 +79,52 @@ static inline int on_main_stack(unsigned long sp){
 	       sp <  (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES;
 }
 
+/* TL1 redzone: pthread_create makes every spawned stack pow2-aligned and lays
+ * 5 words just BELOW the aligned base (inside the same malloc block):
+ *   base[-1..-3]  canary   — first thing a stack overflow smashes (S1)
+ *   base[-4]      th_tab index of the owning thread (the "m at stack base" stash)
+ *   base[-5]      sentinel, XOR-bound to base so arbitrary stack bytes can't fake it
+ * Keeping them below base (not carved out of the top) means the thread gets every
+ * byte of the ss it asked for, and a pow2 ss doesn't round the alignment to 2*ss. */
+#define STK_RED      64
+#define STK_CANARY   0xC0DEFACEDEADBEEFUL
+#define STK_STASH    0x9BA5E0FC0DE517A5UL
+#define STK_MINALIGN ((unsigned long)STACKSIZE)   /* smallest stack == smallest align */
+static unsigned long stk_floor = ~0UL;         /* lowest aligned base ever: probes never read below it */
+static unsigned long stk_maxal = STK_MINALIGN; /* largest alignment in use: bounds the probe loop */
+
 /* th_tab index of the CALLING thread, or -1 for main (whose per-thread state
  * lives in file-scope main_* below, since main has no slot). This is cc9's
  * pthread_self()->tcb: upstream reaches per-thread storage with one %fs load,
  * but rfork(RFMEM) threads share %fs, so %rsp range is the closest we get.
- * Same lock-free TSO discipline as cur_pid: `used` is read first, the scalar
- * range after, t is never dereferenced, and th_hi bounds the scan. */
+ *
+ * O(1), not a scan (Go's "m at the stack base" trick): the stack is pow2-aligned,
+ * so masking %rsp recovers the base where create stashed our th_tab index. The
+ * alignment varies per thread (attr stacksize), so probe each pow2 from the 256K
+ * floor up — 1 probe for default stacks, ~6 for an 8M stylo stack, never O(threads).
+ * Probe reads are safe: a candidate below the true alignment lands inside our own
+ * mapped stack; anything at/above stk_floor is inside the contiguous sbrk arena;
+ * below stk_floor we stop. A probe hit is VERIFIED against the slot's published
+ * range — live stack ranges are disjoint, so a slot whose range contains sp IS the
+ * caller's slot, and a forged/stale sentinel can never mis-resolve (it just falls
+ * through). Same lock-free TSO discipline as cur_pid: `used` is read first, the
+ * scalar range after, t is never dereferenced, and th_hi bounds everything. */
 static int th_slot(void){
 	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
 	if(on_main_stack(sp)) return -1;   /* main: O(1), no scan */
+	unsigned long maxal = stk_maxal, flo = stk_floor;
+	for(unsigned long al = STK_MINALIGN; al <= maxal; al <<= 1){
+		unsigned long base = sp & ~(al-1);
+		if(base < flo) break;              /* below every stack: could be unmapped */
+		unsigned long *b = (unsigned long *)base;
+		if(b[-5] != (STK_STASH ^ base)) continue;
+		unsigned long i = b[-4];
+		if(i >= (unsigned long)th_hi || !th_tab[i].used) continue;
+		__asm__ volatile("":::"memory");   /* acquire: don't hoist range reads before used */
+		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi) return (int)i;
+	}
+	/* Fallback: the pre-registration window, a smashed stash (stack overflow),
+	 * or a >1G stack (create caps the alignment) — the original range scan. */
 	int hi = th_hi;
 	for(int i=0;i<hi;i++){
 		if(!th_tab[i].used) continue;
@@ -120,17 +159,11 @@ int *cc9_thread_errno_slot(void){
  * units with nothing to keep them in step — one edit apart from overflowing the
  * whole thread table. */
 char *cc9_thread_errstr_slot(int **eno_out, int *cap_out){
-	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
-	for(int i=0;i<MAXTH;i++){
-		if(!th_tab[i].used) continue;
-		__asm__ volatile("":::"memory");
-		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi){
-			if(eno_out) *eno_out = &th_tab[i].errstr_errno_v;
-			if(cap_out) *cap_out = (int)sizeof th_tab[i].errstr_v;
-			return th_tab[i].errstr_v;
-		}
-	}
-	return 0;
+	int i = th_slot();   /* O(1) stash lookup; -1 for main, as the old scan-miss was */
+	if(i < 0) return 0;
+	if(eno_out) *eno_out = &th_tab[i].errstr_errno_v;
+	if(cap_out) *cap_out = (int)sizeof th_tab[i].errstr_v;
+	return th_tab[i].errstr_v;
 }
 
 /* Stack bounds of the CALLING thread, resolved by %rsp against the same table
@@ -146,19 +179,42 @@ char *cc9_thread_errstr_slot(int **eno_out, int *cap_out){
 extern char __cc9_main_stack[];
 
 int cc9_stack_bounds(void **lo, void **hi){
-	unsigned long sp; __asm__ volatile("movq %%rsp,%0":"=r"(sp));
-	for(int i=0;i<MAXTH;i++){
-		if(!th_tab[i].used) continue;
-		__asm__ volatile("":::"memory");
-		if(sp>=th_tab[i].stklo && sp<th_tab[i].stkhi){
-			*lo = (void*)th_tab[i].stklo;
-			*hi = (void*)th_tab[i].stkhi;
-			return 0;
-		}
+	int i = th_slot();   /* O(1) stash lookup; -1 for main, as the old scan-miss was */
+	if(i >= 0){
+		*lo = (void*)th_tab[i].stklo;
+		*hi = (void*)th_tab[i].stkhi;
+		return 0;
 	}
 	*lo = __cc9_main_stack;
 	*hi = __cc9_main_stack + (unsigned long)CC9_STACK_BYTES;
 	return 0;
+}
+
+/* S1: fault triage for crt0's note handler — did a thread blow its heap stack?
+ * No guard page is possible on Plan 9 (mprotect(PROT_NONE) is ENOSYS), so
+ * overflow is detected after the fact: a smashed canary below a live stack's
+ * base, or a faulting sp that leapt just below one (a big frame's `sub rsp,N`
+ * can jump the redzone without ever writing it). Read-only, lock-free (same
+ * used-then-range discipline as th_slot); this runs on a dying process, so a
+ * rare race with a concurrent reap at worst mislabels the death message. */
+int cc9_thread_stack_overflowed(unsigned long sp){
+	int hi = th_hi, near = 0, instk = 0;
+	for(int i=0;i<hi;i++){
+		if(!th_tab[i].used) continue;
+		__asm__ volatile("":::"memory");
+		unsigned long lo = th_tab[i].stklo, shi = th_tab[i].stkhi;
+		if(!lo) continue;
+		unsigned long *b = (unsigned long *)lo;
+		if(b[-1]!=STK_CANARY || b[-2]!=STK_CANARY || b[-3]!=STK_CANARY) return 1;   /* hard evidence */
+		if(sp >= lo && sp < shi) instk = 1;                 /* a NORMAL in-stack sp */
+		else if(sp && sp < lo && lo - sp < 65536) near = 1; /* leapt past the redzone? */
+	}
+	instk |= on_main_stack(sp);   /* main faulting on its own BSS stack is never a heap-thread overflow */
+	/* The near-a-base verdict only counts if sp is inside NO live stack —
+	 * adjacent heap stacks sit close together, and a thread faulting for an
+	 * unrelated reason just below a neighbor's base is not that neighbor's
+	 * overflow. */
+	return near && !instk;
 }
 
 /* Darwin spelling: the stack BASE, i.e. the highest address (stacks grow down).
@@ -221,6 +277,42 @@ void cc9_kill_threads(void){
 		  }
 		}
 	}
+}
+
+/* S1 abort. main's KERNEL pid, captured in pthread_create the first time main
+ * (not a worker) spawns a thread — cc9_kill_threads can't reach main (no slot),
+ * so the overflow abort needs it to take main down too. 0 = never captured. */
+extern unsigned cc9_tos_pid(void);
+static unsigned long main_realpid = 0;
+static void note_kill(unsigned long pid){   /* single-proc /proc/PID/note — NOT notepg (that hits the listen1 parent) */
+	if(!pid) return;
+	char path[40]; int k=0;
+	for(const char *p="/proc/"; *p; p++) path[k++]=*p;
+	char num[20]; int n=0; unsigned long v=pid;
+	do { num[n++]='0'+(v%10); v/=10; } while(v);
+	while(n>0) path[k++]=num[--n];
+	for(const char *p="/note"; *p; p++) path[k++]=*p;
+	path[k]=0;
+	long fd = n9_open(path, 1 /*OWRITE*/);
+	if(fd>=0){ n9_pwrite((int)fd,"kill",4,-1); n9_close((int)fd); }
+}
+/* A smashed canary means this thread overflowed and corrupted the SHARED heap
+ * (Plan 9's heap is contiguous+mapped, so the write never faulted). The whole
+ * process is doomed — abort it LOUDLY, not just this proc. A bare n9_exits()
+ * kills only the caller, which would (a) hang a JOINED main forever in
+ * pthread_join and (b) leave the rest running on corrupted memory. So: note
+ * every sibling worker (cc9_kill_threads) AND main (single-proc note, so the
+ * shared-group listen1 parent is untouched), THEN wake the joiner as a
+ * belt-and-suspenders against a hang if main's pid was never captured (main
+ * spawned no thread directly), THEN exit self. A deliberate fault instead of
+ * notes was rejected: a Plan 9 trap kills only the faulting proc, not the
+ * RFMEM group, so it would hang the joiner exactly like n9_exits. */
+static void cc9_stack_overflow_abort(n9_thread *t){
+	n9_pwrite(2, "cc9: thread stack overflow (canary smashed)\n", 44, -1);
+	cc9_kill_threads();                        /* notes every sibling worker (skips self + main) */
+	note_kill(main_realpid);                   /* and main — the real abort of the joiner */
+	t->done = 1; n9_semrelease(&t->joinsem, 1);/* fallback: an uncaptured main pid still can't hang */
+	n9_exits("cc9: thread stack overflow");
 }
 
 /* Claim a thread's table slot exactly once (returns 1 to the single caller that
@@ -297,10 +389,11 @@ static void trampoline(void *p){
 	 * waits on, so by the time pthread_create returns the thread is findable AND
 	 * cur_pid() resolves this thread — both before start() runs. The scalar range
 	 * + used-set-last ordering is what makes the lock-free cur_pid scan safe. */
-	unsigned long lo = (unsigned long)t->stack, hi = lo + t->stksize;
+	unsigned long lo = t->stkbase, hi = lo + t->stksize;
 	n9_semacquire(&th_lock,1);
 	for(int i=0;i<MAXTH;i++) if(!th_tab[i].used){
 		th_tab[i].pid=t->pid; th_tab[i].t=t; th_tab[i].stklo=lo; th_tab[i].stkhi=hi; th_tab[i].errno_v=0; th_tab[i].dead=0;
+		((unsigned long *)lo)[-4] = (unsigned long)i;   /* TL1 stash: %rsp&~(al-1) finds this (read by self only) */
 		/* Slots are recycled after join: drop the previous owner's emutls and TSD
 		 * arrays or this thread would inherit ITS thread_locals / key values. (The
 		 * emutls objects it pointed at leak, as they always have — no destructor
@@ -325,6 +418,14 @@ static void trampoline(void *p){
 	t->ret = cc9_thread_invoke(t->start, t->arg);
 	run_thread_atexit(t->pid);   /* thread_local dtors + set_value_at_thread_exit */
 	run_thread_keys();           /* POSIX TSD destructors (frees __thread_struct etc.) */
+	/* S1: on Plan 9's contiguous heap an overflow usually corrupts SILENTLY
+	 * (the memory below the stack is mapped) — check the canary now that the
+	 * thread is done and abort the whole process loudly, instead of letting the
+	 * damage surface at a random pc later. Once per thread lifetime: costs
+	 * nothing. cc9_stack_overflow_abort never returns. */
+	{ unsigned long *rz = (unsigned long *)lo;
+	  if(rz[-1]!=STK_CANARY || rz[-2]!=STK_CANARY || rz[-3]!=STK_CANARY)
+		cc9_stack_overflow_abort(t); }
 	t->done = 1;
 	{ unsigned long mypid = t->pid;
 	  n9_semacquire(&th_lock,1);
@@ -348,6 +449,10 @@ long cc9_get_nproc_limit(void){ return cc9_nproc_limit; }
 
 int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(void *), void *arg){
 	dead_reap();   /* reclaim any parked detached-thread stacks (they're long dead now) */
+	/* Record main's kernel pid for the S1 overflow abort (cc9_kill_threads can't
+	 * reach main). th_slot()<0 == the caller runs on main's stack, so cc9_tos_pid()
+	 * (no syscall) is main's pid; a nested create from a worker leaves it untouched. */
+	if(!main_realpid && th_slot() < 0) main_realpid = cc9_tos_pid();
 	if(cc9_nproc_limit < 0x7fffffff){
 		int live = 1;   /* the main thread counts toward the limit */
 		n9_semacquire(&th_lock,1);
@@ -368,10 +473,30 @@ int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(voi
 	 * for callers that can't pass an attr; STACKSIZE is the floor. */
 	size_t ss = attr && attr->stacksize > STACKSIZE ? (size_t)attr->stacksize
 	          : cc9_thread_stack > STACKSIZE ? (size_t)cc9_thread_stack : STACKSIZE;
-	char *stk = malloc(ss); if(!stk){ free(t); return 11; }
-	t->stack=stk; t->stksize=ss;
-	void *top = (void *)(((unsigned long)(stk+ss)) & ~15UL);
+	/* TL1: pow2-align the stack so th_slot recovers its base by masking %rsp.
+	 * Over-allocate by hand rather than aligned_alloc: the redzone must sit
+	 * BELOW the aligned base (aligned_alloc's own metadata lives there), and
+	 * this way the thread still gets every byte of ss. The ~ss of padding is
+	 * address space, not memory — those pages are never touched, so demand
+	 * paging never commits them (only a recycled free block can hand back
+	 * already-dirtied ones). */
+	unsigned long al = STK_MINALIGN;
+	while(al < ss && al < (1UL<<30)) al <<= 1;   /* cap: >1G stacks just use the scan */
+	if(ss > ~0UL - al - STK_RED){ free(t); return 11; }
+	char *stk = malloc(ss + al + STK_RED); if(!stk){ free(t); return 11; }
+	unsigned long base = ((unsigned long)stk + STK_RED + al - 1) & ~(al - 1);
+	unsigned long *rz = (unsigned long *)base;
+	rz[-1] = rz[-2] = rz[-3] = STK_CANARY;   /* S1: an overflow smashes these first */
+	rz[-4] = ~0UL;                           /* th_tab index: trampoline fills it in */
+	rz[-5] = STK_STASH ^ base;               /* sentinel, base-bound */
+	t->stack=stk; t->stkbase=base; t->stksize=ss;
+	void *top = (void *)((base + ss) & ~15UL);
 	n9_semacquire(&create_lock, 1);
+	/* Monotonic probe bounds for th_slot, serialized by create_lock so a racing
+	 * pair of creates can't lose an update. Published before the child exists,
+	 * so its own th_slot always sees a floor<=base and a maxal>=al. */
+	if(base < stk_floor) stk_floor = base;
+	if(al > stk_maxal) stk_maxal = al;
 	long pid = n9_rfork_thread(top, trampoline, t);
 	if(pid < 0){   /* rfork failed: no child will ever release handoff_sem */
 		n9_semrelease(&create_lock, 1); free(stk); free(t); return 11;

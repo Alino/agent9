@@ -32,11 +32,8 @@ cfg_select! {
     }
     target_os = "plan9" => {
         mod plan9;
-        #[expect(dead_code)]
-        mod unsupported;
         mod imp {
-            pub use super::plan9::{getcwd, chdir, temp_dir, SplitPaths, split_paths, JoinPathsError, join_paths};
-            pub use super::unsupported::{current_exe, home_dir};
+            pub use super::plan9::{getcwd, chdir, temp_dir, SplitPaths, split_paths, JoinPathsError, join_paths, current_exe, home_dir};
         }
     }
     target_family = "unix" => {

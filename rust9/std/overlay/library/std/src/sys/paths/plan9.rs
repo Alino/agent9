@@ -63,6 +63,47 @@ unsafe extern "C" {
     fn c_getcwd(buf: *mut u8, size: usize) -> *mut u8;
     #[link_name = "chdir"]
     fn c_chdir(path: *const u8) -> i32;
+    #[link_name = "getpid"]
+    fn c_getpid() -> i32;
+    #[link_name = "open"]
+    fn c_open(path: *const u8, flags: i32) -> i32;
+    #[link_name = "close"]
+    fn c_close(fd: i32) -> i32;
+    // fd2path over the exec image; Plan 9 resolves /proc/$pid/text to the real
+    // binary path (verified: returns the delivered a.out path, not "/proc/N/text").
+    fn cc9_fd2path_for_exe(fd: i32, buf: *mut u8, n: usize) -> isize;
+}
+
+/// current_exe: open the exec image `/proc/$pid/text` and fd2path it — the Plan 9
+/// way to learn one's own binary path (used by tools that re-exec / locate sibling
+/// resources). Was `unsupported()`; the cc9 primitive shipped for exactly this.
+pub fn current_exe() -> io::Result<PathBuf> {
+    let pid = unsafe { c_getpid() };
+    let mut path = format!("/proc/{pid}/text").into_bytes();
+    path.push(0);
+    let fd = unsafe { c_open(path.as_ptr(), 0) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut buf = [0u8; 4096];
+    let r = unsafe { cc9_fd2path_for_exe(fd, buf.as_mut_ptr(), buf.len()) };
+    unsafe { c_close(fd) };
+    if r < 0 {
+        // The fd2path thunk doesn't set POSIX errno, and c_close above already
+        // clobbered it — so last_os_error() here would report a stale/"Success"
+        // errno. Return a self-describing error instead.
+        return Err(io::Error::new(io::ErrorKind::Other, "fd2path on /proc/$pid/text failed"));
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    match crate::str::from_utf8(&buf[..len]) {
+        Ok(s) => Ok(PathBuf::from(s)),
+        Err(_) => Err(io::Error::new(io::ErrorKind::InvalidData, "exe path is not valid UTF-8")),
+    }
+}
+
+/// Plan 9's home is the lowercase `$home` env var (dirs-sys uses the same).
+pub fn home_dir() -> Option<PathBuf> {
+    crate::env::var_os("home").filter(|v| !v.is_empty()).map(PathBuf::from)
 }
 
 pub fn getcwd() -> io::Result<PathBuf> {

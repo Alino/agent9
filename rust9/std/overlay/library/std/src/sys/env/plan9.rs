@@ -1,47 +1,69 @@
 //! Plan 9 environment: cc9 crt0 builds `environ` from the /env filesystem and
 //! exposes getenv/setenv; unset removes the /env file.
 pub use super::common::Env;
-use crate::ffi::{CStr, OsStr, OsString, c_char};
+use crate::ffi::{CStr, OsStr, OsString, c_char, c_void};
 use crate::io;
 
+#[repr(C)]
+struct CDirent {
+    d_ino: u64,
+    d_type: u8,
+    d_name: [c_char; 256],
+}
+
 unsafe extern "C" {
-    static environ: *const *const u8;
     #[link_name = "getenv"]
     fn c_getenv(name: *const u8) -> *const u8;
     #[link_name = "setenv"]
     fn c_setenv(name: *const u8, value: *const u8, overwrite: i32) -> i32;
     #[link_name = "remove"]
     fn c_remove(path: *const u8) -> i32;
+    #[link_name = "opendir"]
+    fn c_opendir(path: *const u8) -> *mut c_void;
+    #[link_name = "readdir"]
+    fn c_readdir(dir: *mut c_void) -> *mut CDirent;
+    #[link_name = "closedir"]
+    fn c_closedir(dir: *mut c_void) -> i32;
 }
 
 unsafe fn os_from_bytes(bytes: &[u8]) -> OsString {
     unsafe { OsStr::from_encoded_bytes_unchecked(bytes).to_os_string() }
 }
 
+/// Enumerate the environment by reading the `/env` filesystem LIVE (each file is a
+/// var, name = filename, content = value), rather than the `environ` array cc9
+/// snapshots once at startup. The snapshot goes stale the moment `set_var`/
+/// `remove_var` run (they touch /env, not the array), which used to make
+/// `env::vars()` disagree with `env::var()` — a set var wouldn't list, a removed
+/// one still would. Reading /env keeps vars() and var() (both → /env) consistent.
 pub fn env() -> Env {
     let mut result = Vec::new();
-    unsafe {
-        let mut ptr = environ;
-        if !ptr.is_null() {
-            while !(*ptr).is_null() {
-                let bytes = CStr::from_ptr(*ptr as *const c_char).to_bytes();
-                if let Some(kv) = parse(bytes) {
-                    result.push(kv);
-                }
-                ptr = ptr.add(1);
+    let dir = unsafe { c_opendir(b"/env\0".as_ptr()) };
+    if !dir.is_null() {
+        loop {
+            let ent = unsafe { c_readdir(dir) };
+            if ent.is_null() {
+                break;
+            }
+            let name = unsafe { CStr::from_ptr((*ent).d_name.as_ptr()) }.to_bytes();
+            if name.is_empty() || name == b"." || name == b".." {
+                continue;
+            }
+            // Read the value the same way `var()` does. Both go through /env, so a
+            // set/removed var now agrees between vars() and var(). Residual, inherent
+            // divergences (not worth papering over): cc9 getenv returns baked defaults
+            // for PATH/SHELL when no /env file exists, so var("PATH") can be Some while
+            // vars() omits it; an empty-valued var reads back as absent; and a name
+            // >255 bytes is truncated by the dirent, so getenv on the truncated name
+            // misses. All cosmetic; the set/remove coherence bug is what this fixes.
+            let key = unsafe { os_from_bytes(name) };
+            if let Some(val) = getenv(&key) {
+                result.push((key, val));
             }
         }
+        unsafe { c_closedir(dir) };
     }
-    return Env::new(result);
-
-    fn parse(input: &[u8]) -> Option<(OsString, OsString)> {
-        if input.is_empty() {
-            return None;
-        }
-        // Split on the first '=' after position 0 (glibc rule).
-        let pos = input[1..].iter().position(|&b| b == b'=').map(|p| p + 1)?;
-        unsafe { Some((os_from_bytes(&input[..pos]), os_from_bytes(&input[pos + 1..]))) }
-    }
+    Env::new(result)
 }
 
 pub fn getenv(k: &OsStr) -> Option<OsString> {

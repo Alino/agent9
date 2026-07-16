@@ -1,8 +1,38 @@
 //! Plan 9 time via cc9's clock_gettime (backed by /dev/bintime).
+use crate::sync::atomic::{AtomicU64, Ordering};
 use crate::time::Duration;
 
 unsafe extern "C" {
     fn clock_gettime(clk: i32, ts: *mut CTimespec) -> i32;
+}
+
+/// cc9's `clock_gettime` ignores the clock id and always reads /dev/bintime
+/// (realtime ns since epoch) — so CLOCK_MONOTONIC is NOT monotonic: aux/timesync,
+/// `date -n`, NTP, or a VM pause can step it backward, which makes `Instant::
+/// elapsed()` return 0 and hangs timeout/backoff loops. There is no monotonic
+/// kernel clock exposed to us, so we monotonize in userspace the way std did for
+/// every non-monotonic platform before vDSO clocks: clamp each reading to the max
+/// seen so far, process-wide. Cost is one relaxed CAS loop; the tiny skew a
+/// concurrent stepped-back reading could see is bounded by the clamp and never
+/// goes negative.
+static MONO_MAX_NS: AtomicU64 = AtomicU64::new(0);
+
+fn monotonic_ns() -> u64 {
+    let raw = {
+        let mut ts = CTimespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { clock_gettime(CLOCK_MONOTONIC, &mut ts) };
+        (ts.tv_sec as u64).wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as u64)
+    };
+    let mut prev = MONO_MAX_NS.load(Ordering::Relaxed);
+    loop {
+        if raw <= prev {
+            return prev; // clock stepped back (or equal): hold the last max
+        }
+        match MONO_MAX_NS.compare_exchange_weak(prev, raw, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return raw,
+            Err(now) => prev = now,
+        }
+    }
 }
 
 #[repr(C)]
@@ -30,7 +60,8 @@ pub const UNIX_EPOCH: SystemTime = SystemTime(Duration::from_secs(0));
 
 impl Instant {
     pub fn now() -> Instant {
-        Instant(now(CLOCK_MONOTONIC))
+        let ns = monotonic_ns();
+        Instant(Duration::new(ns / 1_000_000_000, (ns % 1_000_000_000) as u32))
     }
 
     pub fn checked_sub_instant(&self, other: &Instant) -> Option<Duration> {

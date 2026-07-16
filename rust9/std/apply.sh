@@ -26,4 +26,20 @@ fi
 
 cp -R "$HERE/overlay/library/." "$RS/"
 echo "applied plan9 std overlay -> $RS"
-echo "NOTE: run 'cargo clean' before rebuilding (build-std caches sysroot std)."
+
+# build-std caches the sysroot std keyed on FLAGS, not source mtime — so an overlay
+# edit stays INERT until the consuming build dir is cargo-cleaned. That two-step
+# (apply THEN clean) is the footgun that silently ships stale std. Pass build dirs
+# as args and this script cleans them for you; with no args it just reminds you.
+if [ "$#" -gt 0 ]; then
+  for d in "$@"; do
+    if [ -d "$d" ]; then
+      ( cd "$d" && cargo clean ) && echo "cargo clean -> $d"
+    else
+      echo "WARNING: build dir not found, skipping cargo clean: $d"
+    fi
+  done
+else
+  echo "NOTE: run 'cargo clean' before rebuilding (build-std caches sysroot std),"
+  echo "      or re-run: $0 <build-dir> [build-dir...]  to clean them automatically."
+fi

@@ -156,6 +156,16 @@ int cc9_note_handler(unsigned long framesp)
 #endif
 	if (cc9_in_note) return 1;     /* reentrant fault: NDFLT (die) */
 	cc9_in_note = 1;
+	/* Name the cause when a fatal fault is actually a thread stack overflow: cc9
+	 * thread stacks are plain malloc'd heap with no guard page (mprotect(PROT_NONE)
+	 * = ENOSYS on Plan 9), so an overflow usually corrupts the heap SILENTLY and
+	 * surfaces later as an unrelated fault. pthread.c poisons a canary at each
+	 * stack limit + tracks stack bases; f[41] is Ureg.sp (see the fault dump below).
+	 * Additive: still proceeds to the generic note dump and dies — just with a
+	 * named cause instead of a mystery pc. */
+	{ extern int cc9_thread_stack_overflowed(unsigned long);
+	  if (cc9_thread_stack_overflowed(((unsigned long *)framesp)[41]))
+		n9_pwrite(2, "cc9: thread stack overflow\n", 27, -1); }
 	int n = 0; while (n < 200 && msg[n] >= 32 && msg[n] < 127) n++;
 #ifdef CC9_FAULT_FILE
 	/* Write the note + a 46-slot frame dump to a FILE — survives the listener

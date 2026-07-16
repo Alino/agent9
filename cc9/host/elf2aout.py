@@ -12,7 +12,7 @@ resolve correctly (verified: small-text binary -> data@0x400000).
 
 Usage: elf2aout.py in.elf out.aout
 """
-import struct, sys
+import os, struct, sys
 
 S_MAGIC = 0x8A97
 UTZERO  = 0x200000
@@ -84,7 +84,16 @@ def main():
                        e_entry & 0xffffffff, 0, 0)
     hdr += struct.pack('>Q', e_entry)
     out = hdr + text + data + syms
-    open(sys.argv[2], 'wb').write(out)
+    # Atomic write: a plain open('wb') truncates the target FIRST, so a kill mid-write
+    # (run9 timeout / OOM) would leave a 0-byte a.out that `deliver`/`run9` then ships
+    # (the 0-byte-binary incident). Write a sibling .tmp and os.replace() it — the final
+    # path is always either the previous good a.out or the complete new one.
+    tmp = sys.argv[2] + '.tmp'
+    with open(tmp, 'wb') as f:
+        f.write(out)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, sys.argv[2])
     print(f"{sys.argv[2]}: {len(out)} bytes  text={len(text)} data={len(data)} "
           f"bss={bss} syms={len(syms)} entry=0x{e_entry:x}")
 

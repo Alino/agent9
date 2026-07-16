@@ -418,9 +418,23 @@ impl TcpStream {
         read_endpoint("tcp", self.conn, "local")
     }
 
-    pub fn shutdown(&self, _: Shutdown) -> io::Result<()> {
-        // Writing "hangup" to the ctl closes the connection both ways.
-        self.ctl()?.write_all(b"hangup").map(|_| ())
+    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
+        // /net TCP has no half-close primitive — the only teardown is "hangup",
+        // which closes BOTH directions. So:
+        //  - Read: no-op. Fully hanging up here would kill the WRITE side too and
+        //    break the very common send-then-read-response / TLS-close_notify idiom
+        //    (`stream.shutdown(Read)` used to tear down the whole connection).
+        //    KNOWN TRADEOFF: the reverse idiom — thread B calling `shutdown(Read)` to
+        //    unblock thread A's blocking `read()` — no longer works (nothing wakes the
+        //    reader). /net can't satisfy both; protecting the far more common
+        //    write-side pattern is the deliberate choice. Use a read timeout or close
+        //    the stream to unblock a reader instead.
+        //  - Write/Both: hangup. This is lossy for Write (it also stops reads), but
+        //    it's the only way to signal EOF to the peer on /net.
+        match how {
+            Shutdown::Read => Ok(()),
+            Shutdown::Write | Shutdown::Both => self.ctl()?.write_all(b"hangup").map(|_| ()),
+        }
     }
 
     pub fn duplicate(&self) -> io::Result<TcpStream> {

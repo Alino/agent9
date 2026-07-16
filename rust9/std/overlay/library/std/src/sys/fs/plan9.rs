@@ -73,6 +73,12 @@ unsafe extern "C" {
     fn c_chmod(path: *const u8, mode: u32) -> i32;
     #[link_name = "fchmod"]
     fn c_fchmod(fd: i32, mode: u32) -> i32;
+    // cc9 fsync/fdatasync: real 9P null-wstat commit (durable on gefs, Eio on
+    // failure) since the 2026-07-16 honesty pass — no longer a return-0 stub.
+    #[link_name = "fsync"]
+    fn c_fsync(fd: i32) -> i32;
+    #[link_name = "fdatasync"]
+    fn c_fdatasync(fd: i32) -> i32;
     // wstat-based mtime setters (Plan 9 cannot set atime — it is kernel-owned).
     fn cc9_set_mtime(path: *const u8, secs: u64) -> i32;
     fn cc9_fset_mtime(fd: i32, secs: u64) -> i32;
@@ -359,24 +365,45 @@ impl File {
     }
 
     pub fn fsync(&self) -> io::Result<()> {
-        Ok(())
+        // Real durability now (cc9 fsync = 9P null-wstat commit). Propagate Eio
+        // instead of the old return-0 lie, so sync_all() no longer claims success
+        // after flushing nothing (data-durability correctness for DB/WAL patterns).
+        cvt(unsafe { c_fsync(self.fd) })
     }
     pub fn datasync(&self) -> io::Result<()> {
-        Ok(())
+        cvt(unsafe { c_fdatasync(self.fd) })
     }
+    // File locking: Plan 9 has no POSIX advisory record locks; cc9 flock/F_SETLK
+    // return ENOLCK. A blanket `Ok` here is a corruption trap — `try_lock`
+    // returning Ok(()) unconditionally makes single-instance guards and cache
+    // locks believe they hold exclusive access, so concurrent writers clobber the
+    // same file. `lock`/`unlock` are honest no-ops ONLY under the single-process
+    // assumption; `try_lock*` must NOT claim success — they report WouldBlock so
+    // callers can fall back (that is what upstream returns on contention).
+    // Plan 9 has no advisory file locking (no flock/fcntl-lock; cc9's flock returns
+    // ENOLCK). ALL of lock/try_lock must be HONESTLY unsupported: a
+    // fake `Ok` from lock() lets two writers both "hold" the lock and corrupt, and
+    // it's the exact trap a caller falls into when it handles try_lock's
+    // `Error(Unsupported)` by dropping back to blocking lock(). So lock() errors too
+    // — never silently succeed at mutual exclusion we cannot provide.
     pub fn lock(&self) -> io::Result<()> {
-        Ok(())
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
     pub fn lock_shared(&self) -> io::Result<()> {
-        Ok(())
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
     pub fn try_lock(&self) -> Result<(), TryLockError> {
-        Ok(())
+        // Honest "locking unavailable" rather than a false WouldBlock (which would
+        // make a lone single-instance guard think another copy is running) or a
+        // false Ok (which lets two writers both "hold" the lock and corrupt).
+        Err(TryLockError::Error(io::Error::from(io::ErrorKind::Unsupported)))
     }
     pub fn try_lock_shared(&self) -> Result<(), TryLockError> {
-        Ok(())
+        Err(TryLockError::Error(io::Error::from(io::ErrorKind::Unsupported)))
     }
     pub fn unlock(&self) -> io::Result<()> {
+        // A lock was never acquired (lock/try_lock always error), so there is
+        // nothing to release — unlocking "succeeds" vacuously.
         Ok(())
     }
 
