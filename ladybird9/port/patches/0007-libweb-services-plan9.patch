@@ -150,6 +150,29 @@ index 3d5d7a5b1d..2cf0ccb169 100644
  #else
  #    error Unknown OS
  #endif
+diff --git a/Libraries/LibWeb/Platform/FontPlugin.cpp b/Libraries/LibWeb/Platform/FontPlugin.cpp
+index 63e85e0b95..1c45b1df94 100644
+--- a/Libraries/LibWeb/Platform/FontPlugin.cpp
++++ b/Libraries/LibWeb/Platform/FontPlugin.cpp
+@@ -101,6 +101,18 @@ void FontPlugin::update_generic_fonts()
+     Vector<FlyString> sans_serif_fallbacks { "Arial"_fly_string, "Helvetica"_fly_string, "Verdana"_fly_string, "Trebuchet MS"_fly_string, "Gill Sans"_fly_string, "Noto Sans"_fly_string, "Avantgarde"_fly_string, "Optima"_fly_string, "Arial Narrow"_fly_string, "Liberation Sans"_fly_string, "Roboto"_fly_string };
+     Vector<FlyString> serif_fallbacks { "Times"_fly_string, "Times New Roman"_fly_string, "Didot"_fly_string, "Georgia"_fly_string, "Palatino"_fly_string, "Bookman"_fly_string, "New Century Schoolbook"_fly_string, "American Typewriter"_fly_string, "Liberation Serif"_fly_string, "Roman"_fly_string, "Noto Serif"_fly_string };
+ 
++#if defined(AK_OS_PLAN9)
++    // Plan 9 has no fontconfig, so TypefaceSkia::resolve_generic_family() can't
++    // map the CSS generics to a system font, and none of the proportional
++    // fallback families above are bundled. Make SerenitySans (the bundled UI
++    // font) the last-resort sans-serif/serif fallback — otherwise
++    // compute_generic_font_name() returns an unloaded family and default_font()
++    // returns null, crashing StyleComputer's ctor (default_font(16)->...).
++    // Monospace already resolves via the bundled DejaVu Sans Mono.
++    sans_serif_fallbacks.append("SerenitySans"_fly_string);
++    serif_fallbacks.append("SerenitySans"_fly_string);
++#endif
++
+     auto fallback_set = [&](GenericFont font) -> Vector<FlyString>& {
+         return m_generic_font_fallbacks[to_underlying(font)];
+     };
 diff --git a/Services/Compositor/CMakeLists.txt b/Services/Compositor/CMakeLists.txt
 index 4eb76e7b27..1411bab4e6 100644
 --- a/Services/Compositor/CMakeLists.txt

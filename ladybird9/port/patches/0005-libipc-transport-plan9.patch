@@ -27,10 +27,10 @@ index 49c66b30e8..4f743f2961 100644
  #else
 diff --git a/Libraries/LibIPC/TransportPlan9.cpp b/Libraries/LibIPC/TransportPlan9.cpp
 new file mode 100644
-index 0000000000..9cd44787f9
+index 0000000000..d6afcb8790
 --- /dev/null
 +++ b/Libraries/LibIPC/TransportPlan9.cpp
-@@ -0,0 +1,386 @@
+@@ -0,0 +1,395 @@
 +/*
 + * Copyright (c) 2024, Andrew Kaster <andrew@ladybird.org>
 + * Copyright (c) 2025, stasoid <stasoid@yahoo.com>
@@ -242,7 +242,16 @@ index 0000000000..9cd44787f9
 +    case Plan9AttachmentKind::Srv: {
 +        char path[80];
 +        (void)snprintf(path, sizeof(path), "/srv/%s", name);
++        // A /srv-posted channel keeps the access mode it was opened with; Plan 9
++        // rejects re-opening it with a WIDER mode ("permission denied"). So a
++        // read-only or write-only fd (e.g. a pipe end) fails O_RDWR. Open with
++        // the widest that works: RDWR (bidirectional sockets, the common case),
++        // then RDONLY, then WRONLY. ORDWR-first never downgrades a real socket.
 +        int fd = ::open(path, O_RDWR);
++        if (fd < 0)
++            fd = ::open(path, O_RDONLY);
++        if (fd < 0)
++            fd = ::open(path, O_WRONLY);
 +        VERIFY(fd >= 0);
 +        // Receiver removes: each send posts a fresh entry, so multi-hop and
 +        // multi-peer sharing both re-post — never reuse a name.
