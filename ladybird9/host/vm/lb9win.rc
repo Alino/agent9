@@ -16,4 +16,4 @@ mount $RIOSRV /n/lw 'new -r 40 40 940 700'
 bind -b /n/lw /dev
 cat /dev/winid > /tmp/lb9.winid
 ICU_DATA=/usr/glenda/ladybird9/share/icu
-exec gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' '--disable-sql-database' $url >[2]/tmp/lb9win.log
+exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' '--disable-sql-database' $url >[2]/tmp/lb9win.log

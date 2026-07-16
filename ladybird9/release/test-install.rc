@@ -11,7 +11,7 @@ cp /tmp/reg.new /sys/lib/pac9/registry
 pac9 install ladybird9
 echo INSTALL-STATUS $status
 echo '--- installed layout ---'
-ls /usr/glenda/ladybird9/bin/ladybird /usr/glenda/ladybird9/libexec /amd64/bin/gl9win2 /rc/bin/ladybird
+ls /usr/glenda/ladybird9/bin/ladybird /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/libexec /rc/bin/ladybird
 grep ladybird9 /sys/lib/pac9/installed
 echo '--- headless smoke (renders a PNG, no window) ---'
 ICU_DATA=/usr/glenda/ladybird9/share/icu /usr/glenda/ladybird9/bin/ladybird --headless --temporary-profile --disable-sql-database --screenshot-path /tmp/lb9-pkg-shot.png http://example.com >/tmp/lb9-pkg.out >[2=1] &

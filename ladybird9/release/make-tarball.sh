@@ -7,7 +7,11 @@
 #                                  ImageDecoder,WebWorker}   helper processes
 #   /usr/glenda/ladybird9/share/Lagom/...           themes, fonts, about pages
 #   /usr/glenda/ladybird9/share/icu/icudt78l.dat    ICU data (ICU_DATA env)
-#   /amd64/bin/gl9win2                              libdraw window presenter (native)
+#   /usr/glenda/ladybird9/bin/gl9win2               libdraw window presenter (native;
+#                                                   package-PRIVATE: alacritty9/dosbox9
+#                                                   also ship /amd64/bin/gl9win2, and
+#                                                   pac9 uninstall of one would delete
+#                                                   a shared copy under the other)
 #   /rc/bin/ladybird                                launcher: gl9win2 + browser
 #   /sys/lib/pac9/changelog/ladybird9               pac9 changelog
 #
@@ -23,8 +27,10 @@
 #   - gl9win2 (with the GL9B op): release/prebuilt/gl9win2, built on a 9front box
 #     via alacritty9/win/mkfile (objtype=amd64; mk)
 #
-# Publish as the GitHub release `ladybird9` asset:
-#   gh release create ladybird9 ladybird9-amd64.tar.gz -t 'ladybird9 — Ladybird for 9front'
+# Publish as a VERSIONED GitHub release (pac9 doctrine: a registry version
+# column requires an immutable URL, so the tag embeds the version):
+#   V=0.1.0
+#   gh release create ladybird9-v$V ladybird9-amd64.tar.gz -t "ladybird9 v$V — Ladybird for 9front"
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd); LB9=$(dirname "$HERE"); AGENT9=$(dirname "$LB9")
 BUILD="${LB9_BUILD:-$LB9/_out/build}"
@@ -39,7 +45,7 @@ STAGE="$HERE/stage"; TARBALL="$HERE/ladybird9-amd64.tar.gz"
 
 P="$STAGE/usr/glenda/ladybird9"
 rm -rf "$STAGE"
-mkdir -p "$P/bin" "$P/libexec" "$P/share/icu" "$STAGE/amd64/bin" "$STAGE/rc/bin" \
+mkdir -p "$P/bin" "$P/libexec" "$P/share/icu" "$STAGE/rc/bin" \
          "$STAGE/sys/lib/pac9/changelog"
 
 # cc9-link already emits the final a.out (file == "data"); ship as-is (no elf2aout).
@@ -51,26 +57,30 @@ chmod +x "$P/bin/ladybird" "$P/libexec/"*
 
 cp -R "$BUILD/share/Lagom" "$P/share/Lagom"
 cp "$ICU_DAT" "$P/share/icu/icudt78l.dat"
-cp "$GL9WIN2" "$STAGE/amd64/bin/gl9win2"
-chmod +x "$STAGE/amd64/bin/gl9win2"
+cp "$GL9WIN2" "$P/bin/gl9win2"
+chmod +x "$P/bin/gl9win2"
 
-# Launcher: run the browser interactively under the gl9win2 presenter.
+# Launcher: run the browser interactively under the gl9win2 presenter (the
+# package-private copy — see the header note about the /amd64/bin collision).
 # --disable-sql-database avoids the Plan 9 SQLite "locking protocol" (deferral);
-# drop it once the cc9 SQLite VFS lock shim lands.
+# --temporary-profile because the persistent profile takes a Plan 9 exclusive
+# lock that a crashed prior run (or a second window) still holds — the launch
+# then dies with "locking protocol". Drop both once the cc9 SQLite VFS lock
+# shim + profile-lock recovery land; until then no history/cookies persist.
 cat > "$STAGE/rc/bin/ladybird" <<'EOF'
 #!/bin/rc
 # ladybird9: the real Ladybird browser on 9front (interactive, via gl9win2).
 #   ladybird https://example.com     open a page
 #   ladybird --headless --screenshot-path shot.png <url>   (run the binary directly)
 ICU_DATA=/usr/glenda/ladybird9/share/icu
-exec gl9win2 /usr/glenda/ladybird9/bin/ladybird '--disable-sql-database' $*
+exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' '--disable-sql-database' $*
 EOF
 chmod +x "$STAGE/rc/bin/ladybird"
 
 cp "$HERE/CHANGELOG" "$STAGE/sys/lib/pac9/changelog/ladybird9"
 
 # ustar so 9front's tar reads it; COPYFILE_DISABLE stops macOS ._* junk.
-( cd "$STAGE" && COPYFILE_DISABLE=1 tar --format ustar -czf "$TARBALL" usr amd64 rc sys )
+( cd "$STAGE" && COPYFILE_DISABLE=1 tar --format ustar -czf "$TARBALL" usr rc sys )
 echo "-> $TARBALL  ($(du -h "$TARBALL" | cut -f1))"
-echo "registry entry (tab-separated):"
-echo "ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9/ladybird9-amd64.tar.gz"
+echo "registry entry (tab-separated: name url subdir recipe deps version):"
+echo "ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.1.0/ladybird9-amd64.tar.gz	-	0.1.0"

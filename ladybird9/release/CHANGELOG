@@ -16,4 +16,7 @@ v0.1.0
 
   Known limitations (see ladybird9/parity/deferrals.md): no <video>/<audio>
   (ffmpeg not built), no WebGL (no GPU), no JPEG-XL/AVIF; SQL database disabled
-  (Plan 9 SQLite locking) — the launcher passes --disable-sql-database.
+  (Plan 9 SQLite locking) and the profile is temporary — the launcher passes
+  --disable-sql-database --temporary-profile, so history/cookies do not persist
+  yet (a persistent profile wedges on the Plan 9 exclusive profile lock after a
+  crash). gl9win2 ships package-private at /usr/glenda/ladybird9/bin/gl9win2.
