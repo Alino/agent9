@@ -101,32 +101,27 @@ static shm_map maps[SHM_MAXMAP];
  * ONE segattach regardless of buffer count. The {name,offset,len} wire triple
  * (offset was always 0 in Phase A) now carries the buffer's offset in the pool.
  *
- * fd->offset map: cc9_shm_create/import mint an fd open on the pool's data file
- * and record its (offset,len) here; export/mmap look it up. ponytail: keyed by
- * fd number, refreshed on every create/import, so a closed+recreated fd is
- * correct — but a dup'd buffer fd (rare: one-shot renders don't re-share) would
- * miss and map at offset 0. Add a dup-safe handle table if multi-view buffers
- * appear. */
-typedef struct { int fd; unsigned long off, len; } shm_buf;
-#define SHM_MAXBUF 4096
-static shm_buf bufs[SHM_MAXBUF];
+ * A buffer's offset within the pool is carried in the fd's SEEK POSITION, not
+ * an fd-number-keyed table: the IPC layer clones the fd (dup) before
+ * cc9_shm_export sees it, and dup(2) shares the file offset, so seek survives
+ * the clone while an fd-number lookup would miss and fall back to offset 0
+ * (the painter then maps the wrong pool region and reads zeros). AnonymousBuffer
+ * only mmaps the fd (never read/write/lseeks it), so the position stays put. */
+extern long n9_seek(long long *, int, long long, int);
+static void shm_set_off(int fd, unsigned long off) {
+	long long ret;
+	n9_seek(&ret, fd, (long long)off, 0 /*SEEK_SET*/);
+}
+static unsigned long shm_get_off(int fd) {
+	long long ret = 0;
+	if (n9_seek(&ret, fd, 0, 1 /*SEEK_CUR*/) < 0) return 0;
+	return (unsigned long)ret;
+}
 
 #define SHM9_POOL (256ul << 20)     /* 256 MiB per pool; demand-paged, so cheap */
 static char pool_name[CC9_SHM_NAMELEN];  /* "" until the pool is created */
 static unsigned long pool_off;           /* bump cursor within the pool */
 static int pool_fd = -1;                 /* held open process-lifetime: keeps the #g dir + memory alive */
-
-static shm_buf *buf_lookup(int fd) {
-	for (int i = 0; i < SHM_MAXBUF; i++)
-		if (bufs[i].fd == fd + 1) return &bufs[i];   /* +1: 0 = empty slot */
-	return 0;
-}
-static void buf_record(int fd, unsigned long off, unsigned long len) {
-	shm_buf *b = buf_lookup(fd);
-	if (!b) for (int i = 0; i < SHM_MAXBUF; i++) if (bufs[i].fd == 0) { b = &bufs[i]; break; }
-	if (!b) return;                 /* table full: mmap will default to offset 0 */
-	b->fd = fd + 1; b->off = off; b->len = len;
-}
 
 static unsigned long page_round(unsigned long n) {
 	return (n + SHM9_PAGE - 1) & ~(SHM9_PAGE - 1);
@@ -256,7 +251,7 @@ int cc9_shm_create(unsigned long size) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	buf_record((int)fd, off, len);
+	shm_set_off((int)fd, off);          /* carry the pool offset in the fd position */
 	shm_trace("create", name, off, len, fd, 0);
 	return (int)fd;
 }
@@ -267,14 +262,8 @@ int cc9_shm_export(int fd, char *name, unsigned long *offset, unsigned long *len
 		errno = EBADF;
 		return -1;
 	}
-	n9_semacquire(&shm_lock, 1);
-	shm_buf *b = buf_lookup(fd);
-	if (b) { *offset = b->off; *len = b->len; n9_semrelease(&shm_lock, 1); return 0; }
-	n9_semrelease(&shm_lock, 1);
-	/* not a pool buffer (shouldn't happen post-Phase-B): whole-segment fallback */
-	unsigned long va;
-	if (read_ctl(name, &va, len) < 0) { errno = EBADF; return -1; }
-	*offset = 0;
+	*offset = shm_get_off(fd);           /* dup-safe: reads the shared file offset */
+	*len = 0;                            /* Phase B: unused on the wire (receiver's mmap size drives it) */
 	return 0;
 }
 
@@ -285,7 +274,7 @@ int cc9_shm_import(const char *name, unsigned long offset, unsigned long len) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); shm_trace("import", name, offset, len, -1, "open-failed"); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	buf_record((int)fd, offset, len);   /* the buffer's offset in the sender's pool */
+	shm_set_off((int)fd, offset);       /* the buffer's offset in the sender's pool */
 	shm_trace("import", name, offset, len, fd, 0);
 	return (int)fd;
 }
@@ -300,9 +289,8 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 	unsigned long segva, seglen;
 	if (read_ctl(name, &segva, &seglen) < 0) { errno = EBADF; return (void *)-1; }
 
+	unsigned long off = shm_get_off(fd);  /* pool offset, from the fd position */
 	n9_semacquire(&shm_lock, 1);
-	shm_buf *b = buf_lookup(fd);
-	unsigned long off = b ? b->off : 0;   /* pool offset (0 for a whole-segment fd) */
 	if (off + page_round(len) > seglen) { n9_semrelease(&shm_lock, 1); errno = EINVAL; return (void *)-1; }
 
 	/* One segattach per POOL (keyed by name, refcounted); every buffer in the
