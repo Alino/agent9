@@ -265,6 +265,32 @@ int cc9_poll_owned(int fd){
 	return p && (p->reader || (p->flags & O_NONBLOCK));
 }
 
+/* dup(2)/dup2(2): POSIX status flags (O_NONBLOCK) live on the OPEN FILE
+ * DESCRIPTION and are shared with the dup; cc9 keys them per fd number, so
+ * they'd silently vanish on the new fd (the RequestServer body pipe wedged a
+ * whole event loop this way). Copy at dup time — the honest approximation
+ * (post-dup mutations don't propagate; nothing we run does that).
+ * FD_CLOEXEC is per-descriptor and correctly NOT copied. */
+void cc9_poll_carry_dup(int oldfd, int newfd){
+	cc9_pfd *op = lookup(oldfd);
+	if(!op || !(op->flags & O_NONBLOCK)) return;
+	cc9_pfd *np = ensure(newfd, 0);
+	if(np) np->flags |= O_NONBLOCK;
+}
+
+/* Bytes already buffered for fd (FIONREAD); -1 if the fd isn't ours.
+ * For UDP this can span datagrams (the ring is a byte stream) — fine for
+ * one-query-per-socket users like a DNS client; a caller needing strict
+ * per-datagram sizes must recvfrom into a max-size buffer instead. */
+long cc9_poll_pending(int fd){
+	cc9_pfd *p = lookup(fd);
+	if(!p || !p->reader) return -1;
+	n9_semacquire(&p->lock, 1);
+	long n = (long)ring_avail(p);
+	n9_semrelease(&p->lock, 1);
+	return n;
+}
+
 long cc9_poll_read(int fd, void *buf, long n){
 	cc9_pfd *p = lookup(fd);
 	if(!p){ errno = EBADF; return -1; }
@@ -448,9 +474,12 @@ int fcntl(int fd, int cmd, ...){
 	case F_DUPFD:
 	case F_DUPFD_CLOEXEC: {
 		int nfd = (int)n9_dup(fd, -1);   /* ponytail: ignores the >=arg floor */
-		if(nfd >= 0 && cmd == F_DUPFD_CLOEXEC){
-			cc9_pfd *np = ensure(nfd, 0);
-			if(np) np->flags |= O_CLOEXEC;
+		if(nfd >= 0){
+			cc9_poll_carry_dup(fd, nfd);   /* O_NONBLOCK rides the description */
+			if(cmd == F_DUPFD_CLOEXEC){
+				cc9_pfd *np = ensure(nfd, 0);
+				if(np) np->flags |= O_CLOEXEC;
+			}
 		}
 		return nfd;
 	}

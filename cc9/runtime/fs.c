@@ -441,6 +441,13 @@ int ioctl(int fd, unsigned long req, ...){
 		int on = arg ? *(int *)arg : 0;
 		return fcntl(fd, 4 /*F_SETFL*/, on ? 0x1000 /*O_NONBLOCK*/ : 0);
 	}
+	if(req == 0x541B /*FIONREAD*/){
+		/* honest only for poll-owned fds (reader ring holds the buffered
+		 * bytes); anything else falls through to ENOTTY rather than lie. */
+		extern long cc9_poll_pending(int);
+		long n = cc9_poll_pending(fd);
+		if(n >= 0 && arg){ *(int *)arg = (int)n; return 0; }
+	}
 	if(req == 0x5413 /*TIOCGWINSZ*/){
 		struct { unsigned short r, c, xp, yp; } *ws = arg;
 		int rows = env_num("LINES"), cols = env_num("COLS");
@@ -502,7 +509,7 @@ int fdatasync(int fd){ return fsync(fd); }
 int ftruncate(int fd, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_fwstat(fd,b,n)<0?-1:0; }
 int truncate(const char *p, long len){ unsigned char b[128]; int n=build_wstat(b,0,0xFFFFFFFF,(unsigned long long)len,0xFFFFFFFF); return n9_wstat(p,b,n)<0?-1:0; }
 extern long n9_dup(int, int);
-int dup(int fd){ int r=(int)n9_dup(fd,-1); if(r<0){ errno=EBADF; return -1; } if(append_get(fd)) append_set(r,1); return r; }  /* O_APPEND is shared by the file description -> carry it to the dup */
+int dup(int fd){ extern void cc9_poll_carry_dup(int,int); int r=(int)n9_dup(fd,-1); if(r<0){ errno=EBADF; return -1; } if(append_get(fd)) append_set(r,1); cc9_poll_carry_dup(fd,r); return r; }  /* O_APPEND + O_NONBLOCK are shared by the file description -> carry to the dup */
 
 /* rename: Plan 9 wstat changes only the final name component, so this works for
  * same-directory renames; cross-directory -> EXDEV (libc++ falls back to copy). */

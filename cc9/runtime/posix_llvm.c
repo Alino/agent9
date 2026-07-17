@@ -1189,7 +1189,12 @@ int    dup2(int o, int n) {
 		cc9_shm_forget_fd(n);
 		cc9_append_onclose(n);
 	}
-	return (int)n9_dup(o, n);
+	int r = (int)n9_dup(o, n);
+	if (r >= 0) {
+		extern void cc9_poll_carry_dup(int, int);
+		cc9_poll_carry_dup(o, r);   /* O_NONBLOCK rides the description (poll.c) */
+	}
+	return r;
 }
 
 /* time breakdown: gmtime/localtime (LLVM uses them for diagnostic timestamps).

@@ -603,6 +603,7 @@ static struct addrinfo *ai_one(const char *ipport, int socktype) {
 int getaddrinfo(const char *host, const char *serv,
                 const struct addrinfo *hints, struct addrinfo **res) {
 	int socktype = hints ? hints->ai_socktype : 0;
+	int family = hints ? hints->ai_family : AF_UNSPEC;
 	const char *proto = socktype == SOCK_DGRAM ? "udp" : "tcp";
 	const char *port = serv && *serv ? serv : "0";
 	char buf[192];
@@ -639,7 +640,16 @@ int getaddrinfo(const char *host, const char *serv,
 		char *nl = strchr(sp + 1, '\n');
 		if (nl) *nl = 0;
 		struct addrinfo *ai = ai_one(sp + 1, socktype);
-		if (ai) { *tail = ai; tail = &ai->ai_next; }
+		if (!ai) continue;
+		/* honor hints->ai_family (POSIX): cs answers mix A and AAAA; a
+		 * caller asking for one family must not get the other (LibDNS
+		 * splits v4/v6 into parallel lookups and would double every
+		 * record + hand v6 to hosts with no v6 route). */
+		if (family != AF_UNSPEC && family != 0 && ai->ai_family != family) {
+			freeaddrinfo(ai);
+			continue;
+		}
+		*tail = ai; tail = &ai->ai_next;
 	}
 	n9_close((int)cs);
 	if (!head) return EAI_NONAME;
