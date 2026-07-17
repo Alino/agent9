@@ -30,7 +30,7 @@ an install manifest. It mirrors the manual flow proven in [[netsurf-install]]
 |---|---|
 | `pac9/pac9` | the tool (rc) — `install` / `list` / `uninstall` |
 | `pac9/registry` | curated `name<TAB>url<TAB>subdir<TAB>recipe` table |
-| `pac9/install.rc` | bootstrap: cp into `/rc/bin` + `/sys/lib/pac9` |
+| `pac9/install.rc` | bootstrap: `hget …/install.rc \| rc` (or cp from a checkout) into `/rc/bin` + `/sys/lib/pac9` |
 | `pac9/test.rc` | no-git self-check (registry parse + recipe install + manifest) |
 
 ## Runtime state

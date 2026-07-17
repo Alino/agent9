@@ -84,6 +84,9 @@ hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/registry >/sys/lib
 Or, if you already have this directory (cloned the repo):
 
 ```rc
+hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/install.rc | rc
+
+# or, from a checkout of this directory:
 rc install.rc      # cp pac9 -> /rc/bin, cp registry -> /sys/lib/pac9
 ```
 

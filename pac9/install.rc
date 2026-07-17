@@ -1,9 +1,32 @@
 #!/bin/rc
 # install.rc — bootstrap pac9 onto this 9front box.
-# Run from the pac9/ directory (where `pac9` and `registry` live):
+#
+# One-liner (stock hget + webfs is all you need):
+#     hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/install.rc | rc
+# Or from a checkout of this directory:
 #     rc install.rc
-cp pac9 /rc/bin/pac9
-chmod +x /rc/bin/pac9
+rawbase=https://raw.githubusercontent.com/Alino/agent9/main/pac9
 mkdir -p /sys/lib/pac9
-cp registry /sys/lib/pac9/registry
+if(test -f pac9 && test -f registry){
+	cp pac9 /rc/bin/pac9
+	cp registry /sys/lib/pac9/registry
+}
+if not {
+	# piped mode: fetch from main. hget can fail or truncate silently, so
+	# sanity-check each file before touching a possibly-working install.
+	if(! hget $rawbase/pac9 >/tmp/pac9.new || ! grep -s 'package manager for 9front' /tmp/pac9.new){
+		echo 'install.rc: pac9 fetch failed' >[1=2]
+		rm -f /tmp/pac9.new
+		exit fetch
+	}
+	if(! hget $rawbase/registry >/tmp/pac9.reg || ! grep -s tarball /tmp/pac9.reg){
+		echo 'install.rc: registry fetch failed' >[1=2]
+		rm -f /tmp/pac9.new /tmp/pac9.reg
+		exit fetch
+	}
+	cp /tmp/pac9.new /rc/bin/pac9
+	cp /tmp/pac9.reg /sys/lib/pac9/registry
+	rm -f /tmp/pac9.new /tmp/pac9.reg
+}
+chmod +x /rc/bin/pac9
 echo 'pac9 installed.  try:  pac9 install netsurf'

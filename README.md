@@ -65,15 +65,12 @@ it later.
 
 ### Put pac9 on the box
 
-pac9 is a single rc script. Fetch it and its registry with `hget` — both `hget`
-and `git9` come with stock 9front, and you only need `webfs` running for the
-https fetch, which is the default:
+pac9 is a single rc script. One line installs it — `hget` comes with stock
+9front, and you only need `webfs` running for the https fetch, which is the
+default:
 
 ```rc
-hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/pac9 >/rc/bin/pac9
-chmod +x /rc/bin/pac9
-mkdir -p /sys/lib/pac9
-hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/registry >/sys/lib/pac9/registry
+hget https://raw.githubusercontent.com/Alino/agent9/main/pac9/install.rc | rc
 ```
 
 Prefer to clone? git9 handles that too:
