@@ -49,6 +49,13 @@ int cc9_shm_import(const char *name, unsigned long offset, unsigned long len);
  * any process; cheap when nothing is stale. */
 void cc9_shm_sweep(const char *prefix, int grace_seconds);
 
+/* Startup crash-cleanup: immediately remove pools "<prefix><pid>.<seq>" whose
+ * owner pid is dead (no /proc/<pid>) and which are attached in no live process.
+ * No grace window — a dead owner has no pending attach. Call once at process
+ * start so a killed/crashed run's leaked 256 MiB pool doesn't survive to
+ * exhaust the ~100-entry #g cap. Returns the count reaped. */
+int cc9_shm_reap_dead(const char *prefix);
+
 /* Internal hooks for posix_llvm.c's mmap/munmap routing — not for callers.
  * cc9_shm_try_map: if fd is a #g data fd, attach and return the VA (or
  * MAP_FAILED on real failure, setting *handled=1); else *handled=0.

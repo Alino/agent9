@@ -414,7 +414,11 @@ int at_quick_exit(void (*f)(void)){ (void)f; return 0; }   /* no handler table *
  * handler if one is installed. */
 typedef void (*n9_sigh)(int);
 static n9_sigh n9_sigtab[32];
-n9_sigh signal(int s, n9_sigh h){ if(s<0||s>=32) return (n9_sigh)-1; n9_sigh o=n9_sigtab[s]; n9_sigtab[s]=h; return o; }
+/* signal() routes through sigaction's cc9_satab (posix_llvm.c) so the two share
+ * one handler table — otherwise a sigaction save/restore over a signal()-set
+ * handler misreports SIG_DFL and silently deregisters it. */
+extern n9_sigh cc9_signal_install(int, n9_sigh);
+n9_sigh signal(int s, n9_sigh h){ return cc9_signal_install(s, h); }
 int raise(int s){ if(s<0||s>=32) return -1; n9_sigh h=n9_sigtab[s]; if(h&&h!=(n9_sigh)1) h(s); return 0; }
 /* register a handler (used by sigaction in posix_llvm.c, which can't see the
  * static table) */

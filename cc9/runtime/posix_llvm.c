@@ -1319,6 +1319,24 @@ int sigaction(int sig, const void *act, void *old) {
 	return 0;
 }
 
+/* signal() install, routed through cc9_satab so signal() and sigaction() share
+ * one source of truth. Without this the two tables desync: a sigaction()
+ * save/restore over a signal()-installed handler read SIG_DFL from cc9_satab and
+ * "restored" it, deregistering the live handler. Here signal() records the real
+ * handler in cc9_satab (1-arg form, no mask/flags) and installs the trampoline
+ * (or SIG_DFL/IGN raw) into n9_sigtab, exactly like sigaction. Returns the prior
+ * real handler for signal()'s return value. */
+void (*cc9_signal_install(int sig, void (*h)(int)))(int) {
+	if (sig < 0 || sig >= 32) return (void (*)(int))-1;   /* SIG_ERR */
+	void (*old)(int) = cc9_satab[sig].h;
+	cc9_satab[sig].h = h; cc9_satab[sig].mask = 0; cc9_satab[sig].flags = 0;
+	if (h == (void (*)(int))0 || h == (void (*)(int))1)
+		cc9_set_sigh(sig, h);
+	else
+		cc9_set_sigh(sig, cc9_sa_trampoline);
+	return old;
+}
+
 /* rlimit / rusage: report "unlimited" / zero. */
 extern void cc9_set_nproc_limit(long);
 extern long cc9_get_nproc_limit(void);

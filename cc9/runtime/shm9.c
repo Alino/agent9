@@ -259,16 +259,28 @@ fail_rm:
  * cc9_shm_detach_all does NOT run) mints its own pool instead of scribbling the
  * parent's cursor onto the shared segment. (The inherited pool_fd is leaked in
  * that rare case — a bare fork that then allocates shm.) */
+static int reaped_dead_pools;   /* one crash-cleanup pass per process */
+
 static int pool_ensure(void) {
 	if (pool_name[0] && pool_pid == getpid()) return 0;
+	/* First pool in this process: reap any pool whose creator crashed/was
+	 * killed (dead pid, attached nowhere) so a previous run's leaked 256 MiB
+	 * segments don't count against the ~100-entry #g cap. Self-healing — no
+	 * caller hook, benefits every cc9 program that uses shm pools. */
+	if (!reaped_dead_pools) { reaped_dead_pools = 1; cc9_shm_reap_dead("shmp."); }
 	unsigned long va = va_alloc(SHM9_POOL);
 	if (!va) return -1;
 	char name[CC9_SHM_NAMELEN];
 	int fd = -1;
-	for (int tries = 0; tries < 8; tries++) {   /* recycled pid -> stale dir -> next seq */
-		snprintf(name, sizeof name, "shmp.%d.%u", getpid(), seq++);
-		fd = create_seg(name, va, SHM9_POOL);
-		if (fd >= 0) break;
+	for (int reap = 0; reap < 2 && fd < 0; reap++) {
+		for (int tries = 0; tries < 8; tries++) {   /* recycled pid -> stale dir -> next seq */
+			snprintf(name, sizeof name, "shmp.%d.%u", getpid(), seq++);
+			fd = create_seg(name, va, SHM9_POOL);
+			if (fd >= 0) break;
+		}
+		/* create failed 8x — most likely the #g namespace is full. Reap dead
+		 * pools once more and retry before giving up (the pressure case). */
+		if (fd < 0 && reap == 0) cc9_shm_reap_dead("shmp.");
 	}
 	if (fd < 0) return -1;
 	fcntl(fd, F_SETFD, FD_CLOEXEC);
@@ -518,4 +530,51 @@ void cc9_shm_sweep(const char *prefix, int grace_seconds) {
 		}
 	}
 	closedir(d);
+}
+
+/* ---- reap: startup crash-cleanup of pools whose owner PID is dead ----
+ *
+ * cc9_shm_sweep's grace window exists for an in-flight buffer (created + sent,
+ * receiver not yet attached) — it must not be reaped just for being unattached
+ * for an instant. A crash is different: the pool name is "<prefix><pid>.<seq>"
+ * and if /proc/<pid> is gone the creator is DEAD, so there is no future
+ * attach coming. Combined with "attached in no live process right now", that's
+ * unambiguously reclaimable — no grace, no second pass. Called once at process
+ * startup so a killed/crashed browser's leaked 256 MiB pool doesn't survive to
+ * exhaust the ~100-entry #g cap. Returns the number reaped.
+ *
+ * ponytail: single startup pass; the periodic cc9_shm_sweep still covers the
+ * graceful-teardown and in-flight cases. */
+static int pid_alive(long pid) {
+	char path[32];
+	snprintf(path, sizeof path, "/proc/%ld/status", pid);
+	long fd = n9_open(path, OREAD);
+	if (fd < 0) return 0;   /* no proc dir -> dead (or never existed) */
+	n9_close((int)fd);
+	return 1;
+}
+
+int cc9_shm_reap_dead(const char *prefix) {
+	unsigned long plen = strlen(prefix);
+	DIR *d = opendir("#g");
+	if (!d) return 0;
+	int reaped = 0;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (strncmp(e->d_name, prefix, plen) != 0) continue;
+		/* parse the owner pid out of "<prefix><pid>.<seq>" */
+		const char *p = e->d_name + plen;
+		long pid = 0;
+		int any = 0;
+		for (; *p >= '0' && *p <= '9'; p++) { pid = pid * 10 + (*p - '0'); any = 1; }
+		if (!any || pid_alive(pid)) continue;     /* owner still running: leave it */
+		unsigned long va, len;
+		if (read_ctl(e->d_name, &va, &len) < 0) continue;   /* unreadable: don't touch */
+		if (va_attached_anywhere(va)) continue;   /* a receiver still maps it: keep */
+		char path[64];
+		snprintf(path, sizeof path, "#g/%s", e->d_name);
+		if (n9_remove(path) == 0) reaped++;
+	}
+	closedir(d);
+	return reaped;
 }
