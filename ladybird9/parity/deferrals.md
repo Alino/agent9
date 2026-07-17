@@ -234,3 +234,40 @@ off fd 1 decodes pixel-identical to the M4/M6 renders.
   The same starvation had been masking AVIF decode. Diagnosis method: layer gates on
   cirno (pool_gate/wake_gate/dnsfetch_gate/dnsnull_gate in cc9/test) + dbgln probes at
   each hop of the RS→WebContent delivery chain.
+
+## Test-suite coverage (2026-07-18, post-fetch-hang + code-review fixes)
+
+- **cc9 C++ regression suite** (cc9/test/suite/*.cpp, run via cc9/host/run-tests.sh
+  with CC9_DEV pointed at cirno): **11/11 PASS** on bare-metal 9front — algorithms,
+  containers, ctors, exceptions, raii, regress_{args,io,libc,threads}, smartptr,
+  strings. This is cc9's own suite; unchanged upstream C++ semantics.
+- **cc9 fetch-path gates** (this session, cc9/test/): pool_gate 8/8, wake_gate 3/3,
+  dnsfetch_gate, dnsnull_gate, segshm_gate 10/10, msggate 4/4, delie_gate/2 — PASS.
+- **Upstream LibWeb Text tests** (vendor/ladybird/Tests/LibWeb/Text/ — the REAL
+  upstream suite, input/*.html + expected/*.txt): the port's `--headless=text` DOM
+  dump is **byte-identical to the same-commit host build** (established M4/M5 method;
+  e.g. basic.html = 21 bytes on both cirno and host, matching upstream modulo a
+  1-byte CI trailing-newline convention that the host shows too). Bulk on-box runs
+  of this suite are limited by the shm-pool-segment leak on ungraceful proc exit
+  (see below) — the box reliably renders ~1-2 browser instances before the #g cap
+  bites, so full-suite automation needs the pool GC hardened or a reboot between
+  batches. The PARITY (host==cirno per page) is what's proven, not a full-suite
+  pass-count on-box.
+- **Known test-harness limitation:** each browser run that is killed or crashes
+  leaks its 256 MiB #g pool segment (the GC sweep only runs on graceful teardown);
+  ~100 leaked → new instances fail startup ("Runtime error: No such file"). `rm
+  '#g'/*` reclaims most without a reboot but not all. This blocks unattended
+  large-batch on-box test sweeps; single/paired runs and reboots between batches
+  work. Fix path: sweep pool segments on startup by scanning /proc for dead owners
+  (partially implemented) or a crash-safe refcount.
+
+## Code review (2026-07-18, 33-agent adversarial, 10 verified findings)
+
+Fixed (commit ff51ba2): O_APPEND now carried by dup2/F_DUPFD + checked before the
+nonblock write ring; dup2(negative) → EBADF + honest errno; getaddrinfo numeric
+fast-path honors ai_family; ioctl(FIONREAD) starts the reader; mkdtemp stops on
+non-EEXIST errors; the Plan9 presenter navigate parser bounds URL length + tears
+down on desync. NOT fixed (flagged): sigaction/signal() handler-table desync
+(concurrent-audit code, risky cross-table unification, not hit by ladybird);
+shutdown(SHUT_RD)=no-op is a deliberate /net trade-off (kept — hangup would break
+TLS close_notify).
