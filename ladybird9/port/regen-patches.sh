@@ -33,6 +33,10 @@ gen 0004-buildsystem-plan9.patch \
   Tests/LibIPC/CMakeLists.txt UI/cmake/GUIFramework.cmake \
   UI/cmake/ResourceFiles.cmake Utilities/CMakeLists.txt
 
+gen 0005-libipc-transport-plan9.patch \
+  Libraries/LibIPC/Forward.h Libraries/LibIPC/Transport.h \
+  Libraries/LibIPC/TransportPlan9.cpp Libraries/LibIPC/TransportPlan9.h
+
 gen 0007-libweb-services-plan9.patch \
   Libraries/LibGfx/Font/FontDatabase.cpp Libraries/LibGfx/Font/TypefaceSkia.cpp \
   Libraries/LibGfx/ImageFormats/ImageDecoder.cpp Libraries/LibTLS/TLSv12.cpp \

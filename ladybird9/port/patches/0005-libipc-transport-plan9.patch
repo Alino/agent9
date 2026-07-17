@@ -27,10 +27,10 @@ index 49c66b30e8..4f743f2961 100644
  #else
 diff --git a/Libraries/LibIPC/TransportPlan9.cpp b/Libraries/LibIPC/TransportPlan9.cpp
 new file mode 100644
-index 0000000000..d6afcb8790
+index 0000000000..685b0971e3
 --- /dev/null
 +++ b/Libraries/LibIPC/TransportPlan9.cpp
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,411 @@
 +/*
 + * Copyright (c) 2024, Andrew Kaster <andrew@ladybird.org>
 + * Copyright (c) 2025, stasoid <stasoid@yahoo.com>
@@ -200,12 +200,21 @@ index 0000000000..d6afcb8790
 +            // Any other open file: post it under /srv; the entry itself
 +            // retains the channel, so our fd can close immediately.
 +            (void)snprintf(name, sizeof(name), "lb.%d.%u", ::getpid(), s_srv_sequence.fetch_add(1) + 1);
++            // On Linux, file-status flags (O_NONBLOCK) live on the open file
++            // description and survive SCM_RIGHTS passing; cc9 emulates them as
++            // per-process fd state, so they'd silently vanish in transit. Carry
++            // them on the wire and re-apply on import (the RequestServer body
++            // pipe depends on its reader end staying nonblocking — a blocking
++            // read() in the receiver's event loop wedges the whole process).
++            int status_flags = ::fcntl(fd, F_GETFL);
++            u8 wire_flags = (status_flags > 0 && (status_flags & O_NONBLOCK)) ? 1 : 0;
 +            if (cc9_srv_post(name, fd) < 0)
 +                return Error::from_string_literal("TransportPlan9: /srv post failed");
 +            TRY(serialized_attachments.try_append(to_underlying(Plan9AttachmentKind::Srv)));
 +            u8 name_length = static_cast<u8>(strlen(name));
 +            TRY(serialized_attachments.try_append(name_length));
 +            TRY(serialized_attachments.try_append(reinterpret_cast<u8 const*>(name), name_length));
++            TRY(serialized_attachments.try_append(wire_flags));
 +        }
 +    }
 +
@@ -240,6 +249,9 @@ index 0000000000..d6afcb8790
 +        return Attachment::from_fd(fd);
 +    }
 +    case Plan9AttachmentKind::Srv: {
++        VERIFY(serialized_bytes.size() >= 1);
++        u8 wire_flags = serialized_bytes[0];
++        serialized_bytes = serialized_bytes.slice(1);
 +        char path[80];
 +        (void)snprintf(path, sizeof(path), "/srv/%s", name);
 +        // A /srv-posted channel keeps the access mode it was opened with; Plan 9
@@ -253,6 +265,10 @@ index 0000000000..d6afcb8790
 +        if (fd < 0)
 +            fd = ::open(path, O_WRONLY);
 +        VERIFY(fd >= 0);
++        // Re-apply the sender's file-status flags (see serialize_attachments:
++        // cc9's O_NONBLOCK is per-process, unlike Linux's per-description).
++        if (wire_flags & 1)
++            (void)::fcntl(fd, F_SETFL, O_NONBLOCK);
 +        // Receiver removes: each send posts a fresh entry, so multi-hop and
 +        // multi-peer sharing both re-post — never reuse a name.
 +        (void)cc9_srv_remove(name);
