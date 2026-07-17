@@ -87,7 +87,9 @@ launcher	https://github.com/Alino/agent9	src/launcher	-
 # launcher only; the interpreter (Python 3.11 with ssl/sqlite/zlib/pydantic-core/
 # jiter built in) + stdlib come from the python9 package (5th-column dep).
 # After install: set $MINIMAX_KEY or write /usr/glenda/hermes9/minimax.key, then `hermes`.
-hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9-v0.1.0/hermes9-amd64.tar.gz	python9	0.1.0
+# hermes9 — NousResearch hermes-agent (site bundle + launcher; needs python9).
+# NOT YET RELEASED — bundle not ready. Re-add with pac9/release.sh when it is:
+#   hermes9	-	.	tarball .../download/hermes9-v<ver>/hermes9-amd64.tar.gz	python9	<ver>
 
 # dosbox9 — DOSBox 0.74-3 on 9front (SDL 1.2 with a Plan 9 backend over
 # gl9win2; cc9 can't link libdraw, so a native window server hosts it).
