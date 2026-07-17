@@ -1176,7 +1176,8 @@ extern long n9_dup(int, int);
  * state (stopped its threads, freed its /net slot). The teardown must run only
  * when the rebind will actually happen. */
 int    dup2(int o, int n) {
-	if (n != o && n >= 0) {
+	if (n < 0) { errno = 9 /*EBADF*/; return -1; }   /* POSIX: newfd must be valid */
+	if (n != o) {
 		long probe = n9_dup(o, -1);            /* lowest free fd, or -1 if o is invalid */
 		if (probe < 0) { errno = 9 /*EBADF*/; return -1; }
 		n9_close((int)probe);
@@ -1190,10 +1191,14 @@ int    dup2(int o, int n) {
 		cc9_append_onclose(n);
 	}
 	int r = (int)n9_dup(o, n);
-	if (r >= 0) {
-		extern void cc9_poll_carry_dup(int, int);
-		cc9_poll_carry_dup(o, r);   /* O_NONBLOCK rides the description (poll.c) */
-	}
+	if (r < 0) { errno = 9 /*EBADF*/; return -1; }   /* honest errno, not a stale value */
+	/* O_NONBLOCK + O_APPEND ride the open file description — carry both, as
+	 * fs.c dup() does; without this a dup2'd log fd (O_APPEND) or event fd
+	 * (O_NONBLOCK) silently loses its mode. */
+	extern void cc9_poll_carry_dup(int, int);
+	extern void cc9_append_carry_dup(int, int);
+	cc9_poll_carry_dup(o, r);
+	cc9_append_carry_dup(o, r);
 	return r;
 }
 

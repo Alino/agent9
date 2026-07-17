@@ -616,6 +616,12 @@ int getaddrinfo(const char *host, const char *serv,
 	struct sockaddr_storage tmp;
 	snprintf(buf, sizeof buf, "%s!%s", host, port);
 	if (port[0] >= '0' && port[0] <= '9' && str_to_addr(buf, &tmp)) {
+		/* honor hints->ai_family here too (same contract as the cs path below):
+		 * a literal-IP host with a family restriction must reject the wrong
+		 * family, else LibDNS's parallel v4/v6 lookups both get the v4 record. */
+		if (family != AF_UNSPEC && family != 0
+		    && ((struct sockaddr *)&tmp)->sa_family != family)
+			return EAI_NONAME;
 		*res = ai_one(buf, socktype);
 		return *res ? 0 : EAI_MEMORY;
 	}

@@ -284,7 +284,14 @@ void cc9_poll_carry_dup(int oldfd, int newfd){
  * per-datagram sizes must recvfrom into a max-size buffer instead. */
 long cc9_poll_pending(int fd){
 	cc9_pfd *p = lookup(fd);
-	if(!p || !p->reader) return -1;
+	if(!p) return -1;
+	/* An O_NONBLOCK fd that hasn't been read/polled yet owns a slot but has no
+	 * reader thread; start it (like cc9_poll_read) so FIONREAD is honest from
+	 * the first call instead of falling through to ENOTTY until the first read. */
+	if(!p->reader){
+		if(!(p->flags & O_NONBLOCK)) return -1;
+		ensure(fd, 1);
+	}
 	n9_semacquire(&p->lock, 1);
 	long n = (long)ring_avail(p);
 	n9_semrelease(&p->lock, 1);
@@ -475,7 +482,9 @@ int fcntl(int fd, int cmd, ...){
 	case F_DUPFD_CLOEXEC: {
 		int nfd = (int)n9_dup(fd, -1);   /* ponytail: ignores the >=arg floor */
 		if(nfd >= 0){
-			cc9_poll_carry_dup(fd, nfd);   /* O_NONBLOCK rides the description */
+			extern void cc9_append_carry_dup(int, int);
+			cc9_poll_carry_dup(fd, nfd);    /* O_NONBLOCK rides the description */
+			cc9_append_carry_dup(fd, nfd);  /* O_APPEND too */
 			if(cmd == F_DUPFD_CLOEXEC){
 				cc9_pfd *np = ensure(nfd, 0);
 				if(np) np->flags |= O_CLOEXEC;

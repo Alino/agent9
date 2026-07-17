@@ -817,10 +817,10 @@ index 0000000000..b8d8a7a4fd
 +}
 diff --git a/UI/Plan9/main.cpp b/UI/Plan9/main.cpp
 new file mode 100644
-index 0000000000..f01607c6b8
+index 0000000000..1b721771bc
 --- /dev/null
 +++ b/UI/Plan9/main.cpp
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,144 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -925,13 +925,32 @@ index 0000000000..f01607c6b8
 +            ByteString text;
 +            if (state == 8) { // navigate carries u32be len + UTF-8 URL
 +                u8 lenbuf[4];
-+                if (!read_exact(lenbuf, sizeof lenbuf))
++                if (!read_exact(lenbuf, sizeof lenbuf)) {
++                    if (window->on_quit)
++                        window->on_quit();
 +                    return;
++                }
 +                u32 len = (static_cast<u32>(lenbuf[0]) << 24) | (static_cast<u32>(lenbuf[1]) << 16) | (static_cast<u32>(lenbuf[2]) << 8) | lenbuf[3];
++                // A URL longer than this is a corrupt/desynced stream, not a real
++                // navigation. Once the length prefix is wrong we can't tell where
++                // the next record begins, so tear the presenter connection down
++                // rather than parse the following URL bytes as input events.
++                static constexpr u32 max_url_length = 64 * 1024;
++                if (len > max_url_length) {
++                    if (window->on_quit)
++                        window->on_quit();
++                    return;
++                }
 +                if (len > 0) {
 +                    auto payload_or_error = ByteBuffer::create_uninitialized(len);
-+                    if (payload_or_error.is_error() || !read_exact(payload_or_error.value().data(), len))
++                    // On a short read or alloc failure the len payload bytes are
++                    // left (partly) unconsumed on fd 0, so the stream is desynced
++                    // either way — quit instead of returning to misparse them.
++                    if (payload_or_error.is_error() || !read_exact(payload_or_error.value().data(), len)) {
++                        if (window->on_quit)
++                            window->on_quit();
 +                        return;
++                    }
 +                    text = ByteString { payload_or_error.value().bytes() };
 +                }
 +            }

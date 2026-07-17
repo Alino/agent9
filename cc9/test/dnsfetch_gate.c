@@ -98,12 +98,14 @@ int main(void) {
 	}
 
 	say("STEP 3: HTTP/1.1 keep-alive GET (RequestServer's mode)");
-	fetch(host, res->ai_addr, res->ai_addrlen, "keep-alive", 8);
+	int r3 = fetch(host, res->ai_addr, res->ai_addrlen, "keep-alive", 8);
 
 	say("STEP 4: HTTP/1.1 Connection: close GET (read to EOF)");
-	fetch(host, res->ai_addr, res->ai_addrlen, "close", 0);
+	int r4 = fetch(host, res->ai_addr, res->ai_addrlen, "close", 0);
 
 	freeaddrinfo(res);
-	say("ALL STEPS DONE");
-	return 0;
+	int ok = (r3 == 0 && r4 == 0);
+	printf("DNSFETCH_GATE %s\n", ok ? "PASS" : "FAIL (a fetch returned no bytes)");
+	fflush(stdout);
+	return ok ? 0 : 1;
 }

@@ -103,6 +103,9 @@ static int append_get(int fd){
 /* Drop fd's O_APPEND flag — called by close() and by dup2 (posix_llvm.c), which
  * rebinds fd to a different file that must not inherit the old append behavior. */
 void cc9_append_onclose(int fd){ append_set(fd, 0); }
+/* Carry O_APPEND to a dup'd fd (dup2/F_DUPFD): the append bit lives on the open
+ * file description and is shared by every fd that names it. */
+void cc9_append_carry_dup(int oldfd, int newfd){ if(append_get(oldfd)) append_set(newfd, 1); }
 
 int open(const char *path, int flags, ...){
 	if(streq(path,"/dev/urandom")) path="/dev/random";   /* Plan 9 entropy source */
@@ -158,7 +161,12 @@ extern void cc9_trace(const char *, int, long);
 extern int cc9_poll_wowned(int);
 extern long cc9_poll_write(int, const void *, long);
 long write(int fd, const void *buf, size_t n){
-	if(cc9_poll_wowned(fd)) return cc9_poll_write(fd, buf, (long)n);  /* O_NONBLOCK: ring + honest POLLOUT */
+	/* O_APPEND takes precedence over the nonblocking write ring: the ring's
+	 * writer thread pwrites at the fd's current offset (seeked to EOF only once),
+	 * which loses per-write append semantics under a second writer. An
+	 * append+nonblock fd is rare, so serve it on the synchronous seek-to-EOF path
+	 * rather than teach the ring to re-seek. */
+	if(cc9_poll_wowned(fd) && !append_get(fd)) return cc9_poll_write(fd, buf, (long)n);  /* O_NONBLOCK: ring + honest POLLOUT */
 	if(append_get(fd)){ long long e=0; n9_seek(&e, fd, 0, 2 /*SEEK_END*/); }  /* O_APPEND: write at current EOF */
 	long r=n9_pwrite(fd,buf,(long)n,-1); cc9_trace("write", fd, r); if(r<0)errno=cc9_errno_from_errstr_or(EIO); return r; }
 long pread(int fd, void *buf, size_t n, long off){ return n9_pread(fd,buf,(long)n,off); }
@@ -942,6 +950,11 @@ char *mkdtemp(char *tpl){
 		unsigned long v = seed + (seq++ * 0x9E3779B97F4A7C15UL) + (unsigned)attempt;
 		for(int i = 0; i < 6; i++){ x[i] = cs[v % 62]; v /= 62; }
 		if(mkdir(tpl, 0700) == 0) return tpl;
+		/* Only a name collision (EEXIST) is worth retrying. A real error —
+		 * missing parent (ENOENT), no permission (EACCES) — will fail every
+		 * attempt, so stop now and surface it instead of spinning 4096 times
+		 * and masking it as EEXIST. */
+		if(errno != EEXIST) return 0;
 	}
 	errno = EEXIST;
 	return 0;
