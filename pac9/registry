@@ -26,7 +26,7 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 # options; the runner spawns child compilers over pipes). ReleaseFast/
 # ReleaseSmall only; no f16/f80/f128 soft-float or @cImport in target programs.
 zig9	-	.	tarball https://github.com/Alino/agent9/releases/download/zig9/zig9-amd64.tar.gz
-python9	-	.	tarball https://github.com/Alino/agent9/releases/download/python9/python9-amd64.tar.gz
+python9	-	.	tarball https://github.com/Alino/agent9/releases/download/python9-v0.2.0/python9-amd64.tar.gz	-	0.2.0
 node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node/node9-amd64.tar.gz
 # cc9: on-box C++ toolchain (cc -> clang -> ld.lld -> elf2aout). Self-contained.
 cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9/cc9-amd64.tar.gz
@@ -44,7 +44,7 @@ go	-	.	tarball https://github.com/Alino/agent9/releases/download/go/go-amd64.tar
 # compiler + std sysroot + n9link linker + cargo9, all in one tarball (~80 MB
 # download, ~210 MB installed under /usr/glenda/rust + /rc/bin wrappers).
 # Self-contained: bundles its cc9 runtime substrate, no other package needed.
-rust9	-	.	tarball https://github.com/Alino/agent9/releases/download/rust9/rust9-amd64.tar.gz
+rust9	-	.	tarball https://github.com/Alino/agent9/releases/download/rust9-v0.2.0/rust9-amd64.tar.gz	-	0.2.0
 # gl9 — OpenGL 3.3 for 9front. gl9win is the native libdraw window server (builds
 # on-box); gl9 is the prebuilt tarball of cross-compiled GL demos + the `gl9`
 # launcher, depending on gl9win. `pac9 install gl9` then `gl9 cube`.
@@ -53,17 +53,17 @@ rust9	-	.	tarball https://github.com/Alino/agent9/releases/download/rust9/rust9-
 # dynamic linking, so each binary statically links all of LLVM (~43 MB tarball vs
 # 6.9 MB at 0.1.0). `pac9 changelog gl9` has the numbers and the tradeoff.
 gl9win	https://github.com/Alino/agent9	gl9/port/plan9/win	-
-gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9-v0.2.0/gl9-amd64.tar.gz	gl9win	0.2.0
+gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9-v0.2.1/gl9-amd64.tar.gz	gl9win	0.2.1
 # alacritty9 — real upstream Alacritty 0.17.0 (GPU terminal) on 9front: the
 # cross-compiled binary (rust9 + Mesa softpipe + OSMesa EGL statically linked,
 # fonts bundled) + gl9win2, the interactive native window host. Self-contained
 # (~5 MB download / ~19 MB installed). Run `alacritty9` from a rio window.
-alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacritty9/alacritty9-amd64.tar.gz
+alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacritty9-v0.2.0/alacritty9-amd64.tar.gz	-	0.2.0
 # neovim9 — real upstream Neovim 0.12.4 on 9front: static a.out (LuaJIT
 # interpreter + libuv + 7 treesitter parsers) + the runtime tree at nvim's
 # compiled-in /usr/local/share/nvim. TUI needs a terminal — run inside
 # alacritty9 (or any TERM-setting host). jobs/:terminal/LSP all work.
-neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9/neovim9-amd64.tar.gz
+neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9-v0.2.0/neovim9-amd64.tar.gz	-	0.2.0
 # gpu9 — the Intel Gen8 (Broadwell) GPU driver, entirely in userspace. Builds
 # on-box from a few small kencc files, so no tarball and no version column (the
 # registry's rule: a version needs an immutable release URL, and a git clone
@@ -102,7 +102,7 @@ hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9/he
 # gl9win2's ABGR32 image and Plan 9's draw(2) blended them additively; full
 # frames hid it by blacking the window first. `pac9 changelog dosbox9` has the
 # story; P9_FULLFRAMES=1 restores 0.1.0's behaviour.
-dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9-v0.2.0/dosbox9-amd64.tar.gz	-	0.2.0
+dosbox9	-	.	tarball https://github.com/Alino/agent9/releases/download/dosbox9-v0.2.1/dosbox9-amd64.tar.gz	-	0.2.1
 
 # tailscale9 — upstream Tailscale v1.100.0 for plan9/amd64 (official GOOS=plan9
 # port, stock Go 1.26, no patches; userspace WireGuard over gVisor netstack, so

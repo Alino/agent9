@@ -1,6 +1,14 @@
 gl9 — OpenGL for 9front. Changelog.
 (`pac9 changelog gl9` shows this; newest first.)
 
+0.2.1 — 2026-07-17
+  Rebuilt against a correctness pass on the cc9 C runtime (durable fsync, honest
+  file locks, correct O_APPEND, per-thread errno, corrected float formatting).
+  gl9 itself is unchanged — same OpenGL 3.3, same softpipe/llvmpipe dual build,
+  same runtime rasterizer pick — and both demos re-render pixel content on bare
+  metal. This is a substrate-only refresh so gl9 rides the same honest runtime
+  as the rest of the ports.
+
 0.2.0 — 2026-07-15
   llvmpipe: ~15x faster OpenGL, when your kernel allows it.
 

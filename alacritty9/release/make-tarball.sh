@@ -12,12 +12,14 @@ BIN=../vendor/alacritty/target/x86_64-unknown-plan9/release/alacritty
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
-mkdir -p "$stage/amd64/bin" "$stage/usr/glenda/alacritty9" "$stage/rc/bin"
+mkdir -p "$stage/amd64/bin" "$stage/usr/glenda/alacritty9" "$stage/rc/bin" \
+         "$stage/sys/lib/pac9/changelog"
 cp prebuilt/gl9win2 "$stage/amd64/bin/gl9win2"
 cp "$BIN" "$stage/usr/glenda/alacritty9/alacritty"
 cp alacritty9 "$stage/rc/bin/alacritty9"
+cp CHANGELOG "$stage/sys/lib/pac9/changelog/alacritty9"
 chmod +x "$stage/amd64/bin/gl9win2" "$stage/usr/glenda/alacritty9/alacritty" "$stage/rc/bin/alacritty9"
 
 # ustar so 9front tar reads it; no macOS xattr turds.
-COPYFILE_DISABLE=1 tar --format ustar -C "$stage" -czf alacritty9-amd64.tar.gz amd64 usr rc
+COPYFILE_DISABLE=1 tar --format ustar -C "$stage" -czf alacritty9-amd64.tar.gz amd64 usr rc sys
 ls -l alacritty9-amd64.tar.gz

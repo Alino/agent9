@@ -1,0 +1,12 @@
+alacritty9 — Alacritty 0.17.0 for 9front. Changelog.
+(`pac9 changelog alacritty9` shows this; newest first.)
+
+0.2.0 — 2026-07-17
+  First versioned release. Rebuilt against a correctness pass on the cc9 C
+  runtime the terminal is built on — stubs that used to report success while
+  doing nothing (durable fsync, honest file locks, correct O_APPEND, per-thread
+  errno, corrected float formatting). No change to the terminal itself: same
+  upstream Alacritty 0.17.0, same GL9F frames to the gl9win2 window host,
+  render re-verified on bare metal. This just puts alacritty9 on the same
+  honest substrate as the rest of the ports. Earlier unversioned installs read
+  as '-'; `pac9 upgrade alacritty9` moves them here.

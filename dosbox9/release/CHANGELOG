@@ -1,6 +1,13 @@
 dosbox9 — DOSBox 0.74-3 for 9front. Changelog.
 (`pac9 changelog dosbox9` shows this; newest first.)
 
+0.2.1 — 2026-07-17
+  Rebuilt against a correctness pass on the cc9 C runtime (durable fsync, honest
+  file locks, correct O_APPEND, per-thread errno, corrected float formatting).
+  DOSBox itself is unchanged — same 0.74-3, same damage-rect GL9F presentation —
+  and rendering was re-verified on bare metal (Commander Keen 1 boots to its
+  title screen, pixel-correct). Substrate-only refresh.
+
 0.2.0 — 2026-07-15
   Damage rects on by default: a blinking cursor costs ~1 KB, not 1 MB.
 

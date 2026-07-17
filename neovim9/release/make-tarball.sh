@@ -14,9 +14,10 @@ RT=../_out/nvim-runtime.tgz
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
-mkdir -p "$stage/amd64/bin" "$stage/usr/local/share/nvim"
+mkdir -p "$stage/amd64/bin" "$stage/usr/local/share/nvim" "$stage/sys/lib/pac9/changelog"
 cp "$AOUT" "$stage/amd64/bin/nvim"
 chmod +x "$stage/amd64/bin/nvim"
+cp CHANGELOG "$stage/sys/lib/pac9/changelog/neovim9"
 tar -xzf "$RT" -C "$stage/usr/local/share/nvim"
 mkdir -p "$stage/usr/local/share/nvim/runtime/parser"
 for p in c lua vim vimdoc query markdown markdown_inline; do
@@ -24,5 +25,5 @@ for p in c lua vim vimdoc query markdown markdown_inline; do
 done
 
 # ustar so 9front tar reads it; no macOS xattr turds.
-COPYFILE_DISABLE=1 tar --format ustar -C "$stage" -czf neovim9-amd64.tar.gz amd64 usr
+COPYFILE_DISABLE=1 tar --format ustar -C "$stage" -czf neovim9-amd64.tar.gz amd64 usr sys
 ls -l neovim9-amd64.tar.gz

@@ -1,0 +1,36 @@
+rust9 — Rust for 9front (self-hosted rustc). Changelog.
+(`pac9 changelog rust9` shows this; newest first.)
+
+0.2.0 — 2026-07-17
+  First versioned release, and the one where the std port stops lying.
+
+  A parity audit of the plan9 std backend found a row of stubs that returned
+  a cheerful Ok/false while doing nothing — the exact shape of bug that only
+  shows up in production. All fixed, all verified on bare metal:
+
+    - Instant is now MONOTONIC. cc9's clock_gettime only has a realtime clock,
+      so Instant could step backwards (timesync, settimeofday) and make
+      elapsed() return 0 — hanging every timeout/backoff loop. Now monotonized
+      in userspace; it never goes back.
+    - File::try_lock / try_lock_shared are HONEST. They used to always "succeed"
+      so single-instance guards and cache locks thought they held a lock they
+      didn't. Now they return Unsupported instead of corrupting.
+    - sync_all / sync_data actually fsync. They used to return Ok(()) doing
+      nothing, so a crash after a "synced" commit lost data. Now durable on gefs.
+    - Command env no longer LEAKS into the parent. Setting a child's env used to
+      mutate the parent's /env (shared env group); now the child gets a private
+      group (RFENVG), and env_clear / env_remove really scrub.
+    - Network timeouts work: connect_timeout, set_read_timeout, set_write_timeout
+      via Plan 9 alarm(2). A dead host returns in the deadline, not in minutes.
+    - is_terminal() tracks the real tty (was hardwired false, so colours and
+      progress bars never engaged). current_exe() and home_dir() return real
+      values instead of Unsupported/None.
+    - env::set_var is visible to env::vars() (vars() now reads /env live).
+
+  Under the compiler, the cc9 runtime that your programs link also got the same
+  honesty pass: durable fsync, correct O_APPEND, per-thread errno, corrected
+  float formatting. Recompile to pick it up.
+
+  Same rustc (1.98.0-dev, cranelift), same n9link, same layout — this is a std +
+  runtime correctness release. Earlier unversioned installs read as '-';
+  `pac9 upgrade rust9` moves them here.

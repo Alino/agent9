@@ -51,5 +51,9 @@ EOF
 chmod +x "$STAGE/rc/bin/$w"
 done
 
+# `pac9 changelog python9` reads this offline.
+mkdir -p "$STAGE/sys/lib/pac9/changelog"
+cp "$HERE/CHANGELOG" "$STAGE/sys/lib/pac9/changelog/python9"
+
 ( cd "$STAGE" && COPYFILE_DISABLE=1 tar --format ustar -czf "$TARBALL" usr sys rc )
 echo "-> $TARBALL  ($(du -h "$TARBALL" | cut -f1))"

@@ -17,7 +17,7 @@ HERE=$(cd "$(dirname "$0")" && pwd); GL9=$(dirname "$HERE")
 OUT="$GL9/_out"
 LLVM="${CC9_LLVM:-/opt/homebrew/opt/llvm/bin}"
 CC9="${CC9:-$(dirname "$GL9")/cc9}"
-VERSION=0.2.0
+VERSION=0.2.1
 STAGE="$HERE/stage"; TARBALL="$HERE/gl9-amd64.tar.gz"
 
 # installed-name : built-a.out-basename

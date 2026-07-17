@@ -1,0 +1,21 @@
+python9 — CPython 3.11 for 9front (cc9). Changelog.
+(`pac9 changelog python9` shows this; newest first.)
+
+0.2.0 — 2026-07-17
+  First versioned release. Rebuilt against a correctness pass on the cc9 C
+  runtime that CPython is built on — a set of stubs that used to report success
+  while doing nothing:
+
+    - os.fsync / file durability is REAL. The runtime's fsync used to return 0
+      without flushing, so a crash after flush()+fsync() could still lose data.
+      It now issues a real 9P flush (honored by gefs).
+    - Append mode is correct. open(path, "a") appends instead of truncating, and
+      every write lands at end-of-file even after a seek.
+    - errno is per-thread. Worker threads no longer race a shared global errno,
+      so OSError.errno is reliable under threading.
+    - Float formatting corrected (long-double path in the C library).
+
+  Same interpreter (3.11.14) and the same statically-linked battery set
+  (_ssl/_hashlib over OpenSSL 3.0.17, zlib, _sqlite3, _blake2/_sha3,
+  _pydantic_core + jiter). Earlier unversioned installs read as '-';
+  `pac9 upgrade python9` moves them here.

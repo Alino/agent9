@@ -57,6 +57,10 @@ exec /usr/glenda/rust/bin/cargo9 $*
 EOF
 chmod +x "$STAGE/rc/bin/rustc" "$STAGE/rc/bin/cargo9"
 
+# `pac9 changelog rust9` reads this offline.
+mkdir -p "$STAGE/sys/lib/pac9/changelog"
+cp "$HERE/CHANGELOG" "$STAGE/sys/lib/pac9/changelog/rust9"
+
 # ustar format so 9front's tar reads it; COPYFILE_DISABLE stops macOS ._* junk.
-( cd "$STAGE" && COPYFILE_DISABLE=1 tar --format ustar -czf "$TARBALL" usr rc )
+( cd "$STAGE" && COPYFILE_DISABLE=1 tar --format ustar -czf "$TARBALL" usr rc sys )
 echo "-> $TARBALL  ($(du -h "$TARBALL" | cut -f1))"

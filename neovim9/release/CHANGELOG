@@ -1,0 +1,18 @@
+neovim9 — Neovim 0.12.4 for 9front (cc9). Changelog.
+(`pac9 changelog neovim9` shows this; newest first.)
+
+0.2.0 — 2026-07-17
+  First versioned release. Rebuilt against a correctness pass on the cc9 C
+  runtime underneath it — stubs that used to return success while doing nothing,
+  several of which an editor actually leans on:
+
+    - Durable writes. The runtime's fsync used to return 0 without flushing, so
+      swap/undo/shada files written before a crash could be lost. fsync is now a
+      real 9P flush (honored by gefs), which is exactly what :w and crash
+      recovery rely on.
+    - Append mode is correct — log-style appends land at end-of-file every write.
+    - errno is per-thread, so Neovim's async/libuv I/O reports errors reliably.
+
+  Same editor (upstream 0.12.4: LuaJIT interpreter, libuv, 7 treesitter parsers,
+  jobs / :terminal / LSP). Run it inside alacritty9 or any TERM-setting host.
+  Earlier unversioned installs read as '-'; `pac9 upgrade neovim9` moves them here.
