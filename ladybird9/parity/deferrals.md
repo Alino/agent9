@@ -8,7 +8,7 @@ expected to behave identically to the same-commit host build.
 |---|---|---|---|
 | `<video>`/`<audio>` decode (RESOLVED) | ENABLED. ffmpeg 7.1.1 (avcodec/avformat/avutil/swresample) cross-built C-only (host/deps/build-ffmpeg.sh; --disable-asm/x86asm/inline-asm — NASM can't go through cc9→a.out, C fallbacks decode correctly, slower; decoders+demuxers+parsers only, no encoders/muxers/programs). LibMedia links the real FFmpeg TUs + real Codecs/Vorbis.cpp (stubs retired); ENABLE_VIDEO/AUDIO ON (plan9-inject). Two cc9 C11-conformance fixes it forced: `<assert.h>` now defines the `static_assert` macro, `<errno.h>` gained EFBIG/ETXTBSY. All 6 FFmpeg glue TUs + Vorbis compile; WebContent links the quartet. Audio *playback* falls to the null PlaybackStream (no 9front audio-out backend wired — decode/frame-extraction is the deliverable). **Runtime decode VALIDATED on cirno**: an autoplay <video> (H.264/mp4) shows its decoded first frame in a headless screenshot (cyan ~64x64) — ffmpeg decode works live. | audio output to /dev/audio; asm-accelerated decode (needs a Plan 9 a.out assembler path) |
 | JPEG XL images (RESOLVED) | ENABLED. libjxl 0.11.1 + highway 1.4.0 cross-built into the sysroot (host/deps/build-{highway,libjxl}.sh); JPEGXLLoader.cpp + sniff entry active; ImageDecoder links PkgConfig::Jxl (libjxl.pc Requires: libhwy libbrotli* libjxl_cms). Two cc9 fixes: SKCMS_PORTABLE=1 (skcms's hand-rolled F16C intrinsics assume F16C on any x86_64; scalar path is correct), jpegli OFF (it built a shared libjpeg.so). Decoder symbols present; ImageDecoder links clean. **Runtime decode VALIDATED on cirno**: an <img> JPEG-XL renders correctly in a headless screenshot (blue 80x80 = 6400 px exact). | — |
-| AVIF images (BUILT, runtime decode WIP) | libavif 1.3.0 (dav1d decoder) + dav1d 1.5.1 cross-built (host/deps/build-{dav1d,libavif}.sh); AVIFLoader.cpp + sniff entry active; ImageDecoder links PkgConfig::AVIF + dav1d (dav1d only in libavif.pc Requires.private, pulled explicitly like CURL's nghttp2/zstd). dav1d is the one Meson dep — host/deps/cc9-meson-cross.ini is the cc9 cross-file, enable_asm=false. Compiles + links clean. **On-box (cirno) an <img> AVIF renders blank with no decode error logged** while JPEG-XL (same ImageDecoder process) decodes fine — the dav1d/libavif runtime path needs debugging (candidate: a standalone libavif decode gate like gl9's 09_fbo test to isolate dav1d-on-9front from the AVIFLoader glue). | debug the dav1d/libavif runtime decode; asm-accelerated decode needs a Plan 9 a.out assembler path |
+| AVIF images (RESOLVED) | libavif 1.3.0 (dav1d decoder) + dav1d 1.5.1 cross-built (host/deps/build-{dav1d,libavif}.sh); AVIFLoader.cpp + sniff entry active; ImageDecoder links PkgConfig::AVIF + dav1d (dav1d only in libavif.pc Requires.private, pulled explicitly like CURL's nghttp2/zstd). dav1d is the one Meson dep — host/deps/cc9-meson-cross.ini is the cc9 cross-file, enable_asm=false. Compiles + links clean. **Runtime decode VALIDATED on cirno** (magenta 80x80 = 6400 px exact in a headless screenshot). The earlier renders-blank symptom was the O_NONBLOCK-lost-across-dup/IPC-transfer bug (cc9 450b8ec + TransportPlan9 flags carry), which starved data delivery — not a dav1d problem. | — (asm-accelerated decode would need a Plan 9 a.out assembler path) |
 | Font discovery | No fontconfig | patch 0004; FontDatabase::font_directories AK_OS_PLAN9 arm = /lib/ladybird/fonts + $home/lib/ladybird/fonts; TypefaceSkia AK_OS_PLAN9 arm = SkFontMgr_New_Custom_Directory("/lib/ladybird/fonts") | never (platform-correct replacement, like macOS CoreText path) |
 | Default fonts (RESOLVED 2026-07-16) | Bundle DejaVu Sans/Serif/Mono as the sans/serif/mono defaults instead of the hand-drawn SerenitySans house font (which read as "comic sans" with sparse Unicode coverage). FontPlugin PLAN9 arm prepends "DejaVu Sans/Serif/Sans Mono" to the generic fallback lists; TTFs bundled via ResourceFiles.cmake PLAN9 arm + port/assets/fonts. | patch 0007 (FontPlugin) + 0004 (ResourceFiles) + port assets | done — normal fonts, broad glyph coverage (Latin/Cyrillic/Greek/symbols), validated |
 | Wasm AOT (cranelift) | Bytecode interpreter only; no cranelift AOT, no compiled-fault recovery | ENABLE_CRANELIFT_JIT OFF (upstream toggle, via plan9-inject.cmake) selects upstream CraneliftStubs.cpp; WASM_COMPILED_FAULT_RECOVERY_SUPPORTED gated NOT PLAN9 | never on stock 9front (W^X, no exec pages); wxallow kernel + a plan9 arm in target-lexicon if ever |
@@ -216,3 +216,21 @@ correct capture method. host/vm/{lb9win.rc,lb9shot.rc} ship that dev loop.
 
 Frame-capture proof (M5.2) still holds as the pixel-parity check: the GL9B stream
 off fd 1 decodes pixel-identical to the M4/M6 renders.
+
+## Fixed runtime incidents (recorded for the pattern, not deferrals)
+
+- **Remote-fetch hang (2026-07-18, fixed in cc9 450b8ec + ladybird9 6a08e57):** every
+  http/https fetch to a real internet host hung forever (file:// and LAN-by-IP worked).
+  Chain: RequestServer's body pipe is created nonblocking, but (a) `IPC::File::clone_fd`'s
+  dup lost O_NONBLOCK (cc9 keys status flags per fd number; POSIX shares them via the open
+  file description), and (b) the /srv fd transfer lost them again in the receiving process.
+  WebContent's body-read loop exits on EAGAIN, so the blocking fd wedged its event loop —
+  keep-alive responses never EOF the pipe (Connection: close LAN fetches escaped, which is
+  why only remote hosts hung). Fix: cc9 dup/dup2/F_DUPFD carry O_NONBLOCK
+  (cc9_poll_carry_dup) + TransportPlan9 Srv records carry a status-flags byte
+  (F_GETFL → wire → F_SETFL). Also fixed en route: getaddrinfo honors hints->ai_family
+  (mixed-family answers doubled LibDNS records and fed unroutable IPv6 to curl) and
+  ioctl FIONREAD works on poll-owned fds (unbreaks LibDNS's --dns-server UDP mode).
+  The same starvation had been masking AVIF decode. Diagnosis method: layer gates on
+  cirno (pool_gate/wake_gate/dnsfetch_gate/dnsnull_gate in cc9/test) + dbgln probes at
+  each hop of the RS→WebContent delivery chain.
