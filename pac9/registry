@@ -25,21 +25,21 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 # `build-exe` / `run` / `test` all work on-box (build.zig projects incl. -D
 # options; the runner spawns child compilers over pipes). ReleaseFast/
 # ReleaseSmall only; no f16/f80/f128 soft-float or @cImport in target programs.
-zig9	-	.	tarball https://github.com/Alino/agent9/releases/download/zig9/zig9-amd64.tar.gz
+zig9	-	.	tarball https://github.com/Alino/agent9/releases/download/zig9-v0.14.1/zig9-amd64.tar.gz	-	0.14.1
 python9	-	.	tarball https://github.com/Alino/agent9/releases/download/python9-v0.2.0/python9-amd64.tar.gz	-	0.2.0
-node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node/node9-amd64.tar.gz
+node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node9-v0.1.0/node9-amd64.tar.gz	-	0.1.0
 # cc9: on-box C++ toolchain (cc -> clang -> ld.lld -> elf2aout). Self-contained.
-cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9/cc9-amd64.tar.gz
+cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9-v0.1.0/cc9-amd64.tar.gz	-	0.1.0
 # pi9: prebuilt tarball has amd64/bin/pi9, rc/bin/new-pi9, sys/lib/tls/ca.pem.
 # It renders through a vts session, so it depends on vts + vtwin (5th column,
 # pulled in automatically).
-pi9	-	.	tarball https://github.com/Alino/agent9/releases/download/pi9/pi9-amd64.tar.gz	vts vtwin
+pi9	-	.	tarball https://github.com/Alino/agent9/releases/download/pi9-v0.1.0/pi9-amd64.tar.gz	vts vtwin	0.1.0
 # go — the real Go toolchain (upstream go1.26.0, plan9/amd64 is a supported
 # upstream port; no patches). Cross-built once with Go's own bootstrap.bash,
 # installed under /sys/lib/go + /rc/bin/{go,gofmt} wrappers. First `go build`
 # compiles the stdlib packages it needs into $home/lib/cache, so it's slower
 # than the following ones.
-go	-	.	tarball https://github.com/Alino/agent9/releases/download/go/go-amd64.tar.gz
+go	-	.	tarball https://github.com/Alino/agent9/releases/download/go-v1.26.0/go-amd64.tar.gz	-	1.26.0
 # rust9 — the real rustc (1.98-dev, cranelift backend) self-hosted on 9front:
 # compiler + std sysroot + n9link linker + cargo9, all in one tarball (~80 MB
 # download, ~210 MB installed under /usr/glenda/rust + /rc/bin wrappers).
@@ -87,7 +87,7 @@ launcher	https://github.com/Alino/agent9	src/launcher	-
 # launcher only; the interpreter (Python 3.11 with ssl/sqlite/zlib/pydantic-core/
 # jiter built in) + stdlib come from the python9 package (5th-column dep).
 # After install: set $MINIMAX_KEY or write /usr/glenda/hermes9/minimax.key, then `hermes`.
-hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9/hermes9-amd64.tar.gz	python9
+hermes9	-	.	tarball https://github.com/Alino/agent9/releases/download/hermes9-v0.1.0/hermes9-amd64.tar.gz	python9	0.1.0
 
 # dosbox9 — DOSBox 0.74-3 on 9front (SDL 1.2 with a Plan 9 backend over
 # gl9win2; cc9 can't link libdraw, so a native window server hosts it).
