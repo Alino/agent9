@@ -69,14 +69,19 @@ release is published, on any 9front box:
     # headless:
     ladybird --headless --screenshot-path /tmp/shot.png https://example.com
 
+HTTPS works out of the box — the package bundles the Mozilla CA roots
+(`share/ca.pem`) and the launcher passes `--certificate` to RequestServer, so
+there is **no** need to hand-fetch a CA bundle into `/sys/lib/tls/ca.pem`.
+
 The registry entry (in `/sys/lib/pac9/registry`) is:
 
-    ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.1.0/ladybird9-amd64.tar.gz	-	0.1.0
+    ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.2.0/ladybird9-amd64.tar.gz	-	0.2.0
 
 `pac9` fetches the tarball, lays it out under `/usr/glenda/ladybird9`, and drops
 a launcher at `/rc/bin/ladybird`. It bundles the browser + 5 helper processes +
-resources + ICU data + a private copy of the `gl9win2` presenter. `pac9
-uninstall ladybird9` / `pac9 changelog ladybird9` / `pac9 upgrade` all work.
+resources + ICU data + the CA bundle + a private copy of the `gl9win2`
+presenter. `pac9 uninstall ladybird9` / `pac9 changelog ladybird9` / `pac9
+upgrade` all work.
 
 > The v0.1.0 GitHub release is **built and staged** (`release/make-tarball.sh`)
 > but publication is pending sign-off. To try it before then, serve the tarball

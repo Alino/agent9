@@ -57,6 +57,12 @@ chmod +x "$P/bin/ladybird" "$P/libexec/"*
 
 cp -R "$BUILD/share/Lagom" "$P/share/Lagom"
 cp "$ICU_DAT" "$P/share/icu/icudt78l.dat"
+
+# CA bundle (Mozilla roots via curl.se): stock 9front has no public CA bundle at
+# curl's compiled-in /sys/lib/tls/ca.pem, so HTTPS failed until the user hand-
+# fetched one (issue #23). Bundle it and point RequestServer at it via the
+# launcher's --certificate, so HTTPS works out of the box.
+cp "$HERE/../port/assets/certs/ca.pem" "$P/share/ca.pem"
 cp "$GL9WIN2" "$P/bin/gl9win2"
 chmod +x "$P/bin/gl9win2"
 
@@ -73,7 +79,7 @@ cat > "$STAGE/rc/bin/ladybird" <<'EOF'
 #   ladybird https://example.com     open a page
 #   ladybird --headless --screenshot-path shot.png <url>   (run the binary directly)
 ICU_DATA=/usr/glenda/ladybird9/share/icu
-exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' $*
+exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--temporary-profile' '--certificate' /usr/glenda/ladybird9/share/ca.pem $*
 EOF
 chmod +x "$STAGE/rc/bin/ladybird"
 

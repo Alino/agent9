@@ -7,8 +7,12 @@ v0.2.0
   Unicode). Persistent-profile groundwork (SQLite unix-none VFS). The four
   deferred engine features now enabled: WebGL (gl9/Mesa softpipe, surfaceless
   FBO + readback — no GPU), JPEG-XL + AVIF decode (libjxl/highway, libavif/
-  dav1d), and <video>/<audio> decode (ffmpeg 7.1.1, C-only). Still 1:1 with
-  upstream — additive PLAN9 arms + new platform files only.
+  dav1d), and <video>/<audio> decode (ffmpeg 7.1.1, C-only). HTTPS works out of
+  the box now — the Mozilla CA roots are bundled (share/ca.pem) and passed via
+  --certificate, so no hand-fetching a bundle into /sys/lib/tls (issue #23).
+  Built against the audited cc9 runtime (memory-safety / data-loss / security /
+  correctness fixes). Still 1:1 with upstream — additive PLAN9 arms + new
+  platform files only.
 
 v0.1.0
   First release. A real multi-process Ladybird (LadybirdBrowser/ladybird,
