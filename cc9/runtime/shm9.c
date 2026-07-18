@@ -566,16 +566,30 @@ int cc9_shm_reap_dead(const char *prefix) {
 	struct dirent *e;
 	while ((e = readdir(d))) {
 		if (strncmp(e->d_name, prefix, plen) != 0) continue;
-		/* parse the owner pid out of "<prefix><pid>.<seq>" */
+		char path[64];
+		/* An empty/unreadable ctl means the segment has NO backing memory: its
+		 * last attacher already left and only the #g name lingers (a zombie).
+		 * That is unambiguously reclaimable regardless of the owner pid — which
+		 * may even read "alive" because it was RECYCLED to an unrelated process.
+		 * A live pool always has a valid ctl (va written before first use), so
+		 * this never removes one in use; create_seg's tiny make-dir/write-va
+		 * window self-heals via its retry loop. This was the leak that wedged
+		 * back-to-back runs: zombies here used to be skipped ("unreadable: don't
+		 * touch") and piled up until they broke the next run's shm. */
+		unsigned long va, len;
+		if (read_ctl(e->d_name, &va, &len) < 0) {
+			snprintf(path, sizeof path, "#g/%s", e->d_name);
+			if (n9_remove(path) == 0) reaped++;
+			continue;
+		}
+		/* Valid ctl (real backing): only reap when the creator is DEAD and no
+		 * live process still maps it (the A->B->C forwarding case keeps it). */
 		const char *p = e->d_name + plen;
 		long pid = 0;
 		int any = 0;
 		for (; *p >= '0' && *p <= '9'; p++) { pid = pid * 10 + (*p - '0'); any = 1; }
 		if (!any || pid_alive(pid)) continue;     /* owner still running: leave it */
-		unsigned long va, len;
-		if (read_ctl(e->d_name, &va, &len) < 0) continue;   /* unreadable: don't touch */
 		if (va_attached_anywhere(va)) continue;   /* a receiver still maps it: keep */
-		char path[64];
 		snprintf(path, sizeof path, "#g/%s", e->d_name);
 		if (n9_remove(path) == 0) reaped++;
 	}
