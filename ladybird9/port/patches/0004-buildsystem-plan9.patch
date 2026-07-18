@@ -134,7 +134,7 @@ index 25d61bc1eb..07b80c7f1d 100644
      set(BYTECODE_DEF "${CMAKE_CURRENT_SOURCE_DIR}/Bytecode/Bytecode.def")
  
 diff --git a/Libraries/LibMedia/CMakeLists.txt b/Libraries/LibMedia/CMakeLists.txt
-index 9cd10e14d0..ebfd2a3c23 100644
+index 9cd10e14d0..e454405fd1 100644
 --- a/Libraries/LibMedia/CMakeLists.txt
 +++ b/Libraries/LibMedia/CMakeLists.txt
 @@ -40,21 +40,27 @@ set(SOURCES
@@ -179,6 +179,15 @@ index 9cd10e14d0..ebfd2a3c23 100644
  endif()
  
  if (LADYBIRD_AUDIO_BACKEND STREQUAL "PULSE")
+@@ -70,6 +76,8 @@ elseif (LADYBIRD_AUDIO_BACKEND STREQUAL "AUDIO_UNIT")
+ elseif(LADYBIRD_AUDIO_BACKEND STREQUAL "WASAPI")
+     target_sources(LibMedia PRIVATE Audio/PlaybackStreamWasapi.cpp)
+     target_link_libraries(LibMedia PRIVATE ole32 avrt winmm)
++elseif(LADYBIRD_AUDIO_BACKEND STREQUAL "PLAN9")
++    target_sources(LibMedia PRIVATE Audio/PlaybackStreamPlan9.cpp)
+ elseif (DEFINED LADYBIRD_AUDIO_BACKEND)
+     message(FATAL_ERROR "Please update ${CMAKE_CURRENT_LIST_FILE} for audio backend ${LADYBIRD_AUDIO_BACKEND}")
+ else ()
 diff --git a/Libraries/LibSandbox/CMakeLists.txt b/Libraries/LibSandbox/CMakeLists.txt
 index c4b12d475b..4f65680388 100644
 --- a/Libraries/LibSandbox/CMakeLists.txt
@@ -193,6 +202,21 @@ index c4b12d475b..4f65680388 100644
      list(APPEND SOURCES
          Seccomp.cpp
      )
+diff --git a/Meta/CMake/audio.cmake b/Meta/CMake/audio.cmake
+index 2fa79829ad..3304b8687b 100644
+--- a/Meta/CMake/audio.cmake
++++ b/Meta/CMake/audio.cmake
+@@ -4,6 +4,10 @@ include_guard()
+ if (APPLE AND NOT IOS)
+     set(LADYBIRD_AUDIO_BACKEND "AUDIO_UNIT")
+     return()
++elseif (PLAN9)
++    # 9front: PCM straight to /dev/audio (44100/16-bit/stereo). No pulse.
++    set(LADYBIRD_AUDIO_BACKEND "PLAN9")
++    return()
+ elseif (NOT WIN32)
+     pkg_check_modules(PULSEAUDIO IMPORTED_TARGET libpulse)
+ 
 diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
 index 311dfa0fc0..2a8af8f430 100644
 --- a/Meta/CMake/check_for_dependencies.cmake

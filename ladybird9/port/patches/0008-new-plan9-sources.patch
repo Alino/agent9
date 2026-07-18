@@ -1,3 +1,271 @@
+diff --git a/Libraries/LibMedia/Audio/PlaybackStreamPlan9.cpp b/Libraries/LibMedia/Audio/PlaybackStreamPlan9.cpp
+new file mode 100644
+index 0000000000..21886d1b5a
+--- /dev/null
++++ b/Libraries/LibMedia/Audio/PlaybackStreamPlan9.cpp
+@@ -0,0 +1,215 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#include <AK/Atomic.h>
++#include <AK/NumericLimits.h>
++#include <LibCore/EventLoop.h>
++#include <LibCore/ThreadedPromise.h>
++#include <LibThreading/Thread.h>
++
++#include "PlaybackStreamPlan9.h"
++
++#include <fcntl.h>
++#include <unistd.h>
++
++namespace Audio {
++
++// 9front /dev/audio default format.
++static constexpr u32 SAMPLE_RATE = 44100;
++static constexpr u8 CHANNELS = 2;
++static constexpr size_t FRAMES_PER_WRITE = 2048; // ~46 ms of latency per block
++
++class PlaybackStreamPlan9::InternalState : public AtomicRefCounted<InternalState> {
++public:
++    InternalState() = default;
++
++    void set_callback(AudioDataRequestCallback&& cb) { m_callback = move(cb); }
++
++    // The control thread: open /dev/audio, then loop pulling+writing while playing.
++    void thread_loop()
++    {
++        int fd = ::open("/dev/audio", O_WRONLY);
++        m_device_fd.store(fd);
++        if (fd < 0) {
++            // No audio device (or none mounted): idle honestly. Decode still works;
++            // playback is silent. total_time_played advances so timelines don't stall.
++            m_playing.store(false);
++        }
++
++        Vector<float> float_buffer;
++        float_buffer.resize(FRAMES_PER_WRITE * CHANNELS);
++        Vector<i16> pcm;
++        pcm.resize(FRAMES_PER_WRITE * CHANNELS);
++
++        while (!m_exit.load()) {
++            if (!m_playing.load()) {
++                usleep(10'000);
++                continue;
++            }
++
++            auto written = m_callback(float_buffer.span());
++            if (written.is_empty()) {
++                // Underrun: no data available. Fire the callback and idle briefly.
++                if (auto cb = m_underrun_callback_copy())
++                    cb();
++                usleep(5'000);
++                continue;
++            }
++
++            double vol = m_volume.load();
++            size_t n = written.size();
++            for (size_t i = 0; i < n; ++i) {
++                float s = written[i] * static_cast<float>(vol);
++                if (s > 1.0f)
++                    s = 1.0f;
++                else if (s < -1.0f)
++                    s = -1.0f;
++                pcm[i] = static_cast<i16>(s * 32767.0f);
++            }
++
++            if (fd >= 0) {
++                auto const* bytes = reinterpret_cast<u8 const*>(pcm.data());
++                size_t total = n * sizeof(i16);
++                size_t off = 0;
++                while (off < total && !m_exit.load()) {
++                    auto w = ::write(fd, bytes + off, total - off);
++                    if (w <= 0)
++                        break;
++                    off += static_cast<size_t>(w);
++                }
++            } else {
++                // Silent sink: pace to real time so timestamps stay honest.
++                usleep((useconds_t)((n / CHANNELS) * 1'000'000ull / SAMPLE_RATE));
++            }
++            m_frames_played.fetch_add(n / CHANNELS);
++        }
++
++        if (fd >= 0)
++            ::close(fd);
++    }
++
++    void start() { m_playing.store(true); }
++    void stop() { m_playing.store(false); }
++    void exit() { m_exit.store(true); }
++    void set_volume(double v) { m_volume.store(v); }
++    double volume() const { return m_volume.load(); }
++    u64 frames_played() const { return m_frames_played.load(); }
++    bool playing() const { return m_playing.load(); }
++
++    void set_underrun_callback(Function<void()> cb) { m_underrun_callback = move(cb); }
++
++private:
++    Function<void()> m_underrun_callback_copy()
++    {
++        // The underrun callback is set once from the main thread before playback;
++        // reading it from the control thread is safe under that discipline.
++        return m_underrun_callback ? [this] { m_underrun_callback(); } : Function<void()> {};
++    }
++
++    AudioDataRequestCallback m_callback;
++    Function<void()> m_underrun_callback;
++    Atomic<bool> m_playing { false };
++    Atomic<bool> m_exit { false };
++    Atomic<int> m_device_fd { -1 };
++    Atomic<double> m_volume { 1.0 };
++    Atomic<u64> m_frames_played { 0 };
++};
++
++NonnullRefPtr<PlaybackStream::CreatePromise> PlaybackStream::create(OutputState initial_output_state, u32 target_latency_ms, AudioDataRequestCallback&& data_request_callback)
++{
++    return PlaybackStreamPlan9::create(initial_output_state, target_latency_ms, move(data_request_callback));
++}
++
++NonnullRefPtr<PlaybackStream::CreatePromise> PlaybackStreamPlan9::create(OutputState initial_output_state, u32, AudioDataRequestCallback&& data_request_callback)
++{
++    VERIFY(data_request_callback);
++
++    auto promise = CreatePromise::construct();
++    auto state = MUST(adopt_nonnull_ref_or_enomem(new (nothrow) InternalState()));
++    state->set_callback(move(data_request_callback));
++    if (initial_output_state == OutputState::Playing)
++        state->start();
++
++    auto stream = MUST(adopt_nonnull_ref_or_enomem(new (nothrow) PlaybackStreamPlan9(state)));
++
++    auto thread = MUST(Threading::Thread::try_create("Audio /dev/audio"sv, [state]() -> intptr_t {
++        state->thread_loop();
++        return 0;
++    }));
++    thread->start();
++    thread->detach();
++
++    // The device open happens on the control thread; resolve immediately so the
++    // media pipeline proceeds (a missing /dev/audio degrades to a silent sink,
++    // not a failed stream — audio decode still works).
++    promise->resolve(move(stream));
++    return promise;
++}
++
++PlaybackStreamPlan9::PlaybackStreamPlan9(NonnullRefPtr<InternalState> state)
++    : m_state(move(state))
++{
++}
++
++PlaybackStreamPlan9::~PlaybackStreamPlan9()
++{
++    m_state->exit();
++}
++
++SampleSpecification PlaybackStreamPlan9::sample_specification() const
++{
++    return SampleSpecification { SAMPLE_RATE, ChannelMap::stereo() };
++}
++
++void PlaybackStreamPlan9::set_underrun_callback(Function<void()> callback)
++{
++    m_state->set_underrun_callback(move(callback));
++}
++
++NonnullRefPtr<Core::ThreadedPromise<AK::Duration>> PlaybackStreamPlan9::resume()
++{
++    auto promise = Core::ThreadedPromise<AK::Duration>::create();
++    m_state->start();
++    promise->resolve(total_time_played());
++    return promise;
++}
++
++NonnullRefPtr<Core::ThreadedPromise<void>> PlaybackStreamPlan9::drain_buffer_and_suspend()
++{
++    auto promise = Core::ThreadedPromise<void>::create();
++    m_state->stop();
++    promise->resolve();
++    return promise;
++}
++
++NonnullRefPtr<Core::ThreadedPromise<void>> PlaybackStreamPlan9::discard_buffer_and_suspend()
++{
++    auto promise = Core::ThreadedPromise<void>::create();
++    m_state->stop();
++    promise->resolve();
++    return promise;
++}
++
++void PlaybackStreamPlan9::notify_data_available()
++{
++    // The control thread polls the callback continuously while playing; nothing
++    // to wake.
++}
++
++AK::Duration PlaybackStreamPlan9::total_time_played() const
++{
++    return AK::Duration::from_milliseconds(static_cast<i64>(m_state->frames_played() * 1000ull / SAMPLE_RATE));
++}
++
++NonnullRefPtr<Core::ThreadedPromise<void>> PlaybackStreamPlan9::set_volume(double volume)
++{
++    auto promise = Core::ThreadedPromise<void>::create();
++    m_state->set_volume(volume);
++    promise->resolve();
++    return promise;
++}
++
++}
+diff --git a/Libraries/LibMedia/Audio/PlaybackStreamPlan9.h b/Libraries/LibMedia/Audio/PlaybackStreamPlan9.h
+new file mode 100644
+index 0000000000..f0e38038cb
+--- /dev/null
++++ b/Libraries/LibMedia/Audio/PlaybackStreamPlan9.h
+@@ -0,0 +1,41 @@
++/*
++ * Copyright (c) 2026, the Ladybird developers.
++ *
++ * SPDX-License-Identifier: BSD-2-Clause
++ */
++
++#pragma once
++
++#include <AK/Atomic.h>
++#include <LibMedia/Audio/PlaybackStream.h>
++
++namespace Audio {
++
++// Audio output for 9front via /dev/audio (44100 Hz, 16-bit signed LE, stereo).
++// A single control thread pulls float samples from the data-request callback,
++// converts to interleaved s16, and blocking-writes them to the device; the
++// device's own buffering paces playback. Control calls flip atomics the thread
++// observes. No pulse/pipewire/CoreAudio — /dev/audio is the whole backend.
++class PlaybackStreamPlan9 final : public PlaybackStream {
++public:
++    static NonnullRefPtr<CreatePromise> create(OutputState, u32 target_latency_ms, AudioDataRequestCallback&&);
++
++    virtual SampleSpecification sample_specification() const override;
++    virtual void set_underrun_callback(Function<void()>) override;
++    virtual NonnullRefPtr<Core::ThreadedPromise<AK::Duration>> resume() override;
++    virtual NonnullRefPtr<Core::ThreadedPromise<void>> drain_buffer_and_suspend() override;
++    virtual NonnullRefPtr<Core::ThreadedPromise<void>> discard_buffer_and_suspend() override;
++    virtual void notify_data_available() override;
++    virtual AK::Duration total_time_played() const override;
++    virtual NonnullRefPtr<Core::ThreadedPromise<void>> set_volume(double) override;
++
++    virtual ~PlaybackStreamPlan9() override;
++
++private:
++    class InternalState;
++    explicit PlaybackStreamPlan9(NonnullRefPtr<InternalState>);
++
++    NonnullRefPtr<InternalState> m_state;
++};
++
++}
 diff --git a/Libraries/LibMedia/Codecs/VorbisStubPlan9.cpp b/Libraries/LibMedia/Codecs/VorbisStubPlan9.cpp
 new file mode 100644
 index 0000000000..4dd774a457

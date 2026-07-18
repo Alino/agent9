@@ -29,7 +29,8 @@ gen 0003-libcore-plan9.patch \
 gen 0004-buildsystem-plan9.patch \
   Libraries/LibImageDecoders/CMakeLists.txt Libraries/LibIPC/CMakeLists.txt \
   Libraries/LibJS/CMakeLists.txt Libraries/LibMedia/CMakeLists.txt \
-  Libraries/LibSandbox/CMakeLists.txt Meta/CMake/check_for_dependencies.cmake \
+  Libraries/LibSandbox/CMakeLists.txt Meta/CMake/audio.cmake \
+  Meta/CMake/check_for_dependencies.cmake \
   Tests/LibIPC/CMakeLists.txt UI/cmake/GUIFramework.cmake \
   UI/cmake/ResourceFiles.cmake Utilities/CMakeLists.txt
 
@@ -52,6 +53,8 @@ gen 0007-libweb-services-plan9.patch \
 # referenced by 0004's CMakeLists but their source was in no patch).
 gen 0008-new-plan9-sources.patch \
   UI/Plan9 \
+  Libraries/LibMedia/Audio/PlaybackStreamPlan9.cpp \
+  Libraries/LibMedia/Audio/PlaybackStreamPlan9.h \
   Libraries/LibMedia/Codecs/VorbisStubPlan9.cpp \
   Libraries/LibMedia/FFmpeg/FFmpegStubPlan9.cpp
 
