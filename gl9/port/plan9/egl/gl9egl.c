@@ -269,11 +269,24 @@ eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext ctx)
 		}
 		s = dummy_surf;
 	}
+	/* Surfaceless client renders into its own FBO (some size we don't know) and
+	 * owns the GL viewport. But OSMesaMakeCurrent forces the viewport to the
+	 * bound buffer's dimensions — the 1x1 dummy — so every make_current would
+	 * shrink the viewport to a single pixel and every subsequent WebGL draw
+	 * would rasterize into one pixel. Preserve the client's viewport across a
+	 * surfaceless re-make-current of the SAME context. */
+	int restore_vp = (s == dummy_surf && cur_ctx == c);
+	GLint saved_vp[4] = { 0, 0, 0, 0 };
+	if (restore_vp)
+		glGetIntegerv(GL_VIEWPORT, saved_vp);
 	if (!OSMesaMakeCurrent(c->os, s->buf, GL_UNSIGNED_BYTE, s->w, s->h)) {
 		set_err(EGL_BAD_MATCH); return EGL_FALSE;
 	}
 	OSMesaPixelStore(OSMESA_Y_UP, 0);
-	glViewport(0, 0, s->w, s->h);
+	if (s != dummy_surf)
+		glViewport(0, 0, s->w, s->h);   /* real surface: viewport = drawable */
+	else if (restore_vp && saved_vp[2] > 0)
+		glViewport(saved_vp[0], saved_vp[1], saved_vp[2], saved_vp[3]);
 	cur_ctx = c;
 	cur_surf = s;
 	return EGL_TRUE;
