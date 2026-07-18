@@ -1,0 +1,15 @@
+diff --git a/Tests/LibWeb/test-web/Collection.cpp b/Tests/LibWeb/test-web/Collection.cpp
+index f20440e499..269f2db723 100644
+--- a/Tests/LibWeb/test-web/Collection.cpp
++++ b/Tests/LibWeb/test-web/Collection.cpp
+@@ -97,6 +97,10 @@ static StringView screenshot_platform_name()
+     return "linux"sv;
+ #elif defined(AK_OS_WINDOWS)
+     return "windows"sv;
++#elif defined(AK_OS_PLAN9)
++    // Screenshot tests aren't part of the plan9 parity run (Text/Layout are);
++    // reuse the linux reference set if one is ever run.
++    return "linux"sv;
+ #else
+ #    error "Unhandled platform for screenshot expectations"
+ #endif

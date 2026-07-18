@@ -58,4 +58,9 @@ gen 0008-new-plan9-sources.patch \
   Libraries/LibMedia/Codecs/VorbisStubPlan9.cpp \
   Libraries/LibMedia/FFmpeg/FFmpegStubPlan9.cpp
 
+# 0009 = test-web harness (the upstream LibWeb Text/Layout runner): a PLAN9 arm
+# for its per-platform screenshot-expectation selector so the TU compiles.
+gen 0009-test-web-plan9.patch \
+  Tests/LibWeb/test-web/Collection.cpp
+
 echo "done."
