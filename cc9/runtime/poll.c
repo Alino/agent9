@@ -285,12 +285,16 @@ void cc9_poll_carry_dup(int oldfd, int newfd){
 long cc9_poll_pending(int fd){
 	cc9_pfd *p = lookup(fd);
 	if(!p) return -1;
-	/* An O_NONBLOCK fd that hasn't been read/polled yet owns a slot but has no
-	 * reader thread; start it (like cc9_poll_read) so FIONREAD is honest from
-	 * the first call instead of falling through to ENOTTY until the first read. */
+	/* Report only what the reader ring already holds. Do NOT start a reader
+	 * here: ensure() spawns a thread via pthread_create, and FIONREAD is
+	 * queried on the pthread-startup path itself — starting a reader from here
+	 * recursed ensure -> pthread_create -> ... -> ensure into a stack overflow.
+	 * With no reader yet, 0 bytes are buffered — an honest answer, and better
+	 * than the old ENOTTY. poll()/read() start the reader when the fd is
+	 * actually used, so a subsequent FIONREAD then reports the real fill. */
 	if(!p->reader){
 		if(!(p->flags & O_NONBLOCK)) return -1;
-		ensure(fd, 1);
+		return 0;
 	}
 	n9_semacquire(&p->lock, 1);
 	long n = (long)ring_avail(p);
