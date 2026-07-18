@@ -293,8 +293,12 @@ static int pool_ensure(void) {
 }
 
 int cc9_shm_create(unsigned long size) {
-	if (size == 0) { errno = EINVAL; return -1; }
+	/* A 0-byte anonymous buffer is legitimate (e.g. an empty content-blocker
+	 * list): Core::AnonymousBuffer requests the fd but never maps it. POSIX
+	 * memfd/shm_open succeed at size 0; back it with one page so there is a real
+	 * #g segment + fd to hand over IPC. */
 	unsigned long len = page_round(size);
+	if (len == 0) len = SHM9_PAGE;
 	if (len > SHM9_POOL) { errno = ENOMEM; return -1; }   /* one buffer bigger than a whole pool: genuinely too big */
 
 	n9_semacquire(&shm_lock, 1);

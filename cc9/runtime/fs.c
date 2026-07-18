@@ -592,7 +592,17 @@ char *realpath(const char *p, char *out){
 	for(size_t k=0;k<=o;k++) out[k]=clean[k];
 	return out;
 }
-char *getcwd(char *buf, size_t n){ long fd=n9_open(".",0); if(fd<0)return 0; long r=n9_fd2path((int)fd,buf,(int)n); n9_close((int)fd); return r<0?0:buf; }
+char *getcwd(char *buf, size_t n){
+	/* POSIX.1-2008 / GNU: buf==NULL means "malloc the result for the caller"
+	 * (n==0 => pick a size). Ladybird's Core::System::getcwd uses getcwd(0,0). */
+	char *out = buf; size_t cap = n;
+	if(!out){ if(cap==0) cap = 8192; out = malloc(cap); if(!out){ errno = ENOMEM; return 0; } }
+	long fd=n9_open(".",0); if(fd<0){ if(!buf) free(out); return 0; }
+	long r=n9_fd2path((int)fd,out,(int)cap);
+	n9_close((int)fd);
+	if(r<0){ if(!buf) free(out); return 0; }
+	return out;
+}
 
 /* ---- directories ---- */
 struct __cc9_dir { int fd; unsigned char buf[8192]; int len; int pos; struct dirent de; };
