@@ -48,10 +48,33 @@ extern void *memcpy(void *, const void *, unsigned long);
 #define PFD_BUF 65536
 #define PFD_WBUF 65536
 
+/* An "infinite" poll (timeout<0) waits on poll_sem in bounded slices instead of
+ * forever: readiness is recomputed from ring state every scan (poll is
+ * level-triggered), so this re-scan is a pure safety net — a missed empty->
+ * non-empty edge wake (or a reader/writer thread that lost its start race)
+ * degrades to <=POLL_RESCAN_MS latency instead of a permanent hang. The common
+ * case still returns immediately on the poll_sem token; the cost is a low-rate
+ * idle wakeup. This closes the Ladybird IPC reuse-hang: a rare stranded message
+ * that used to deadlock a WebContent reactor now drains on the next re-scan.
+ * ponytail: 200ms is the ceiling on that stall; lower it if IPC latency shows. */
+#define POLL_RESCAN_MS 200
+
 typedef struct {
 	int fd;                 /* -1 = free slot */
 	int flags;              /* O_NONBLOCK | O_CLOEXEC */
 	int reader;             /* reader thread started */
+	int rfd;                /* private dup(2) the reader preads (-1 = none). Keying
+	                         * the reader on the app fd NUMBER is the reuse-hang bug:
+	                         * Plan 9 can't interrupt a blocked pread, so a reader
+	                         * lingers after close(); if the fd number is then reused
+	                         * (per-test IPC/shm/srv channels churn heavily), the
+	                         * lingering reader preads the NEW channel into the OLD
+	                         * (dead) slot while poll()'s lookup hands the reactor the
+	                         * fresh empty slot -> the response strands, WebContent's
+	                         * reactor never sees it, the test suite deadlocks. A
+	                         * private dup decouples the reader from the app fd: it
+	                         * drains the OLD channel harmlessly and the reused fd gets
+	                         * its own fresh reader. */
 	int dead;               /* fd closed; reader exits on next return */
 	int eof, err;
 	int lock;               /* binary sem, 1 = unlocked */
@@ -72,6 +95,15 @@ typedef struct {
 static cc9_pfd tab[PFD_MAX];
 static int tab_lock = 1;
 static int poll_sem;
+static int poll_waiters;   /* reactors parked on poll_sem right now. A process can run
+                            * MORE THAN ONE event loop (WebContent has 2), all sharing this
+                            * one global poll_sem — so a single-token wake goes to ONE
+                            * reactor, often the WRONG one, which rescans its own fds, finds
+                            * nothing, and re-parks; the reactor that owns the ready fd only
+                            * wakes on the bounded re-scan (200ms/msg -> IPC crawls, tests
+                            * time out). Releasing poll_waiters tokens wakes ALL parked
+                            * reactors so the owner is always among them; the others rescan
+                            * and re-park (no token leak: each wake consumes one). */
 static int tab_inited;
 
 /* $CC9_POLL_TRACE=<path>.<pid> gets one line per event — ground-truth byte
@@ -137,6 +169,11 @@ static int was_interrupted(void){
 	return r;
 }
 
+/* Wake every reactor parked on poll_sem, not just one (see poll_waiters). At
+ * least one token so a reactor about to park doesn't miss it; extra tokens from
+ * a racy count are drained by the spurious wake that consumes them. */
+static void poll_wake(void){ int w = poll_waiters; n9_semrelease(&poll_sem, w > 0 ? w : 1); }
+
 static unsigned ring_avail(cc9_pfd *p){ return p->head - p->tail; }
 static unsigned ring_space(cc9_pfd *p){ return PFD_BUF - ring_avail(p); }
 static unsigned wring_avail(cc9_pfd *p){ return p->whead - p->wtail; }
@@ -158,7 +195,7 @@ static void *reader_main(void *arg){
 		unsigned off = p->head % PFD_BUF;
 		unsigned cont = PFD_BUF - off;              /* contiguous run to buffer end */
 		unsigned want = space < cont ? space : cont;
-		long r = n9_pread(p->fd, p->buf + off, (long)want, -1);
+		long r = n9_pread(p->rfd, p->buf + off, (long)want, -1);   /* private dup, not p->fd: immune to fd-number reuse */
 		trace("rdthr", p->fd, r);
 		if(r < 0 && was_interrupted() && !p->dead)
 			continue;
@@ -181,15 +218,17 @@ static void *reader_main(void *arg){
 		 * N per-segment cross-proc handoffs into one large drain (the throughput
 		 * fix). p->data is still pulsed every pass for the blocking-read path. */
 		if(was_empty || r <= 0)
-			n9_semrelease(&poll_sem, 1);
+			poll_wake();
 		n9_semrelease(&p->data, 1);
 		if(r <= 0) break;
 	}
 	/* dead (fd closed under us): the slot is freed by whoever set dead once
 	 * BOTH threads are gone; here just drop our claim. eof/err: keep the slot
 	 * so cc9_poll_read can report 0/-1 until close() reclaims it. */
+	if(p->rfd >= 0 && p->rfd != p->fd) n9_close(p->rfd);   /* release the private dup we owned */
 	n9_semacquire(&tab_lock, 1);
 	p->reader = 0;
+	p->rfd = -1;
 	if(p->dead && !p->writer) p->fd = -1;
 	n9_semrelease(&tab_lock, 1);
 	return 0;
@@ -218,7 +257,7 @@ static void *writer_main(void *arg){
 		else
 			p->werr = 1;
 		n9_semrelease(&p->wlock, 1);
-		n9_semrelease(&poll_sem, 1);      /* POLLOUT state changed */
+		poll_wake();                      /* POLLOUT state changed; wake all reactors */
 		n9_semrelease(&p->wdrain, 1);     /* wake a close-flush waiter */
 		if(r <= 0) break;
 	}
@@ -240,7 +279,7 @@ static cc9_pfd *ensure(int fd, int start_reader){
 		if(p){
 			if(!p->buf) p->buf = malloc(PFD_BUF);
 			if(!p->buf){ n9_semrelease(&tab_lock, 1); return 0; }
-			p->fd = fd; p->flags = 0; p->reader = 0; p->dead = 0;
+			p->fd = fd; p->flags = 0; p->reader = 0; p->rfd = -1; p->dead = 0;
 			p->eof = p->err = 0; p->lock = 1; p->space = 0; p->data = 0;
 			p->head = p->tail = 0;
 			p->writer = 0; p->werr = 0; p->wlock = 1; p->wdata = 0;
@@ -248,10 +287,15 @@ static cc9_pfd *ensure(int fd, int start_reader){
 		}
 	}
 	if(p && start_reader && !p->reader){
+		p->rfd = (int)n9_dup(fd, -1);      /* reader preads this private dup, not the app fd */
+		if(p->rfd < 0) p->rfd = fd;        /* dup exhausted: fall back to the app fd (old behavior) */
 		pthread_t t;
 		if(pthread_create(&t, 0, reader_main, p) == 0){
 			pthread_detach(t);
 			p->reader = 1;
+		} else {
+			if(p->rfd != fd) n9_close(p->rfd);
+			p->rfd = -1;
 		}
 	}
 	n9_semrelease(&tab_lock, 1);
@@ -406,7 +450,13 @@ void cc9_poll_onclose(int fd){
 void cc9_poll_forget(int fd){
 	if(!tab_inited) return;
 	for(int i = 0; i < PFD_MAX; i++)
-		if(tab[i].fd == fd) tab[i].fd = -1;
+		if(tab[i].fd == fd){
+			/* the private reader dup is internal; drop it so it can't ride the
+			 * exec into the child as a stray open fd */
+			if(tab[i].rfd >= 0 && tab[i].rfd != tab[i].fd) n9_close(tab[i].rfd);
+			tab[i].rfd = -1;
+			tab[i].fd = -1;
+		}
 }
 
 /* FD_CLOEXEC set? (consulted by execve before n9_exec) */
@@ -421,11 +471,15 @@ int cc9_poll_cloexec(int fd){
  * (post-fork children have no threads; pre-exec state is discarded anyway). */
 void cc9_poll_close_cloexec(void){
 	if(!tab_inited) return;
-	for(int i = 0; i < PFD_MAX; i++)
+	for(int i = 0; i < PFD_MAX; i++){
+		/* private reader dups are internal bookkeeping and must never survive
+		 * exec — close every one regardless of the app fd's CLOEXEC flag */
+		if(tab[i].rfd >= 0 && tab[i].rfd != tab[i].fd){ n9_close(tab[i].rfd); tab[i].rfd = -1; }
 		if(tab[i].fd >= 0 && (tab[i].flags & O_CLOEXEC)){
 			n9_close(tab[i].fd);
 			tab[i].fd = -1;
 		}
+	}
 }
 
 /* ---- POSIX surface ---- */
@@ -466,11 +520,15 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout){
 		}
 		if(ready || timeout == 0) return ready;
 		if(timeout < 0){
-			n9_semacquire(&poll_sem, 1);
+			__sync_fetch_and_add(&poll_waiters, 1);
+			n9_tsemacquire(&poll_sem, POLL_RESCAN_MS);  /* bounded: re-scan even if an edge wake was missed */
+			__sync_fetch_and_sub(&poll_waiters, 1);
 		} else {
 			long left = deadline - now_ms();       /* stale tokens re-loop; keep the true deadline */
 			if(left <= 0) return 0;
+			__sync_fetch_and_add(&poll_waiters, 1);
 			long got = n9_tsemacquire(&poll_sem, left);
+			__sync_fetch_and_sub(&poll_waiters, 1);
 			if(got != 1) return 0;                 /* timed out */
 		}
 	}
