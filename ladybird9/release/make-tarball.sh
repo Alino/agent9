@@ -77,8 +77,20 @@ cat > "$STAGE/rc/bin/ladybird" <<'EOF'
 # ladybird9: the real Ladybird browser on 9front (interactive, via gl9win2).
 #   ladybird https://example.com     open a page
 #   ladybird --headless --screenshot-path shot.png <url>   (run the binary directly)
+#
+# stderr goes to $log, NOT to the window. gl9win2 draws into the window it is
+# started in (initdraw takes over the current one, as any Plan 9 graphics program
+# does), but fd 2 still points at that same window's /dev/cons -- so rio
+# faithfully draws every diagnostic as TEXT on top of the rendered page. That is
+# what "terminal output over the browser" is: two writers, one window. Read the
+# messages with:  cat /tmp/ladybird.log
+#
+# This does NOT cover kernel notes ("<prog> <pid>: suicide: ..."), which the
+# kernel writes to the console directly rather than through fd 2; those appear
+# only when a helper actually faults.
+log=/tmp/ladybird.log
 ICU_DATA=/usr/glenda/ladybird9/share/icu
-exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--certificate' /usr/glenda/ladybird9/share/ca.pem $*
+exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--certificate' /usr/glenda/ladybird9/share/ca.pem $* >[2]$log
 EOF
 chmod +x "$STAGE/rc/bin/ladybird"
 
