@@ -1,10 +1,12 @@
-/* gl9egl — a minimal libEGL for 9front, backed by OSMesa + softpipe. This is the
- * "EGL seam" of the gl9 plan: glutin (Alacritty's context layer) talks EGL, so we
- * provide the ~20 EGL entrypoints it binds — but over OSMesa instead of porting
- * Mesa's egl_dri2 (DRI loader / platform backends / dlopen), which stock 9front
- * can't support. eglMakeCurrent -> OSMesaMakeCurrent; eglSwapBuffers -> the
- * gl9_present frame protocol into gl9win. Pixel output is the same softpipe that
- * passed the parity suite; EGL is just the binding.
+/* gl9egl — a minimal libEGL for 9front, backed by OSMesa. This is the "EGL seam"
+ * of the gl9 plan: glutin (Alacritty's context layer) talks EGL, so we provide
+ * the ~20 EGL entrypoints it binds — but over OSMesa instead of porting Mesa's
+ * egl_dri2 (DRI loader / platform backends / dlopen), which stock 9front can't
+ * support. eglMakeCurrent -> OSMesaMakeCurrent; eglSwapBuffers -> the gl9_present
+ * frame protocol into gl9win. EGL is just the binding: the pixels come from a
+ * gallium software rasterizer, chosen per-kernel at runtime by
+ * gl9_select_sw_driver() below (llvmpipe where W^X is allowed, else the softpipe
+ * that passed the parity suite).
  *
  * Enough of EGL 1.4/1.5 for a glutin-style client: get display, init, choose one
  * RGBA8888/D24/S8 config, create context, create a window/pbuffer surface, make
@@ -27,6 +29,44 @@ extern void *malloc(unsigned long);
 extern void free(void *);
 extern void *memcpy(void *, const void *, unsigned long);
 extern void *memmove(void *, const void *, unsigned long);
+extern char *getenv(const char *);
+extern int setenv(const char *, const char *, int);
+extern int cc9_have_wx(void);            /* cc9 <sys/mman.h>: is W^X available? */
+
+/* Pick the software rasterizer at RUNTIME, not build time.
+ *
+ * libgl9mesa carries BOTH gallium drivers: llvmpipe (JIT-vectorized, needs W^X
+ * memory) and softpipe (pure interpreter, runs anywhere). Mesa's own
+ * sw_helper.h already tries llvmpipe first and falls back to softpipe — but
+ * that fallback only covers screen CREATION. llvmpipe_create_screen SUCCEEDS on
+ * a stock 9front kernel and faults only later, when it JITs its first shader.
+ * Leaving the choice to Mesa would therefore turn "kernel lacks the patch" into
+ * a crash mid-render rather than a slower-but-correct picture.
+ *
+ * cc9_have_wx() reads the wxallow gate (cc9/kernel/wxallow-jit.diff). Note the
+ * gate cannot be probed by executing: with wxallow=0 segattach(SG_EXEC) still
+ * succeeds and the kernel merely strips the bit, so the only observation is the
+ * fault itself. Hence: gate off -> pin softpipe; gate on -> leave GALLIUM_DRIVER
+ * unset so Mesa takes llvmpipe. One binary, correct on stock and patched kernels.
+ *
+ * An explicit GALLIUM_DRIVER from the operator always wins.
+ * ponytail: `done` is a plain flag — a concurrent second caller would at worst
+ * write the same value twice, so it needs no atomic. */
+static void
+gl9_select_sw_driver(void)
+{
+	static int done;
+	const char *cur;
+
+	if (done)
+		return;
+	done = 1;
+	cur = getenv("GALLIUM_DRIVER");
+	if (cur != 0 && *cur != 0)
+		return;
+	if (!cc9_have_wx())
+		setenv("GALLIUM_DRIVER", "softpipe", 1);
+}
 
 /* one process-wide display, one config. */
 struct gl9_ctx  { OSMesaContext os; EGLint major, minor; };
@@ -55,6 +95,7 @@ EGLBoolean
 eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor)
 {
 	if (dpy != GL9_DISPLAY) { set_err(EGL_BAD_DISPLAY); return EGL_FALSE; }
+	gl9_select_sw_driver();
 	g_inited = 1;
 	if (major) *major = 1;
 	if (minor) *minor = 5;
@@ -152,6 +193,11 @@ eglCreateContext(EGLDisplay dpy, EGLConfig cfg, EGLContext share,
 		default: break;   /* debug/robustness flags: nothing to honour here */
 		}
 	}
+
+	/* Also here, not just eglInitialize: this is the call that actually creates
+	 * the gallium screen, so it is the last point at which the driver choice can
+	 * still be made. */
+	gl9_select_sw_driver();
 
 	c = malloc(sizeof *c);
 	if (!c) { set_err(EGL_BAD_ALLOC); return EGL_NO_CONTEXT; }
