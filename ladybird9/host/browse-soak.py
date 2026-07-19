@@ -75,7 +75,7 @@ def classify(text):
     return hits
 
 
-def visit(url, idx, outdir, budget=45):
+def visit(url, idx, outdir, budget=45, shm_trace=False):
     """One headless page load. Returns (shot_bytes, log_text)."""
     shot = "/tmp/soak%d.png" % idx
     log = "/tmp/soak%d.log" % idx
@@ -88,6 +88,7 @@ def visit(url, idx, outdir, budget=45):
     cmd = (
         "cd %s\n"
         "ICU_DATA=%s/share/icu\n"
+        "%s"
         "rm -f %s %s\n"
         "@{ bin/ladybird --headless --certificate %s/share/ca.pem "
         "--screenshot-path %s '%s' >%s >[2=1] } &\n"
@@ -98,7 +99,7 @@ def visit(url, idx, outdir, budget=45):
         "ls -l %s >[2=1]\n"
         "echo ---SOAK-LOG---\n"
         "cat %s\n"
-    ) % (PREFIX, PREFIX, shot, log, PREFIX, shot, url, log, budget, HELPERS, shot, log)
+    ) % (PREFIX, PREFIX, "CC9_SHM_TRACE=1\n" if shm_trace else "", shot, log, PREFIX, shot, url, log, budget, HELPERS, shot, log)
     out = run(cmd, wait=budget + 120)
     m = re.search(r"---SOAK-DONE---(.*?)---SOAK-LOG---(.*)", out, re.S)
     if not m:
@@ -115,6 +116,8 @@ def main():
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--budget", type=int, default=45,
                     help="seconds allowed per page load, enforced on the box")
+    ap.add_argument("--shm-trace", action="store_true",
+                    help="enable CC9_SHM_TRACE (segment create/map/attach lines)")
     ap.add_argument("--out", default=None)
     ap.add_argument("--sites", default=None, help="file with one URL per line")
     args = ap.parse_args()
@@ -131,7 +134,7 @@ def main():
         print("\n===== round %d/%d =====" % (rnd, args.rounds), flush=True)
         for i, url in enumerate(sites):
             sweep()
-            size, log = visit(url, i, outdir, args.budget)
+            size, log = visit(url, i, outdir, args.budget, args.shm_trace)
             hits = classify(log)
             for name, n in hits:
                 totals[name] = totals.get(name, 0) + n
