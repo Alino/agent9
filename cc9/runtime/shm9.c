@@ -491,13 +491,19 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 	shm_map *free_slot = 0;
 	int pin = 0;
 	for (int i = 0; i < SHM_MAXMAP; i++) {
-		if (maps[i].refs && strcmp(maps[i].name, name) == 0) {
+		/* Match on refs OR pinned: a pinned entry that has fallen to refs==0 is
+		 * still ATTACHED (that is what pinned means), so it must be re-adopted
+		 * from the table rather than segattach'd again. Missing it here would
+		 * overlap, adopt, and burn a fresh slot on every map until the table
+		 * ran out. */
+		if ((maps[i].refs || maps[i].pinned) && maps[i].name[0]
+		    && strcmp(maps[i].name, name) == 0) {
 			maps[i].refs++;
 			unsigned long base = maps[i].va;
 			n9_semrelease(&shm_lock, 1);
 			return (void *)(base + off);
 		}
-		if (!maps[i].refs && !free_slot) free_slot = &maps[i];
+		if (!maps[i].refs && !maps[i].pinned && !free_slot) free_slot = &maps[i];
 	}
 	if (!free_slot) {
 		n9_semrelease(&shm_lock, 1);
@@ -552,9 +558,15 @@ int cc9_shm_unmap(void *p, unsigned long len) {
 	unsigned long va = (unsigned long)p;
 	n9_semacquire(&shm_lock, 1);
 	for (int i = 0; i < SHM_MAXMAP; i++) {
-		/* range-match: p is base + buffer offset, so find the pool it lands in */
-		if (maps[i].refs && va >= maps[i].va && va < maps[i].va + maps[i].len) {
-			if (--maps[i].refs == 0 && !maps[i].pinned) {
+		/* range-match: p is base + buffer offset, so find the pool it lands in.
+		 * A PINNED entry must be claimed even at refs==0: it is still attached,
+		 * and returning 0 here would send munmap down its fallback, which calls
+		 * free() on the pointer — handing a shared-segment address to the heap
+		 * allocator. Claim the range, and only decrement a refcount that is
+		 * actually positive. */
+		if ((maps[i].refs || maps[i].pinned)
+		    && va >= maps[i].va && va < maps[i].va + maps[i].len) {
+			if (maps[i].refs > 0 && --maps[i].refs == 0 && !maps[i].pinned) {
 				long dr = n9_segdetach((void *)maps[i].va);   /* at the segment base */
 				char eb[96]; eb[0] = 0;
 				if (dr < 0) n9_errstr(eb, sizeof eb);
