@@ -27,10 +27,10 @@ index 49c66b30e8..4f743f2961 100644
  #else
 diff --git a/Libraries/LibIPC/TransportPlan9.cpp b/Libraries/LibIPC/TransportPlan9.cpp
 new file mode 100644
-index 0000000000..685b0971e3
+index 0000000000..9e035b2bf6
 --- /dev/null
 +++ b/Libraries/LibIPC/TransportPlan9.cpp
-@@ -0,0 +1,411 @@
+@@ -0,0 +1,431 @@
 +/*
 + * Copyright (c) 2024, Andrew Kaster <andrew@ladybird.org>
 + * Copyright (c) 2025, stasoid <stasoid@yahoo.com>
@@ -245,7 +245,21 @@ index 0000000000..685b0971e3
 +        ByteReader::load(serialized_bytes.data() + sizeof(u64), length);
 +        serialized_bytes = serialized_bytes.slice(2 * sizeof(u64));
 +        int fd = cc9_shm_import(name, offset, length);
-+        VERIFY(fd >= 0);
++        // A failed shm import (transient namespace pressure, a swept segment)
++        // must NOT abort the process: hand back an invalid attachment so
++        // decode<IPC::File> surfaces it as a decode error and the peer is
++        // disconnected cleanly (the malformed-message contract) — matching how
++        // Linux treats a bad passed fd. Aborting here is what crashed the
++        // Compositor under shm exhaustion before the shm9 free-list landed.
++        if (fd < 0) {
++            // Name the failure: which segment, what offset, why. Without this the
++            // only symptom is a decode error two layers up whose errno belongs to
++            // whatever the failed open left behind ("magic number mismatch" from
++            // the peer-endpoint retry), which points at the wrong bug entirely.
++            dbgln("TransportPlan9: shm import FAILED name={} offset={} length={} errno={}",
++                name, offset, length, errno);
++            return Attachment::from_fd(-1);
++        }
 +        return Attachment::from_fd(fd);
 +    }
 +    case Plan9AttachmentKind::Srv: {
@@ -264,7 +278,13 @@ index 0000000000..685b0971e3
 +            fd = ::open(path, O_RDONLY);
 +        if (fd < 0)
 +            fd = ::open(path, O_WRONLY);
-+        VERIFY(fd >= 0);
++        // Same as the Segment branch: a /srv channel that can't be opened
++        // degrades to an invalid attachment (clean peer disconnect), not a
++        // process abort.
++        if (fd < 0) {
++            dbgln("TransportPlan9: /srv open FAILED path={} errno={}", path, errno);
++            return Attachment::from_fd(-1);
++        }
 +        // Re-apply the sender's file-status flags (see serialize_attachments:
 +        // cc9's O_NONBLOCK is per-process, unlike Linux's per-description).
 +        if (wire_flags & 1)

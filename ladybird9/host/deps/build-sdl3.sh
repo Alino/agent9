@@ -22,6 +22,41 @@ SDL_SHA256=81cc0fc17e5bf2c1754eeca9af9c47a76789ac5efdd165b3b91cbbe4b90bfb76
 SRC="$VENDOR/sdl3/SDL3-${SDL_VER}"
 fetch "$SDL_URL" "$SDL_SHA256" "$SRC"
 
+# Source edits, applied here so a fresh fetch reproduces them. They were once
+# hand-made in the extracted tree, which means the next fetch silently dropped
+# them and the build broke in three different ways. Each is idempotent.
+#
+# 1. dynapi: SDL's shared-library ABI shim. It #errors on an unknown platform and
+#    deliberately refuses a -D override ("Nope, you have to edit this file"), so
+#    the platform case goes in the file, exactly like SDL's own vitasdk/3DS ones.
+#    Plan 9 has no dlopen and cc9 links everything statically.
+if ! grep -q '__plan9__' "$SRC/src/dynapi/SDL_dynapi.h"; then
+	perl -0pi -e 's{(#elif defined\(DYNAPI_NEEDS_DLOPEN\))}{#elif defined(__plan9__)\n#define SDL_DYNAMIC_API 0 // Plan 9 has no dlopen; cc9 links everything statically\n$1}' \
+		"$SRC/src/dynapi/SDL_dynapi.h"
+	grep -q '__plan9__' "$SRC/src/dynapi/SDL_dynapi.h" || { echo "sdl3: dynapi patch missed" >&2; exit 1; }
+fi
+
+# 2. <langinfo.h> was included unconditionally while every nl_langinfo() call
+#    below it is already guarded by HAVE_NL_LANGINFO. An SDL bug, not ours.
+# NOTE: "#ifdef HAVE_NL_LANGINFO" already occurs in pristine SDL (it guards the
+# nl_langinfo() CALLS), so the idempotency marker must be this comment, not it.
+if ! grep -q 'already guarded by this' "$SRC/src/time/unix/SDL_systime.c"; then
+	perl -0pi -e 's{^#include <langinfo\.h>}{#ifdef HAVE_NL_LANGINFO /* every nl_langinfo() below is already guarded by this */\n#include <langinfo.h>\n#endif}m' \
+		"$SRC/src/time/unix/SDL_systime.c"
+fi
+
+# 3. Take the strictly-POSIX.1-2008 timezone path (as Solaris does) instead of
+#    tm_gmtoff. cc9's struct tm must NOT grow that field: the whole sysroot is
+#    prebuilt against the 36-byte layout, so widening it makes gmtime_r write
+#    past every struct tm those libraries allocate (it broke OpenSSL's cert
+#    expiry check). cc9 supplies tzset() and timezone == 0, which is the true
+#    offset on a system whose local time IS UTC.
+if ! grep -q '__plan9__' "$SRC/src/time/unix/SDL_systime.c"; then
+	perl -0pi -e 's{(\(!defined\(sun\) && !defined\(__sun\))\)}{$1 && !defined(__plan9__))}' \
+		"$SRC/src/time/unix/SDL_systime.c"
+	grep -q '__plan9__' "$SRC/src/time/unix/SDL_systime.c" || { echo "sdl3: systime patch missed" >&2; exit 1; }
+fi
+
 cmake_dep "$SRC" \
 	`# NOTE: dynapi (SDL's shared-lib ABI shim) is switched off by a __plan9__` \
 	`# case added to src/dynapi/SDL_dynapi.h — SDL refuses a -D override on` \

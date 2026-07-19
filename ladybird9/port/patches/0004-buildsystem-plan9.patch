@@ -218,7 +218,7 @@ index 2fa79829ad..3304b8687b 100644
      pkg_check_modules(PULSEAUDIO IMPORTED_TARGET libpulse)
  
 diff --git a/Meta/CMake/check_for_dependencies.cmake b/Meta/CMake/check_for_dependencies.cmake
-index 311dfa0fc0..2a8af8f430 100644
+index 311dfa0fc0..5003262067 100644
 --- a/Meta/CMake/check_for_dependencies.cmake
 +++ b/Meta/CMake/check_for_dependencies.cmake
 @@ -2,7 +2,8 @@ include_guard()
@@ -269,7 +269,7 @@ index 311dfa0fc0..2a8af8f430 100644
      find_package(Fontconfig REQUIRED)
      set(HAS_FONTCONFIG ON CACHE BOOL "" FORCE)
      add_cxx_compile_definitions(USE_FONTCONFIG=1)
-@@ -72,10 +93,33 @@ else()
+@@ -72,6 +93,19 @@ else()
  endif()
  
  find_package(CURL REQUIRED)
@@ -289,21 +289,7 @@ index 311dfa0fc0..2a8af8f430 100644
  find_package(ICU 78.3 EXACT REQUIRED COMPONENTS data i18n uc)
  find_package(LibXml2 REQUIRED)
  find_package(OpenSSL REQUIRED)
- find_package(SDL3 CONFIG REQUIRED)
-+if (PLAN9 AND LB9_SDL3_VJOYSTICK_OBJECT)
-+    # PLAN9: virtual-joystick entry points InternalGamepad links, pending
-+    # their move into the sysroot sdl3-shim (see plan9-inject).
-+    get_target_property(_lb9_sdl3_real SDL3::SDL3 ALIASED_TARGET)
-+    if (NOT _lb9_sdl3_real)
-+        set(_lb9_sdl3_real SDL3::SDL3)
-+    endif()
-+    set_property(TARGET ${_lb9_sdl3_real} APPEND PROPERTY
-+        INTERFACE_LINK_LIBRARIES "${LB9_SDL3_VJOYSTICK_OBJECT}")
-+endif()
- find_package(simdjson CONFIG REQUIRED)
- find_package(SQLite3 REQUIRED)
- find_package(Threads REQUIRED)
-@@ -98,6 +142,13 @@ if(unofficial-angle_FOUND)
+@@ -98,6 +132,13 @@ if(unofficial-angle_FOUND)
  else()
      pkg_check_modules(angle REQUIRED IMPORTED_TARGET angle)
      set(ANGLE_TARGETS PkgConfig::angle)
@@ -317,7 +303,7 @@ index 311dfa0fc0..2a8af8f430 100644
  endif()
  
  if (WIN32)
-@@ -141,6 +192,15 @@ else()
+@@ -141,6 +182,15 @@ else()
  
      pkg_check_modules(skia skia=${SKIA_REQUIRED_VERSION} REQUIRED IMPORTED_TARGET skia)
      set(SKIA_TARGET PkgConfig::skia)
