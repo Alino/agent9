@@ -89,6 +89,15 @@ typedef struct {
 	char name[CC9_SHM_NAMELEN];
 	unsigned long va, len;
 	int refs;
+	/* Adopted (see cc9_shm_try_map): the mapping already existed and we could
+	 * not know how many users it had, so refs is a LOWER BOUND, not the truth.
+	 * Detaching on refs==0 would then pull the segment out from under a user we
+	 * never counted — a dangling pointer into image data. Pinned entries are
+	 * therefore never detached by cc9_shm_unmap; only cc9_shm_detach_all (which
+	 * runs at execve, where the whole address space is about to be replaced)
+	 * tears them down. Cost is VA retention, which is exactly what we can
+	 * afford — the alternative is a use-after-detach fault. */
+	unsigned char pinned;
 } shm_map;
 #define SHM_MAXMAP 512
 static shm_map maps[SHM_MAXMAP];
@@ -122,17 +131,34 @@ static unsigned long shm_seek_off(int fd) {
 	return (unsigned long)ret;
 }
 
-typedef struct { int fd; unsigned long off; } shm_buf;   /* guarded by shm_lock */
+typedef struct { int fd; unsigned long off, len; int gen; } shm_buf;   /* guarded by shm_lock */
 #define SHM_MAXBUF 4096
 static shm_buf bufs[SHM_MAXBUF];
 static int bufs_live;   /* fast-path: skip the O(N) scan in close() when 0 */
+
+/* Per-pool free-list: freed [off,len) slots in the CURRENT pool, reused before
+ * bumping pool_off. Without this the bump cursor climbs forever across a long
+ * reused-process session (test-web never respawns the Compositor/WebContent, so
+ * per-test canvas backing stores churned pool after 256 MiB pool until the 1 GiB
+ * pid VA slab exhausted -> cc9_shm_create returned -1 -> a fatal VERIFY -> the
+ * Compositor crashed ~100 tests in). First-fit + tail-split, no coalescing; the
+ * "Phase B pool" the create/free comments below defer. All under shm_lock. */
+#define SHM_FREEMAX 512
+typedef struct { unsigned long off, len; } shm_free;
+static shm_free freelist[SHM_FREEMAX];
+static int free_n;
+static int pool_gen;   /* bumped on every new-pool mint; each buffer carries its mint gen so a
+                        * freed old-pool buffer is never reused as an offset into the new pool */
 
 /* Record fd->off both in the table (primary) and the fd seek position
  * (dup-safe fallback). The table MUST be cleared on close (cc9_shm_forget_fd,
  * below) or a recycled fd number inherits a dead buffer's offset — the IPC
  * layer dup()s the buffer fd before export, and dup returns the lowest free
  * number, which readily lands on a just-closed shm fd. */
-static void shm_set_off_both(int fd, unsigned long off) {
+/* len/gen record what cc9_shm_forget_fd needs to return the slot to the pool
+ * free-list: len = the buffer's page-rounded size, gen = the pool it was carved
+ * from. Imports pass gen=-1 (NOT ours — never reclaimed into our pool). */
+static void shm_set_off_both(int fd, unsigned long off, unsigned long len, int gen) {
 	shm_set_off(fd, off);                       /* seek: outside the lock (syscall) */
 	n9_semacquire(&shm_lock, 1);
 	shm_buf *b = 0, *slot = 0;
@@ -141,7 +167,7 @@ static void shm_set_off_both(int fd, unsigned long off) {
 		if (!bufs[i].fd && !slot) slot = &bufs[i];
 	}
 	if (!b && slot) { slot->fd = fd + 1; b = slot; bufs_live++; }
-	if (b) b->off = off;
+	if (b) { b->off = off; b->len = len; b->gen = gen; }
 	n9_semrelease(&shm_lock, 1);
 }
 /* offset for an fd: table first (reliable), then the dup-shared seek position. */
@@ -160,7 +186,21 @@ void cc9_shm_forget_fd(int fd) {
 	if (bufs_live == 0) return;
 	n9_semacquire(&shm_lock, 1);
 	for (int i = 0; i < SHM_MAXBUF; i++)
-		if (bufs[i].fd == fd + 1) { bufs[i].fd = 0; bufs_live--; break; }
+		if (bufs[i].fd == fd + 1) {
+			/* Return this buffer's slot to the current pool's free-list so its
+			 * offset is reused instead of leaked. Only OUR pool buffers (gen>=0
+			 * from create; imports carry gen=-1) belonging to the CURRENT pool
+			 * (an already-superseded pool self-releases via its own attach
+			 * refcount when its last buffer's fd closes). Recorded exactly once:
+			 * only the create fd is in the table; the IPC layer's export dup and
+			 * imported fds are either absent or gen=-1. */
+			if (bufs[i].gen == pool_gen && bufs[i].len && free_n < SHM_FREEMAX) {
+				freelist[free_n].off = bufs[i].off;
+				freelist[free_n].len = bufs[i].len;
+				free_n++;
+			}
+			bufs[i].fd = 0; bufs_live--; break;
+		}
 	n9_semrelease(&shm_lock, 1);
 }
 
@@ -288,6 +328,11 @@ static int pool_ensure(void) {
 	strcpy(pool_name, name);
 	pool_off = 0;
 	pool_pid = getpid();
+	/* New pool: bump the generation and drop the free-list (its slots were
+	 * offsets into the pool we just left; those buffers self-release via their
+	 * own refcount). Buffers minted from here carry this gen. */
+	pool_gen++;
+	free_n = 0;
 	shm_trace("pool", pool_name, va, SHM9_POOL, fd, 0);
 	return 0;
 }
@@ -303,17 +348,39 @@ int cc9_shm_create(unsigned long size) {
 
 	n9_semacquire(&shm_lock, 1);
 	if (pool_ensure() < 0) { n9_semrelease(&shm_lock, 1); return -1; }
-	if (pool_off + len > SHM9_POOL) {
-		/* current pool full — mint a NEW one (bump-only, no free-list, but never
-		 * a hard per-process cap: a long session just attaches a few more 256M
-		 * pools). ponytail: bounded by the 1 GiB pid VA slab (~4 pools); a real
-		 * free-list is the upgrade if that bites. The old pool stays alive via
-		 * its live buffers' fds (pool_fd is intentionally overwritten). */
-		pool_name[0] = 0;
-		if (pool_ensure() < 0) { n9_semrelease(&shm_lock, 1); return -1; }
+	unsigned long off;
+	int reused = 0;
+	/* Reuse a freed slot from the current pool first (first-fit). This is what
+	 * bounds the pool to PEAK-live buffers instead of TOTAL-ever-allocated, so a
+	 * long churny session (per-test canvas backing stores) stops filling pool_off
+	 * and never mints pool #2 -> no VA-slab exhaustion -> no downstream crash. */
+	for (int i = 0; i < free_n; i++) {
+		if (freelist[i].len >= len) {
+			off = freelist[i].off;
+			unsigned long rem_off = off + len, rem_len = freelist[i].len - len;
+			freelist[i] = freelist[--free_n];       /* swap-remove */
+			if (rem_len && free_n < SHM_FREEMAX) {   /* keep the tail carve reusable */
+				freelist[free_n].off = rem_off;
+				freelist[free_n].len = rem_len;
+				free_n++;
+			}
+			reused = 1;
+			break;
+		}
 	}
-	unsigned long off = pool_off;
-	pool_off += len;
+	if (!reused) {
+		if (pool_off + len > SHM9_POOL) {
+			/* no free slot AND no bump space — mint a NEW pool. Rare now that the
+			 * free-list bounds a churny session; a genuinely growing working set
+			 * still attaches a few more 256M pools (bounded by the 1 GiB pid VA
+			 * slab). The old pool stays alive via its live buffers' fds. */
+			pool_name[0] = 0;
+			if (pool_ensure() < 0) { n9_semrelease(&shm_lock, 1); return -1; }
+		}
+		off = pool_off;
+		pool_off += len;
+	}
+	int cur_gen = pool_gen;
 	char name[CC9_SHM_NAMELEN];
 	strcpy(name, pool_name);
 	n9_semrelease(&shm_lock, 1);
@@ -325,7 +392,7 @@ int cc9_shm_create(unsigned long size) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_set_off_both((int)fd, off);     /* record both ways (table + seek) */
+	shm_set_off_both((int)fd, off, len, cur_gen);   /* len+gen so close() can reclaim the slot */
 	shm_trace("create", name, off, len, fd, 0);
 	return (int)fd;
 }
@@ -348,9 +415,55 @@ int cc9_shm_import(const char *name, unsigned long offset, unsigned long len) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); shm_trace("import", name, offset, len, -1, "open-failed"); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_set_off_both((int)fd, offset);  /* record both ways (table + seek) */
+	shm_set_off_both((int)fd, offset, 0, -1);  /* gen=-1: imported, NOT carved from our pool -> never reclaimed */
 	shm_trace("import", name, offset, len, fd, 0);
 	return (int)fd;
+}
+
+/* Is a Shared segment mapped at exactly [va, va+len) in THIS process?
+ *
+ * The kernel's answer, not maps[]'s. Used to tell "this pool is already
+ * attached and I lost the bookkeeping" (adoptable) from "unrelated memory is in
+ * the way" (a real failure). Exact-range match on purpose: a partial or
+ * differently-sized overlap is NOT our segment.
+ *
+ * /proc/<pid>/segment lines are "<class> <start-hex> <end-hex> <ref>", e.g.
+ *   Shared    46bd8e255000 46bd9e255000    9
+ * Only reached on the overlap path, so the read costs nothing in the normal case. */
+static int va_matches_shared_segment(unsigned long va, unsigned long len) {
+	char path[48], buf[4096];
+	snprintf(path, sizeof path, "/proc/%d/segment", getpid());
+	long fd = n9_open(path, OREAD);
+	if (fd < 0) return 0;                    /* can't confirm -> don't adopt */
+	long n = n9_pread((int)fd, buf, sizeof buf - 1, 0);
+	n9_close((int)fd);
+	if (n <= 0) return 0;
+	buf[n] = 0;
+	for (char *p = buf; *p; ) {
+		char *eol = p;
+		while (*eol && *eol != '\n') eol++;
+		char saved = *eol;
+		*eol = 0;
+		if (strncmp(p, "Shared", 6) == 0) {
+			char *q = p + 6;
+			while (*q == ' ' || *q == '\t') q++;
+			char *end = q;
+			unsigned long start = strtoul(q, &end, 16);
+			if (end != q) {
+				q = end;
+				while (*q == ' ' || *q == '\t') q++;
+				char *end2 = q;
+				unsigned long stop = strtoul(q, &end2, 16);
+				if (end2 != q && start == va && stop == va + len) {
+					*eol = saved;
+					return 1;
+				}
+			}
+		}
+		*eol = saved;
+		p = *eol ? eol + 1 : eol;
+	}
+	return 0;
 }
 
 void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
@@ -364,6 +477,11 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 	if (read_ctl(name, &segva, &seglen) < 0) { errno = EBADF; return (void *)-1; }
 
 	unsigned long off = shm_get_off(fd);  /* pool offset, from the fd position */
+	/* The offset is the fragile part of the pool scheme (fd table OR seek
+	 * position; the IPC layer dups the fd, so neither alone is sufficient). A
+	 * wrong offset hands the caller the pool BASE instead of its buffer, which
+	 * reads as truncated/garbage image data and can fault past the end. */
+	shm_trace("map", name, off, len, (long)fd, 0);
 	n9_semacquire(&shm_lock, 1);
 	if (off + page_round(len) > seglen) { n9_semrelease(&shm_lock, 1); errno = EINVAL; return (void *)-1; }
 
@@ -371,6 +489,7 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 	 * pool shares it and returns base + its own offset. This is what keeps a
 	 * process under the Plan 9 NSEG cap. */
 	shm_map *free_slot = 0;
+	int pin = 0;
 	for (int i = 0; i < SHM_MAXMAP; i++) {
 		if (maps[i].refs && strcmp(maps[i].name, name) == 0) {
 			maps[i].refs++;
@@ -393,16 +512,37 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 		char eb[96]; eb[0] = 0;
 		n9_errstr(eb, sizeof eb);          /* read + CLEAR kernel errstr */
 		shm_trace("attach", name, segva, seglen, (long)got, eb);
+		/* "segments overlap" means SOMETHING already occupies the fixed VA this
+		 * segment must live at. Usually that something IS this very segment:
+		 * maps[] is only a mirror of the kernel's state and can fall out of step
+		 * with it — a mapping inherited across fork+exec (the kernel keeps #g
+		 * attaches; see execve's cc9_shm_detach_all), or an entry dropped while
+		 * the mapping survived. The kernel is the authority, so ask it: if a
+		 * segment really is mapped at exactly [segva, segva+seglen), adopt it
+		 * instead of failing. Re-attaching is impossible and failing is
+		 * permanent — every later map of that pool would fail the same way,
+		 * which is how one lost entry turned into an undecodable IPC message.
+		 * If the range does NOT match, the overlap is a genuine conflict with
+		 * unrelated memory and must still fail: handing back a pointer into
+		 * someone else's segment would be far worse than an error. */
+		if (va_matches_shared_segment(segva, seglen)) {
+			shm_trace("adopt", name, segva, seglen, 0, 0);
+			got = (void *)segva;
+			pin = 1;
+			goto adopted;
+		}
 		n9_errstr(eb, sizeof eb);          /* swap back so the map below sees it */
 		n9_semrelease(&shm_lock, 1);
 		errno = cc9_errno_from_errstr();
 		return (void *)-1;
 	}
+adopted:
 	shm_trace("attach", name, segva, seglen, (long)got, 0);
 	strcpy(free_slot->name, name);
 	free_slot->va = (unsigned long)got;
 	free_slot->len = seglen;
 	free_slot->refs = 1;
+	free_slot->pinned = (unsigned char)pin;
 	n9_semrelease(&shm_lock, 1);
 	return (void *)((unsigned long)got + off);
 }
@@ -414,8 +554,11 @@ int cc9_shm_unmap(void *p, unsigned long len) {
 	for (int i = 0; i < SHM_MAXMAP; i++) {
 		/* range-match: p is base + buffer offset, so find the pool it lands in */
 		if (maps[i].refs && va >= maps[i].va && va < maps[i].va + maps[i].len) {
-			if (--maps[i].refs == 0) {
-				n9_segdetach((void *)maps[i].va);   /* detach at the segment base */
+			if (--maps[i].refs == 0 && !maps[i].pinned) {
+				long dr = n9_segdetach((void *)maps[i].va);   /* at the segment base */
+				char eb[96]; eb[0] = 0;
+				if (dr < 0) n9_errstr(eb, sizeof eb);
+				shm_trace("detach", maps[i].name, maps[i].va, maps[i].len, dr, eb);
 				maps[i].name[0] = 0;
 			}
 			n9_semrelease(&shm_lock, 1);
