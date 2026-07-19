@@ -245,6 +245,13 @@ int cc9_errno_from_errstr_or(int dflt){
 	else if(cc9_contains(e, "unreachable")) r = EHOSTUNREACH;
 	else if(cc9_contains(e, "address in use") || cc9_contains(e, "announce"))  r = EADDRINUSE;
 	else if(cc9_contains(e, "interrupted")) r = EINTR;
+	/* segattach(2). Without these the default below turns "segments overlap"
+	 * into ENOENT, i.e. "No such file or directory" for a segment that very
+	 * much exists and is already mapped — which sent two separate
+	 * investigations hunting a missing file. EEXIST is what it means: something
+	 * already occupies that address. */
+	else if(cc9_contains(e, "segments overlap")) r = EEXIST;
+	else if(cc9_contains(e, "no free segments") || cc9_contains(e, "too many segments")) r = ENOMEM;
 	*stash_eno = r;
 	return r;
 }
