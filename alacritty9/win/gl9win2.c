@@ -11,7 +11,7 @@
  *
  * Event emission rules (see kbdproc): plain typing and specials are emitted
  * from 'c' messages (correct case + auto-repeat); modifier keys and
- * ctrl/alt-chorded base runes are emitted from 'k'/'K' state diffs (so
+ * ctrl/alt/super-chorded base runes are emitted from 'k'/'K' state diffs (so
  * Alacritty sees e.g. ctrl+shift+V as V + mods, not a control char).
  */
 #include <u.h>
@@ -34,6 +34,7 @@ enum {
 	MODSHIFT = 1,
 	MODCTL = 2,
 	MODALT = 4,
+	MODSUPER = 8,	/* Kmod4, the "windows" key — browser chords live here */
 
 	MAXDOWN = 16,
 
@@ -63,6 +64,8 @@ static char addr[MAXADDR];	/* address-bar edit buffer */
 static int addrn;		/* length of addr */
 static int addrcur;		/* caret index into addr */
 static int addrfocus;		/* address bar has keyboard focus */
+static int addrsel;		/* whole address is selected (Super-L): next typed
+				 * key replaces it, as in every other browser */
 static int loading, canback, canfwd;	/* from GL9L */
 static char tabtitle[MAXTABS][256];
 static int ntabs, activetab;
@@ -74,6 +77,9 @@ static void drawchrome_locked(void);
 static void enablechrome(void);
 static void chromemouse(int x, int y);
 static int chromekey(Rune r);
+static int chromeshortcut(Rune r);
+static int ischromechord(Rune r);
+static void focusaddr_locked(int sel);
 
 /* Emit a chrome command. For CMDNAV the 16-byte record is followed by a
  * u32be length + UTF-8 text (the typed URL). */
@@ -136,7 +142,7 @@ emit(int type, int state, int mods, ulong a, ulong b)
 static int
 ismod(Rune r)
 {
-	return r == Kshift || r == Kctl || r == Kalt;
+	return r == Kshift || r == Kctl || r == Kalt || r == Kmod4;
 }
 
 static int
@@ -146,6 +152,7 @@ modbit(Rune r)
 	case Kshift: return MODSHIFT;
 	case Kctl: return MODCTL;
 	case Kalt: return MODALT;
+	case Kmod4: return MODSUPER;
 	}
 	return 0;
 }
@@ -197,7 +204,12 @@ kbdmsg(char *buf)
 				if(ismod(new[i])){
 					emit(EVKEY, 1, mods, new[i], 0);
 					nemit[i] = 1;
-				}else if((mods & (MODCTL|MODALT)) && !isspecial(new[i])){
+				}else if((mods & MODSUPER) && ischromechord(new[i])){
+					/* ours (Super-L/T/R/W): swallow it entirely so the
+					 * page never sees a stray keypress. Acted on from
+					 * the 'c' message, which has the correct case. */
+					nemit[i] = 0;
+				}else if((mods & (MODCTL|MODALT|MODSUPER)) && !isspecial(new[i])){
 					/* chorded base rune: Alacritty gets V+ctl, not ^V */
 					emit(EVKEY, 1, mods, new[i], 0);
 					nemit[i] = 1;
@@ -225,6 +237,16 @@ kbdmsg(char *buf)
 		chartorune(&r, buf + 1);
 		if(r == 0)
 			break;
+		/* Browser chords (Super-L/T/R/W) first: they must work while the page
+		 * has focus, which is the whole point of Super-L. */
+		if(mods & MODSUPER){
+			chromeshortcut(r);
+			/* Super+anything is a command, never text: swallow it whether or
+			 * not it mapped, so a mistyped chord can't type into the page or
+			 * the address bar. The base rune already went out from 'k' for the
+			 * chords we don't claim. */
+			break;
+		}
 		/* When the chrome address bar has focus it consumes typed keys
 		 * (printables, backspace, arrows, Enter, Esc) — the app never sees them.
 		 * chromekey() returns 0 when the bar isn't focused, so the app gets them. */
@@ -375,7 +397,7 @@ drawchrome_locked(void)
 {
 	Point o;
 	Rectangle r;
-	int i, x0, winw, cx;
+	int i, x0, winw, cx, ty;
 	char *lbl, *s;
 
 	if(!haschrome || screen == nil)
@@ -414,16 +436,32 @@ drawchrome_locked(void)
 		string(screen, Pt(r.min.x+11, r.min.y+PAD), ctext, ZP, font, lbl);
 	}
 
-	/* address field */
-	r = Rect(o.x+3*BTNW+PAD, o.y+rowh+PAD, o.x+winw-PAD, o.y+chromeh-PAD);
+	/* Address field. The vertical inset is 2, NOT PAD: the row is only
+	 * font->height + 2*PAD tall, so insetting the box by PAD left it exactly
+	 * font->height, and the replclipr(insetrect(r,2)) below then clipped 4 more
+	 * pixels off the drawable area — slicing the descenders, so "y" read as "u".
+	 * At inset 2 the interior is font->height + 6, which fits a whole glyph
+	 * (plus the 2px clip margin) with room to centre it. */
+	r = Rect(o.x+3*BTNW+PAD, o.y+rowh+2, o.x+winw-PAD, o.y+chromeh-2);
 	draw(screen, r, cfield, nil, ZP);
 	border(screen, r, 1, ctext, ZP);
 	s = addrfocus ? addr : curl;
+	/* Centre the glyph box in the field interior rather than pinning it to the
+	 * top, so ascenders and descenders get equal room. */
+	ty = r.min.y + (Dy(r) - font->height) / 2;
 	replclipr(screen, 0, insetrect(r, 2));
-	string(screen, Pt(r.min.x+4, r.min.y+2), ctext, ZP, font, s);
-	if(addrfocus){
-		cx = r.min.x+4 + stringnwidth(font, addr, addrcur);
-		draw(screen, Rect(cx, r.min.y+2, cx+1, r.max.y-2), ctext, nil, ZP);
+	if(addrfocus && addrsel && addrn > 0){
+		/* Selected: text reversed out of a filled bar, and no caret — the
+		 * whole field is the selection, so a caret would just be noise. */
+		cx = r.min.x+4 + stringwidth(font, addr);
+		draw(screen, Rect(r.min.x+4, r.min.y+2, cx, r.max.y-2), ctext, nil, ZP);
+		string(screen, Pt(r.min.x+4, ty), cfield, ZP, font, addr);
+	}else{
+		string(screen, Pt(r.min.x+4, ty), ctext, ZP, font, s);
+		if(addrfocus){
+			cx = r.min.x+4 + stringnwidth(font, addr, addrcur);
+			draw(screen, Rect(cx, r.min.y+2, cx+1, r.max.y-2), ctext, nil, ZP);
+		}
 	}
 	replclipr(screen, 0, screen->r);
 	flushimage(display, 1);
@@ -435,6 +473,20 @@ drawchrome(void)
 	qlock(&displock);
 	drawchrome_locked();
 	qunlock(&displock);
+}
+
+/* displock held. Give the address bar focus, loading it with the current URL.
+ * sel=1 selects the whole thing (Ctrl-L), so typing replaces it; sel=0 just
+ * places the caret at the end (mouse click). */
+static void
+focusaddr_locked(int sel)
+{
+	addrfocus = 1;
+	strncpy(addr, curl, sizeof addr - 1);
+	addr[sizeof addr - 1] = 0;
+	addrn = strlen(addr);
+	addrcur = addrn;
+	addrsel = sel;
 }
 
 /* A button-1-down in the chrome strip (y < chromeh, window-relative). */
@@ -463,13 +515,8 @@ chromemouse(int x, int y)
 		else if(x < 3*BTNW) sub = loading ? CMDSTOP : CMDRELOAD;
 		else focus = 1;
 	}
-	if(focus){
-		addrfocus = 1;
-		strncpy(addr, curl, sizeof addr - 1);
-		addr[sizeof addr - 1] = 0;
-		addrn = strlen(addr);
-		addrcur = addrn;
-	}
+	if(focus)
+		focusaddr_locked(0);	/* click: caret only, keep what's there */
 	drawchrome_locked();
 	qunlock(&displock);
 	if(sub)
@@ -487,6 +534,20 @@ chromekey(Rune r)
 		return 0;
 	nav = 0;
 	qlock(&displock);
+	/* A selected address behaves like every other text field: the next thing
+	 * you type — printable, Backspace or Delete — replaces the whole lot. */
+	if(addrsel && (r == Kbs || r == Kdel || (r >= 0x20 && r < 0xF000))){
+		addrn = 0;
+		addrcur = 0;
+		addr[0] = 0;
+		addrsel = 0;
+		if(r == Kbs || r == Kdel){
+			drawchrome_locked();
+			qunlock(&displock);
+			return 1;
+		}
+	}
+	addrsel = 0;	/* any key reaching here collapses the selection */
 	switch(r){
 	case '\n':
 	case '\r':
@@ -495,6 +556,18 @@ chromekey(Rune r)
 		break;
 	case Kesc:
 		addrfocus = 0;
+		break;
+	/* Plan 9 line editing, which is what a 9front user's fingers expect. */
+	case 0x01:	/* Ctrl-A: start of line */
+		addrcur = 0;
+		break;
+	case 0x05:	/* Ctrl-E: end of line */
+		addrcur = addrn;
+		break;
+	case 0x15:	/* Ctrl-U: clear the line */
+		addrn = 0;
+		addrcur = 0;
+		addr[0] = 0;
 		break;
 	case Kbs:
 		if(addrcur > 0){
@@ -530,6 +603,48 @@ chromekey(Rune r)
 	if(nav)
 		emitcmd(CMDNAV, 0, addr);
 	return 1;
+}
+
+/* Browser-level chords, on SUPER (Kmod4) — the macOS Cmd layout. Caller checks
+ * MODSUPER; this only maps the letter. Returns 1 if consumed.
+ *
+ * Super rather than Ctrl for two reasons. Ctrl chords arrive as control RUNES
+ * (Ctrl-L is 0x0c), which collide head-on with Plan 9 line editing — Ctrl-W is
+ * delete-word here, so binding it to close-tab would destroy a tab whenever a
+ * 9front user rubbed out a word. Super carries the plain letter with only the
+ * modifier bit set, so it collides with nothing and Super-W is free to mean
+ * close-tab exactly as Cmd-W does. */
+static int
+ischromechord(Rune r)
+{
+	if(r >= 'A' && r <= 'Z')
+		r += 'a' - 'A';
+	return r == 'l' || r == 't' || r == 'r' || r == 'w';
+}
+
+static int
+chromeshortcut(Rune r)
+{
+	if(r >= 'A' && r <= 'Z')
+		r += 'a' - 'A';
+	switch(r){
+	case 'l':	/* Super-L: focus address bar, select all (upstream Ctrl-L/Cmd-L) */
+		qlock(&displock);
+		focusaddr_locked(1);
+		drawchrome_locked();
+		qunlock(&displock);
+		return 1;
+	case 't':	/* Super-T: new tab */
+		emitcmd(CMDNEWTAB, 0, nil);
+		return 1;
+	case 'r':	/* Super-R: reload */
+		emitcmd(CMDRELOAD, 0, nil);
+		return 1;
+	case 'w':	/* Super-W: close the active tab (the UI quits on the last one) */
+		emitcmd(CMDCLOSE, activetab, nil);
+		return 1;
+	}
+	return 0;
 }
 
 /* ---- child spawn ---- */
