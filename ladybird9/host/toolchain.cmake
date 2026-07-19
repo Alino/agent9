@@ -29,6 +29,28 @@ set(CMAKE_ASM_COMPILER "${AGENT9_ROOT}/servo9/host/cc9-cc")
 set(CMAKE_AR      "${_llvm}/llvm-ar"     CACHE FILEPATH "cc9 archiver")
 set(CMAKE_RANLIB  "${_llvm}/llvm-ranlib" CACHE FILEPATH "cc9 ranlib")
 set(CMAKE_NM      "${_llvm}/llvm-nm"     CACHE FILEPATH "cc9 nm")
+# The thin-LTO path uses the COMPILER-specific ar/ranlib, which CMake normally
+# derives by interrogating the compiler binary. cc9-cc/cc9-c++ are wrapper
+# scripts, so that probe yields *-NOTFOUND and CMake's LTO capability test dies
+# with "CMAKE_CXX_COMPILER_AR-NOTFOUND ... code=127" on a FRESH build tree
+# (an existing cache hides it). Point them at the same LLVM tools.
+foreach(_lang C CXX)
+  set(CMAKE_${_lang}_COMPILER_AR     "${_llvm}/llvm-ar"     CACHE FILEPATH "cc9 ${_lang} LTO archiver")
+  set(CMAKE_${_lang}_COMPILER_RANLIB "${_llvm}/llvm-ranlib" CACHE FILEPATH "cc9 ${_lang} LTO ranlib")
+endforeach()
+
+# Thin-LTO is OFF for this target, deliberately. Plan 9 has no native TLS, so
+# cc9 compiles everything -femulated-tls; that is a CODEGEN option, and LTO
+# defers codegen to the linker plugin, which does not inherit it. The result is
+# objects carrying STT_TLS symbols with no PT_TLS segment and a hard ld.lld
+# error. This was previously "off" only by accident — CMake's LTO probe failed
+# on CMAKE_CXX_COMPILER_AR-NOTFOUND — so fixing the probe above silently turned
+# LTO on and broke the link. Use Ladybird's own knob (Meta/CMake/cmake_options
+# .cmake), which is what drives CMAKE_INTERPROCEDURAL_OPTIMIZATION in
+# compile_options.cmake; setting the derived variable here does NOT stick.
+# The toolchain file is read before project(), so this pre-seeds the option().
+# ponytail: re-enable only with -emulated-tls threaded into the LTO backend.
+set(ENABLE_LTO_FOR_RELEASE OFF CACHE BOOL "cc9: LTO drops -femulated-tls" FORCE)
 
 # Compiler checks must never run a 9front binary on the host.
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)

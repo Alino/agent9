@@ -117,6 +117,15 @@ EOF
 (cd "$SRC" && ./bin/gn gen "$OUT")
 ninja -C "$OUT" skia
 
+# skia's :pathops source_set is NOT part of libskia.a (Ladybird's Compositor
+# links it separately). It used to be hand-built into the CMake build tree,
+# where a clean wiped it and left an unbuildable tree; build it from the same
+# GN config (so the flags/ABI match libskia.a exactly) and install it into the
+# sysroot alongside the other archives.
+ninja -C "$OUT" pathops
+rm -f "$OUT/libskiapathops.a"
+/opt/homebrew/opt/llvm/bin/llvm-ar crs "$OUT/libskiapathops.a" "$OUT"/obj/src/pathops/*.o
+
 # --- install: headers (flatpak layout), libs, skia.pc -----------------------
 INC="$SYS/include/skia"
 rm -rf "$INC"; mkdir -p "$INC/modules/skcms" "$SYS/lib/pkgconfig"
@@ -126,7 +135,7 @@ rm -rf "$INC"; mkdir -p "$INC/modules/skcms" "$SYS/lib/pkgconfig"
 grep -rl '#include "include/' "$INC" | while read -r f; do
   sed -i '' 's|#include "include/|#include "|g' "$f"
 done
-install -m644 "$OUT/libskia.a" "$OUT/libskcms.a" "$SYS/lib/"
+install -m644 "$OUT/libskia.a" "$OUT/libskcms.a" "$OUT/libskiapathops.a" "$SYS/lib/"
 
 cat > "$SYS/lib/pkgconfig/skia.pc" <<EOF
 prefix=$SYS

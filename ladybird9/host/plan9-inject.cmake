@@ -72,15 +72,20 @@ add_compile_definitions(EGL_NO_PLATFORM_SPECIFIC_TYPES)
 # Until build-skia.sh harvests :pathops, the objects are compiled from the
 # pinned vendor/skia tree into the build dir (see M4 notes) and appended to
 # PkgConfig::skia in check_for_dependencies alongside skia's freetype dep.
+# skia's :pathops source_set (not part of libskia.a). Lives in the DEPS SYSROOT,
+# built by host/deps/build-skia.sh from the same GN config as libskia.a. It used
+# to be hand-built into ${CMAKE_BINARY_DIR}, where a clean build wiped it and
+# left a tree that could not relink — do not move it back there.
 set(LB9_SKIA_PATHOPS_ARCHIVE
-    "${CMAKE_BINARY_DIR}/lib9pathops/libskiapathops.a"
+    "${_lb9_inject_root}/_out/deps/lib/libskiapathops.a"
     CACHE FILEPATH "skia :pathops objects (cc9-built from vendor/skia)")
 
-# SDL3 virtual-joystick stubs (InternalGamepad links them; the sysroot
-# sdl3-shim predates them — fold into port/sdl3-shim on next regeneration).
-set(LB9_SDL3_VJOYSTICK_OBJECT
-    "${CMAKE_BINARY_DIR}/lib9pathops/sdl3-virtual-joystick-stubs.o"
-    CACHE FILEPATH "SDL3 virtual-joystick stub object (host/compat source)")
+# NOTE: the SDL3 virtual-joystick STUB object is gone — host/deps/build-sdl3.sh
+# now builds the REAL SDL3 3.2.24 (static, dummy video, joystick+hidapi+virtual
+# joystick on), so SDL_AttachVirtualJoystick actually attaches and the
+# GamepadAPI tests can pass. Do not re-add a stub here: with
+# -Wl,--allow-multiple-definition (below) a stub would silently WIN over the
+# real library instead of erroring.
 
 # Static lagom (BUILD_SHARED_LIBS OFF, above) links several Rust staticlibs
 # into one binary; each carries rustc's identical allocator forwarding shims
