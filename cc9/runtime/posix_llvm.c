@@ -368,11 +368,20 @@ static int spawn_apply(const cc9_spawn_acts *a) {
 	return 0;
 }
 
+/* opt-in: when set, a spawned child rfork(RFNOTEG)s into its own note group
+ * before exec, so a later kill of it can escalate to notepg (kill the whole
+ * group = all the child's pthread procs) without hitting the caller's group.
+ * Off by default — the unconditional version was reverted as over-broad. */
+static int cc9_spawn_new_group;
+void cc9_spawn_set_new_group(int v) { cc9_spawn_new_group = v; }
+
 static int spawn_common(int *pid, const char *path, const void *fa,
                         char *const av[], char *const ev[]) {
 	int kid = fork();
 	if (kid < 0) return 11 /*EAGAIN*/;
 	if (kid == 0) {
+		extern long n9_rfork(int);
+		if (cc9_spawn_new_group) n9_rfork(0x20 /*RFNOTEG*/);
 		if (spawn_apply(fa ? *(cc9_spawn_acts *const *)fa : 0) == 0)
 			execve(path, av, ev);
 		_exit(127);              /* POSIX-sanctioned late failure */
@@ -758,9 +767,10 @@ extern void n9_exits(const char *);
 /* Plan 9 rfork flags: RFPROC=1<<4, RFFDG=1<<2 (copy fd group), RFENVG=1<<1
  * (copy env group — gives fork() POSIX private-environ semantics; execve
  * then writes envp into the child's own /env). */
-#define N9_RFPROC 0x10
-#define N9_RFFDG  0x04
-#define N9_RFENVG 0x02
+#define N9_RFPROC  0x10
+#define N9_RFFDG   0x04
+#define N9_RFENVG  0x02
+#define N9_RFNOTEG 0x20   /* new note group — see cc9_spawn_new_group / kill() */
 static void cc9_reap_forked(int pid);      /* below: child bookkeeping + reaper */
 static void cc9_reap_child_reset(void);
 int waitpid(int, int *, int);
@@ -1071,9 +1081,57 @@ int    waitpid(int pid, int *s, int o) {
 }
 int    wait4(int p, int *s, int o, void *r) { (void)r; return waitpid(p, s, o); }
 int    wait(int *s) { return waitpid(-1, s, 0); }
+/* build "/proc/<pid><suf>" into d (must hold 40); returns d unchanged. */
+static char *cc9_proc_path(char *d, int pid, const char *suf) {
+	char *o = d;
+	const char *pre = "/proc/"; while (*pre) *o++ = *pre++;
+	{ int v = pid; char num[16]; int n = 0;
+	  do { num[n++] = '0' + v % 10; v /= 10; } while (v > 0);
+	  while (n) *o++ = num[--n]; }
+	while (*suf) *o++ = *suf++;
+	*o = 0;
+	return d;
+}
+/* read /proc/N/noteid as a long note-group id; -1 if unreadable. */
+static long cc9_read_noteid(int pid) {
+	char path[40];
+	int fd = (int)n9_open(cc9_proc_path(path, pid, "/noteid"), 0 /*OREAD*/);
+	if (fd < 0) return -1;
+	char b[32];
+	long got = n9_pread(fd, b, (long)sizeof b - 1, 0);
+	n9_close(fd);
+	if (got <= 0) return -1;
+	b[got] = 0;
+	long id = 0; int i = 0, neg = 0, any = 0;
+	while (b[i] == ' ' || b[i] == '\t') i++;
+	if (b[i] == '-') { neg = 1; i++; }
+	while (b[i] >= '0' && b[i] <= '9') { id = id * 10 + (b[i] - '0'); i++; any = 1; }
+	if (!any) return -1;
+	return neg ? -id : id;
+}
 /* kill over /proc: SIGKILL writes "kill" to ctl (forced); sig 0 probes for
- * existence; anything else posts an "interrupt" note. */
+ * existence; anything else posts an "interrupt" note.
+ * SIGKILL, note-group-guarded: a WebContent runs several rfork(RFMEM) procs
+ * (pthreads) sharing one note group. Writing "kill" to one proc's ctl kills
+ * ONLY that proc and orphans/deadlocks its siblings. So when the target sits
+ * in a DIFFERENT note group than us (both readable), escalate to that group's
+ * notepg — one "kill" note takes down the whole WebContent. Same group, or
+ * either noteid unreadable, keeps the single-proc ctl behavior below. */
 int    kill(int p, int s) {
+	if (s == 9 /*SIGKILL*/) {
+		long tgt = cc9_read_noteid(p);
+		long me  = cc9_read_noteid(getpid());
+		if (tgt >= 0 && me >= 0 && tgt != me) {
+			char path[40];
+			int fd = (int)n9_open(cc9_proc_path(path, p, "/notepg"), 1 /*OWRITE*/);
+			if (fd >= 0) {
+				int r = n9_pwrite(fd, "kill", 4, -1) == 4 ? 0 : -1;
+				n9_close(fd);
+				return r;
+			}
+			/* notepg unavailable: fall through to single-proc ctl kill */
+		}
+	}
 	char path[40], *d = path;
 	const char *pre = "/proc/"; while (*pre) *d++ = *pre++;
 	{ int v = p; char num[16]; int n = 0;

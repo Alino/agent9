@@ -17,6 +17,12 @@ while [ $# -gt 0 ]; do
     # paths: cc9 provides all of libc/libm/pthreads inside libcc9cxx.a+libcc9m.a,
     # which are added below. lld would otherwise fail to find e.g. -lm.
     -l*|-L*) shift;;
+    # -pthread is a compiler-DRIVER flag ("link the threads library, define
+    # _REENTRANT"), not an ld option — ld.lld hard-errors "unknown argument".
+    # Real SDL3's CMake package exports it via INTERFACE_LINK_OPTIONS, so it
+    # reaches <LINK_FLAGS>. Same rationale as -lpthread above: cc9's pthreads
+    # already live in libcc9cxx.a, so absorbing it here is the correct answer.
+    -pthread|-pthreads) shift;;
     # Pass through the lld flags callers legitimately need. ladybird9 links
     # several Rust staticlibs into one static binary; each carries rustc's
     # identical __rustc::__rust_alloc forwarding shims, so first-def-wins is safe.
