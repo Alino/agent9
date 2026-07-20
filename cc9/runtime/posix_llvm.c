@@ -1615,9 +1615,22 @@ void __cc9_ssp_init(void) {
 }
 
 void __stack_chk_fail(void) {
-	static const char m[] = "cc9: stack smashing detected\n";
+	static const char m[] = "cc9: stack smashing detected";
 	extern void abort(void);
-	n9_pwrite(2, m, sizeof m - 1, -1LL);
+	/* Name the frame whose canary died. Without this the message says only THAT
+	 * memory was corrupted, never where — and the abort's ud2 lands somewhere
+	 * unrelated, so a backtrace points at the wrong function. The return address
+	 * IS the smashing function (the check runs in its epilogue); symbolize with
+	 *   llvm-symbolizer --obj=<binary>.elf <pc> */
+	char b[96];
+	unsigned long ra = (unsigned long)__builtin_return_address(0);
+	int k = 0;
+	for (unsigned i = 0; i < sizeof m - 1; i++) b[k++] = m[i];
+	b[k++] = ' '; b[k++] = 'p'; b[k++] = 'c'; b[k++] = '=';
+	b[k++] = '0'; b[k++] = 'x';
+	for (int j = 15; j >= 0; j--) { int d = (int)((ra >> (j * 4)) & 0xf); b[k++] = d < 10 ? '0' + d : 'a' + d - 10; }
+	b[k++] = '\n';
+	n9_pwrite(2, b, k, -1LL);
 	abort();
 }
 

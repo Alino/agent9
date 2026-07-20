@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """visit-probe.py — measure ONE page load's cost on the box.
 
+NOTE: section markers are --NAME--, never ==NAME==. In rc a word beginning with
+`=` parses as an assignment, so `echo ==BEFORE==` is a syntax error that kills
+the whole script and returns NOTHING -- which reads exactly like a wedged box.
+
   visit-probe.py [url] [--wait N]
 
 Answers the question that repeated soak wedges could not: what does a single
@@ -47,7 +51,7 @@ def main():
 
     cmd = f"""cd {PREFIX}
 ICU_DATA={PREFIX}/share/icu
-echo ==BEFORE==
+echo --BEFORE--
 cat /dev/swap
 ps | wc -l
 rm -f /tmp/vp.png /tmp/vp.log
@@ -61,21 +65,21 @@ for(i in {ticks}){{
 		if(~ `{{ps | grep ladybird | wc -l}} 0) done=yes
 	}}
 }}
-echo ==EXITED== $done
-echo ==AFTER-RUN==
+echo --EXITED-- $done
+echo --AFTER-RUN--
 cat /dev/swap
 ps | wc -l
-echo ==SURVIVORS==
+echo --SURVIVORS--
 ps | grep ladybird | wc -l
 ps | grep WebContent | wc -l
 ps | grep Compositor | wc -l
 ps | grep ImageDecoder | wc -l
 for(n in {KILL}){{ kill $n | rc }}
 sleep 4
-echo ==AFTER-SWEEP==
+echo --AFTER-SWEEP--
 cat /dev/swap
 ps | wc -l
-echo ==SHOT==
+echo --SHOT--
 ls -l /tmp/vp.png >[2=1]
 """
     out = run(cmd, wait=args.wait * 3 + 180)
@@ -86,7 +90,7 @@ ls -l /tmp/vp.png >[2=1]
 
     # Pull the "N/M user" style memory lines out of /dev/swap for a quick delta.
     def mem(section):
-        m = re.search(r"==%s==(.*?)(?:==|\Z)" % section, out, re.S)
+        m = re.search(r"--%s--(.*?)(?:--[A-Z]|\Z)" % section, out, re.S)
         if not m:
             return None
         u = re.search(r"(\d+)/(\d+)\s+user", m.group(1))
