@@ -60,6 +60,33 @@ index fbae5ff9a5..72f168852d 100644
  #include <LibGfx/ImageFormats/PNGLoader.h>
  #include <LibGfx/ImageFormats/WebPLoader.h>
  
+@@ -61,7 +62,25 @@ ErrorOr<ColorSpace> ImageDecoder::color_space()
+     auto maybe_icc_data = TRY(icc_data());
+     if (!maybe_icc_data.has_value())
+         return ColorSpace {};
++#if defined(AK_OS_PLAN9)
++    // PLAN9: skip embedded-ICC-profile parsing and fall back to the default
++    // (sRGB) color space. Skia's skcms_Parse overflows a stack buffer when
++    // built by cc9 -- ColorSpace::load_from_icc_bytes has a ~1KB frame holding
++    // an skcms_ICCProfile, and the parse writes past it, tripping the stack
++    // protector ("cc9: stack smashing detected") and killing the ImageDecoder
++    // helper. Every ICC-profiled image (most PNGs, incl. Wikipedia's) hit it, so
++    // images silently failed to render while the page otherwise loaded. The same
++    // skcms passes on macOS, so it is a cc9 codegen bug in third-party SIMD-heavy
++    // code, not a logic error here. Dropping to sRGB is what browsers do for
++    // profiles they can't honor anyway; colours are very slightly off for
++    // wide-gamut images, which is a good trade for images rendering at all.
++    // ponytail: revert once skcms is miscompile-clean under cc9 (rebuild skcms
++    // at -O0 to confirm it is the optimizer, then narrow the flag).
++    (void)maybe_icc_data;
++    return ColorSpace {};
++#else
+     return ColorSpace::load_from_icc_bytes(maybe_icc_data.value());
++#endif
+ }
+ 
+ ErrorOr<RefPtr<ImageDecoder>> ImageDecoder::try_create_for_raw_bytes(ReadonlyBytes bytes, [[maybe_unused]] Optional<ByteString> mime_type)
+
 diff --git a/Libraries/LibTLS/TLSv12.cpp b/Libraries/LibTLS/TLSv12.cpp
 index f67b58889a..a526a4fc37 100644
 --- a/Libraries/LibTLS/TLSv12.cpp
