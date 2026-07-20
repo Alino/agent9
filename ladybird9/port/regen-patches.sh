@@ -71,4 +71,12 @@ gen 0009-test-web-plan9.patch \
 gen 0010-plan9-skip-icc-colorprofile.patch \
   Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
 
+# 0011 = cap curl concurrent connections on PLAN9. Each socket fd costs ~2 Plan 9
+# procs (cc9's poll layer: a reader+writer thread per fd, since Plan 9 has no
+# non-blocking I/O). A heavy page's hundreds of connections spawn hundreds of
+# procs and the memory pressure has crashed gefs (the 9front fs). Separate patch
+# so it does not entangle with concurrent LibWeb work.
+gen 0011-plan9-cap-curl-connections.patch \
+  Services/RequestServer/ConnectionFromClient.cpp
+
 echo "done."

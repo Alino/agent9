@@ -1,0 +1,24 @@
+diff --git a/Services/RequestServer/ConnectionFromClient.cpp b/Services/RequestServer/ConnectionFromClient.cpp
+index 4eec73ec9d..2dbf71afe7 100644
+--- a/Services/RequestServer/ConnectionFromClient.cpp
++++ b/Services/RequestServer/ConnectionFromClient.cpp
+@@ -107,6 +107,19 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
+     set_option(CURLMOPT_SOCKETDATA, this);
+     set_option(CURLMOPT_TIMERFUNCTION, &on_timeout_callback);
+     set_option(CURLMOPT_TIMERDATA, this);
++#if defined(AK_OS_PLAN9)
++    // PLAN9: cap concurrent connections. Every socket fd costs ~2 Plan 9
++    // processes here -- cc9 has no non-blocking I/O, so its poll layer emulates
++    // readiness with a reader and a writer thread per fd, and a Plan 9 thread IS
++    // a process. Left unbounded, a heavy page (YouTube opens hundreds of
++    // connections) spawns hundreds of processes and the memory pressure has been
++    // observed to crash gefs (the 9front filesystem) -- taking the whole box
++    // down. 32 total / 6 per host is plenty for real pages (dsl.sk and Wikipedia
++    // use far fewer) while keeping the fd -- and therefore process -- count
++    // bounded. curl serializes the excess onto the pooled connections.
++    set_option(CURLMOPT_MAX_TOTAL_CONNECTIONS, static_cast<long>(32));
++    set_option(CURLMOPT_MAX_HOST_CONNECTIONS, static_cast<long>(6));
++#endif
+ 
+     m_timer = Core::Timer::create_single_shot(0, [this] {
+         note_event_tick("curl-timer-fired"sv);
