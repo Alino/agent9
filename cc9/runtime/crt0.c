@@ -166,6 +166,24 @@ int cc9_note_handler(unsigned long framesp)
 		int nsig = 0;
 		if (msg[0]=='i'&&msg[1]=='n'&&msg[2]=='t'&&msg[3]=='e'&&msg[4]=='r'&&msg[5]=='r') nsig = 2;   /* SIGINT */
 		else if (msg[0]=='h'&&msg[1]=='a'&&msg[2]=='n'&&msg[3]=='g') nsig = 1;                        /* SIGHUP */
+		else {
+			/* "sys: write on closed pipe" is Plan 9's SIGPIPE. Without this it
+			 * reached the fatal path, so a helper that raced its peer's exit died
+			 * with a console fault line instead of the write returning EPIPE —
+			 * which is what every POSIX program (Ladybird's IPC included) expects
+			 * and already handles. The three POSIX outcomes all fall out of the
+			 * existing table: a real handler runs; SIG_IGN is stored as 1 so
+			 * has_handler is true and raise() is a no-op, leaving NCONT to resume
+			 * with the write reporting an error; SIG_DFL is 0 so we return NDFLT
+			 * and terminate, which is POSIX's default for SIGPIPE.
+			 * Substring match: the note is prefixed "sys: ", so msg[0] is not the
+			 * distinguishing byte the way it is for interrupt/hangup. */
+			for (int i = 0; i < 48 && msg[i]; i++) {
+				if (msg[i]=='c'&&msg[i+1]=='l'&&msg[i+2]=='o'&&msg[i+3]=='s'&&msg[i+4]=='e'
+				 && msg[i+5]=='d'&&msg[i+6]==' '&&msg[i+7]=='p'&&msg[i+8]=='i'&&msg[i+9]=='p'
+				 && msg[i+10]=='e') { nsig = 13; break; }   /* SIGPIPE */
+			}
+		}
 		if (nsig) {
 			if (!cc9_sig_has_handler(nsig)) return 1;   /* NDFLT: die like POSIX default */
 			raise(nsig);
