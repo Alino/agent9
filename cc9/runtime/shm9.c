@@ -89,15 +89,6 @@ typedef struct {
 	char name[CC9_SHM_NAMELEN];
 	unsigned long va, len;
 	int refs;
-	/* Adopted (see cc9_shm_try_map): the mapping already existed and we could
-	 * not know how many users it had, so refs is a LOWER BOUND, not the truth.
-	 * Detaching on refs==0 would then pull the segment out from under a user we
-	 * never counted — a dangling pointer into image data. Pinned entries are
-	 * therefore never detached by cc9_shm_unmap; only cc9_shm_detach_all (which
-	 * runs at execve, where the whole address space is about to be replaced)
-	 * tears them down. Cost is VA retention, which is exactly what we can
-	 * afford — the alternative is a use-after-detach fault. */
-	unsigned char pinned;
 } shm_map;
 #define SHM_MAXMAP 512
 static shm_map maps[SHM_MAXMAP];
@@ -489,21 +480,19 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 	 * pool shares it and returns base + its own offset. This is what keeps a
 	 * process under the Plan 9 NSEG cap. */
 	shm_map *free_slot = 0;
-	int pin = 0;
 	for (int i = 0; i < SHM_MAXMAP; i++) {
-		/* Match on refs OR pinned: a pinned entry that has fallen to refs==0 is
-		 * still ATTACHED (that is what pinned means), so it must be re-adopted
-		 * from the table rather than segattach'd again. Missing it here would
-		 * overlap, adopt, and burn a fresh slot on every map until the table
-		 * ran out. */
-		if ((maps[i].refs || maps[i].pinned) && maps[i].name[0]
-		    && strcmp(maps[i].name, name) == 0) {
+		/* A named entry is ATTACHED, whatever its refcount: unmap never
+		 * detaches (see cc9_shm_unmap), so only execve's detach_all clears a
+		 * name. Liveness is therefore name[0], NOT refs — matching on refs
+		 * would miss an attached pool sitting at zero and segattach it a
+		 * second time, which the kernel refuses with "segments overlap". */
+		if (maps[i].name[0] && strcmp(maps[i].name, name) == 0) {
 			maps[i].refs++;
 			unsigned long base = maps[i].va;
 			n9_semrelease(&shm_lock, 1);
 			return (void *)(base + off);
 		}
-		if (!maps[i].refs && !maps[i].pinned && !free_slot) free_slot = &maps[i];
+		if (!maps[i].name[0] && !free_slot) free_slot = &maps[i];
 	}
 	if (!free_slot) {
 		n9_semrelease(&shm_lock, 1);
@@ -534,7 +523,6 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 		if (va_matches_shared_segment(segva, seglen)) {
 			shm_trace("adopt", name, segva, seglen, 0, 0);
 			got = (void *)segva;
-			pin = 1;
 			goto adopted;
 		}
 		n9_errstr(eb, sizeof eb);          /* swap back so the map below sees it */
@@ -548,7 +536,6 @@ adopted:
 	free_slot->va = (unsigned long)got;
 	free_slot->len = seglen;
 	free_slot->refs = 1;
-	free_slot->pinned = (unsigned char)pin;
 	n9_semrelease(&shm_lock, 1);
 	return (void *)((unsigned long)got + off);
 }
@@ -564,15 +551,31 @@ int cc9_shm_unmap(void *p, unsigned long len) {
 		 * free() on the pointer — handing a shared-segment address to the heap
 		 * allocator. Claim the range, and only decrement a refcount that is
 		 * actually positive. */
-		if ((maps[i].refs || maps[i].pinned)
+		if (maps[i].name[0]
 		    && va >= maps[i].va && va < maps[i].va + maps[i].len) {
-			if (maps[i].refs > 0 && --maps[i].refs == 0 && !maps[i].pinned) {
-				long dr = n9_segdetach((void *)maps[i].va);   /* at the segment base */
-				char eb[96]; eb[0] = 0;
-				if (dr < 0) n9_errstr(eb, sizeof eb);
-				shm_trace("detach", maps[i].name, maps[i].va, maps[i].len, dr, eb);
-				maps[i].name[0] = 0;
-			}
+			/* Decrement, but NEVER detach here. The refcount counts mmap calls;
+			 * it does not track the raw pointers consumers keep INTO the pool.
+			 * cc9 threads are rfork(RFMEM) procs sharing one address space and
+			 * one maps[], so a sibling that finishes with its buffer can drive
+			 * the pool's count to zero while another sibling is still reading a
+			 * different buffer in the same pool — and a detach then unmaps it
+			 * under the reader. Observed exactly that: ImageDecoder attached
+			 * shmp.<peer>.0, a sibling detached it, and the next read faulted at
+			 * the segment base (BMPImageDecoderPlugin::sniff), alongside
+			 * "truncated input" from decoders reading memory that had gone away.
+			 *
+			 * Keeping the attach also removes the per-buffer attach/detach thrash
+			 * the creator side showed. Teardown is cc9_shm_detach_all() at execve,
+			 * where the address space is replaced anyway.
+			 *
+			 * ponytail: mappings are now per-POOL and live for the process, so
+			 * the ceiling is Plan 9's NSEG (~12 segments/proc) against the number
+			 * of DISTINCT pools a process touches — one per peer plus its own,
+			 * so ~6 here. If that ever binds, the failure is a loud ENOMEM from
+			 * segattach, never corruption; the fix would be refcounting the
+			 * buffers rather than the pool. */
+			if (maps[i].refs > 0)
+				maps[i].refs--;
 			n9_semrelease(&shm_lock, 1);
 			return 1;
 		}
@@ -608,7 +611,13 @@ long cc9_srv_remove(const char *name) {
 void cc9_shm_detach_all(void) {
 	n9_semacquire(&shm_lock, 1);
 	for (int i = 0; i < SHM_MAXMAP; i++) {
-		if (maps[i].refs) {
+		/* name[0], NOT refs: an entry is attached regardless of refcount now
+		 * that unmap never detaches. Keying on refs here would leave those
+		 * mappings attached across the exec, and the new image — starting with
+		 * a zeroed maps[] in BSS — would segattach them again and get
+		 * "segments overlap" forever. That is exactly the desync this function
+		 * exists to prevent. */
+		if (maps[i].name[0]) {
 			n9_segdetach((void *)maps[i].va);
 			maps[i].refs = 0;
 			maps[i].name[0] = 0;
