@@ -122,4 +122,4 @@ tailscale9	-	.	tarball https://github.com/Alino/agent9/releases/download/tailsca
 # the gl9win2 presenter; `ladybird --headless --screenshot-path shot.png <url>`.
 # No browser chrome yet (single-URL viewport); <video>/WebGL deferred, SQL off +
 # temporary profile. ~150 MB download. `pac9 changelog ladybird9`.
-ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.1.0/ladybird9-amd64.tar.gz	-	0.1.0
+ladybird9	-	.	tarball https://github.com/Alino/agent9/releases/download/ladybird9-v0.2.0/ladybird9-amd64.tar.gz	-	0.2.0
