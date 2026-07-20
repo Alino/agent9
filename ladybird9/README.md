@@ -21,28 +21,32 @@ not asserted: `--headless=text` DOM dumps come out **byte-identical** to the
 same-commit host (macOS) build, and the LibJS smoke battery matches too. The
 deferrals (below) all go through upstream's own feature gates.
 
-**Done — the engine is; the product isn't quite.** What works today:
+**Done — the engine is; the product is usable.** What works today:
 
-- Renders real modern pages — HN, speedtest.net's React SPA, styled content —
-  with correct CSS layout, fonts, colors, and working JavaScript.
-- HTTPS over OpenSSL (ssl9), the full multi-process stack (UI + WebContent +
-  Compositor + RequestServer + ImageDecoder + WebWorker) over `TransportPlan9`.
+- Renders real modern pages — Wikipedia, HN, dsl.sk, styled content — with
+  correct CSS layout, fonts, colors, **images**, and working JavaScript.
+- HTTPS over OpenSSL out of the box (Mozilla CA roots bundled) — no hand-fetching
+  a bundle. The full multi-process stack (UI + WebContent + Compositor +
+  RequestServer + ImageDecoder + WebWorker) over `TransportPlan9`.
+- **Browser chrome**: a real tab strip, address bar, and back/forward/reload,
+  drawn presenter-side in `gl9win2` — `ladybird <url>` opens a usable window.
+  macOS-style Super-key chords (`Super-L` focus + select-all, `Super-T`/`W`/`R`)
+  and Plan 9 line editing in the address bar.
 - **Headless**: `ladybird --headless --screenshot-path shot.png <url>`.
-- **Interactive**: a libdraw window via the `gl9win2` presenter — the page
-  renders on-screen and mouse/keyboard/scroll flow back in.
-- `pac9`-installable (see below). Cold-start on real hardware ≈ **3.7 s**.
+- Persistent profile (history/cookies survive restarts). `pac9`-installable
+  (see below). Cold-start on real hardware ≈ **3.7 s**.
 
 What is **not** done:
 
-- **No browser chrome yet.** `UI/Plan9`'s view is a `HeadlessWebView` subclass,
-  so you get the *page* in a window — but no address bar, tab strip, or
-  back/forward/reload buttons. The URL is passed on the command line. The chrome
-  widgets live only in `UI/Qt` and `UI/AppKit`, neither ported.
+- **Heavy client-rendered SPAs don't settle.** A page like youtube.com never
+  finishes its client-side render and can drive a small box out of memory;
+  static and moderate sites render fully.
+- No JS JIT — LibJS runs upstream's assembly *interpreter* (the JIT was removed
+  upstream), same as the macOS build, so heavy JavaScript is slow on a slow CPU.
 - **Deferred features** (tracked in [`parity/deferrals.md`](parity/deferrals.md),
-  all via upstream gates): no `<video>`/`<audio>` (ffmpeg not built), no WebGL
-  (no GPU), no JPEG-XL/AVIF; SQL disabled and the profile is temporary (Plan 9
-  file-locking) so history/cookies don't persist — the launcher passes
-  `--temporary-profile --disable-sql-database`.
+  all via upstream gates): `<video>`/`<audio>` decode is built (ffmpeg 7.1.1)
+  but there is no 9front audio-out backend, so playback is silent/decode-only;
+  WebGL runs on gl9/Mesa softpipe (no GPU); JPEG-XL/AVIF decode is on.
 - It's **heavy**: six static `a.out`s (~400 MB), so first paint has real latency.
 
 **Pin:** upstream master `8cc5d7a5ff` (2026-07-15). Upstream has no releases and
@@ -53,10 +57,11 @@ the tree and applies `port/patches/`.
 
 | | |
 |---|---|
-| ![HN](parity/screenshots/doc-hackernews.png) | ![speedtest.net](parity/screenshots/doc-speedtest-ookla.png) |
-| Hacker News — full page, real layout | speedtest.net — a modern React SPA renders + the test auto-starts |
-| ![in a rio window](parity/screenshots/m5-window-initial.png) | ![clean render](parity/screenshots/doc-render-cleanbox.png) |
-| Interactive: the page in a **rio window** (note: no browser chrome) | A styled page, pixel-correct CSS |
+| ![in a rio window with chrome](parity/screenshots/m5-window-initial.png) | ![Wikipedia](parity/screenshots/doc-render-cleanbox.png) |
+| Interactive: **browser chrome** — tab strip, address bar, back/forward/reload — in a rio window (dsl.sk) | Wikipedia — full article layout, pixel-correct CSS + fonts |
+
+*(The Hacker News shot at the top of this README is a current headless render —
+note the correct fonts and the rendered `Y` logo image.)*
 
 ## Install with pac9
 
@@ -83,9 +88,8 @@ resources + ICU data + the CA bundle + a private copy of the `gl9win2`
 presenter. `pac9 uninstall ladybird9` / `pac9 changelog ladybird9` / `pac9
 upgrade` all work.
 
-> The v0.1.0 GitHub release is **built and staged** (`release/make-tarball.sh`)
-> but publication is pending sign-off. To try it before then, serve the tarball
-> locally and point the registry at it — see `release/test-install.rc`.
+> To try a build before it's published, serve the tarball locally and point the
+> registry at it — see `release/test-install.rc`.
 
 ## vs. NetSurf on Plan 9
 
@@ -101,7 +105,7 @@ the pac9 registry). They aim at different points:
 | Rendering | Native Plan 9 `draw` | Skia CPU raster (→ libdraw window via gl9win2) |
 | Processes | Single, lightweight | Multi-process (6), heavy |
 | Footprint | A few MB | ~400 MB static binaries, ~3.7 s cold-start |
-| Browser chrome | **Native front-end** (tabs, URL bar) | **None yet** — single-URL viewport |
+| Browser chrome | **Native front-end** (tabs, URL bar) | **Tabs, address bar, back/forward/reload** (gl9win2) |
 | Modern sites | Struggle (limited JS/CSS3) | **Render faithfully** (HN, speedtest.net, …) |
 | Maturity on 9front | WIP, no releases | M0–M6 complete, pac9-installable, parity-measured |
 | TLS/HTTPS | Yes | Yes (OpenSSL / ssl9) |
@@ -110,8 +114,8 @@ the pac9 registry). They aim at different points:
 browser — it has a real native UI, starts instantly, and sips memory, which is
 perfect for simple or older sites. ladybird9 is the *modern-web-fidelity* option
 — it's the real engine used by a from-scratch standards browser, so it renders
-today's JS/CSS3 sites correctly, at the cost of being heavyweight and (for now)
-chrome-less. If you want to *browse* on Plan 9 today, NetSurf. If you want the
+today's JS/CSS3 sites correctly, at the cost of being heavyweight. If you want a
+lightweight browser for simple sites on Plan 9 today, NetSurf. If you want the
 *real modern web engine* on Plan 9, ladybird9.
 
 (For contrast, the stock 9front browsers — Mothra, Abaco — predate CSS entirely.)
