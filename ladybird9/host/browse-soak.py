@@ -24,7 +24,12 @@ _spec = importlib.util.spec_from_file_location(
 _rt9 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_rt9)
 
-HELPERS = _rt9.HELPERS
+# run-tests9's HELPERS lists the names test-web spawns; the soak drives the real
+# browser, so it must also reap `ladybird` itself (and gl9win2 for GUI runs).
+# Leaving `ladybird` off the list is why three page loads were enough to strand
+# three full browsers and wedge the box out of fork capacity.
+KILL_NAMES = "ladybird gl9win2 " + _rt9.HELPERS
+HELPERS = KILL_NAMES
 PREFIX = "/usr/glenda/ladybird9"
 
 SITES = [
