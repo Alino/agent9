@@ -71,6 +71,30 @@ def sweep():
     run("for(n in %s){ kill $n | rc }\nsleep 1\necho SWEPT\n" % HELPERS, wait=90, tries=3)
 
 
+def procs():
+    """Process count on the box, or -1 if it did not answer."""
+    out = run("ps | wc -l\n", wait=60, tries=2)
+    m = re.search(r"(\d+)", out or "")
+    return int(m.group(1)) if m else -1
+
+
+def health_gate(baseline, limit=40):
+    """Between sites, make sure the box is not drifting upward.
+
+    A climbing process count is the early warning for the wedge: once it cannot
+    fork, ICMP still replies and the port still accepts, so by the time commands
+    go quiet it is already too late to clean up. Sweep and re-check rather than
+    launching another browser on top."""
+    n = procs()
+    if n < 0 or n > baseline + limit:
+        run("for(n in %s){ kill $n | rc }\nsleep 3\necho SWEPT\n" % HELPERS,
+            wait=120, tries=3)
+        n2 = procs()
+        print("    health: procs=%s -> %s (baseline %s)" % (n, n2, baseline), flush=True)
+        return n2 >= 0 and n2 <= baseline + limit
+    return True
+
+
 def classify(text):
     hits = []
     for name, pat in SIGNATURES:
@@ -141,6 +165,9 @@ def main():
     outdir = args.out or os.environ.get("CLAUDE_JOB_DIR", "/tmp") + "/soak"
     os.makedirs(outdir, exist_ok=True)
 
+    baseline = procs()
+    print("baseline procs: %d" % baseline, flush=True)
+
     totals = {}
     for rnd in range(1, args.rounds + 1):
         print("\n===== round %d/%d =====" % (rnd, args.rounds), flush=True)
@@ -154,6 +181,9 @@ def main():
                 f.write("URL: %s\nSHOT: %s\n\n%s" % (url, size, log))
             flag = "  " + " ".join("%s=%d" % h for h in hits) if hits else "  clean"
             print("[r%d %2d] %-58s shot=%-8s%s" % (rnd, i, url[:58], size, flag), flush=True)
+            if baseline > 0 and not health_gate(baseline):
+                print("    box is not recovering — stopping before it wedges", flush=True)
+                return 1
 
     print("\n===== error signature totals =====")
     if not totals:
