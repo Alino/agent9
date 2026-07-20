@@ -89,9 +89,20 @@ typedef struct {
 	char name[CC9_SHM_NAMELEN];
 	unsigned long va, len;
 	int refs;
+	unsigned long lru;   /* tick of last use; 0 = never idle-reclaimable */
 } shm_map;
 #define SHM_MAXMAP 512
 static shm_map maps[SHM_MAXMAP];
+/* How many IDLE (refs==0) pools may stay attached. Detaching the moment a pool
+ * falls to zero is what let a sibling thread yank a pool another sibling was
+ * still reading (cc9 threads are rfork(RFMEM) procs sharing one address space,
+ * and the refcount tracks mmap CALLS, not the raw pointers consumers hold).
+ * Never detaching is the other extreme and retains every pool's touched pages
+ * for the process lifetime -- a 256 MiB pool each, which exhausts a small box on
+ * a heavy page. Keeping a few idle pools gives a wide grace window while
+ * bounding retention. */
+#define SHM_MAXIDLE 3
+static unsigned long shm_tick;
 
 /* ---- Phase B pool allocator ----
  * Plan 9 caps a process at NSEG (~12) attached segments (Proc.seg[]); one #g
@@ -488,6 +499,7 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 		 * second time, which the kernel refuses with "segments overlap". */
 		if (maps[i].name[0] && strcmp(maps[i].name, name) == 0) {
 			maps[i].refs++;
+			maps[i].lru = ++shm_tick;
 			unsigned long base = maps[i].va;
 			n9_semrelease(&shm_lock, 1);
 			return (void *)(base + off);
@@ -536,8 +548,40 @@ adopted:
 	free_slot->va = (unsigned long)got;
 	free_slot->len = seglen;
 	free_slot->refs = 1;
+	free_slot->lru = ++shm_tick;
 	n9_semrelease(&shm_lock, 1);
 	return (void *)((unsigned long)got + off);
+}
+
+/* shm_lock held. Keep at most SHM_MAXIDLE idle (refs==0) pools attached,
+ * detaching the least recently used beyond that.
+ *
+ * The two extremes are both wrong. Detaching the instant a pool hits zero let a
+ * sibling thread pull a pool out from under another sibling mid-decode -- the
+ * refcount counts mmap CALLS, not the raw pointers consumers still hold, and
+ * cc9 threads share one address space. Never detaching pins every pool's touched
+ * pages for the process lifetime (256 MiB apiece), which exhausts a small box on
+ * a heavy page. A few idle pools give a wide grace window at bounded cost.
+ *
+ * ponytail: a grace window, not a proof. The real fix is refcounting BUFFERS
+ * rather than pools, so a pointer keeps its own pool alive; until then
+ * SHM_MAXIDLE is the knob, and raising it trades memory for safety. */
+static void shm_reclaim_idle_locked(void) {
+	for (;;) {
+		int idle = 0, victim = -1;
+		for (int i = 0; i < SHM_MAXMAP; i++) {
+			if (!maps[i].name[0] || maps[i].refs) continue;
+			idle++;
+			if (victim < 0 || maps[i].lru < maps[victim].lru) victim = i;
+		}
+		if (idle <= SHM_MAXIDLE || victim < 0) return;
+		long dr = n9_segdetach((void *)maps[victim].va);
+		char eb[96]; eb[0] = 0;
+		if (dr < 0) n9_errstr(eb, sizeof eb);
+		shm_trace("evict", maps[victim].name, maps[victim].va, maps[victim].len, dr, eb);
+		maps[victim].name[0] = 0;
+		maps[victim].lru = 0;
+	}
 }
 
 int cc9_shm_unmap(void *p, unsigned long len) {
@@ -576,6 +620,10 @@ int cc9_shm_unmap(void *p, unsigned long len) {
 			 * buffers rather than the pool. */
 			if (maps[i].refs > 0)
 				maps[i].refs--;
+			if (maps[i].refs == 0) {
+				maps[i].lru = ++shm_tick;
+				shm_reclaim_idle_locked();
+			}
 			n9_semrelease(&shm_lock, 1);
 			return 1;
 		}
