@@ -63,4 +63,12 @@ gen 0008-new-plan9-sources.patch \
 gen 0009-test-web-plan9.patch \
   Tests/LibWeb/test-web/Collection.cpp
 
+# 0010 = skip embedded-ICC-profile parsing on PLAN9 (fall back to sRGB). Skia's
+# skcms_Parse overflows a ~1KB stack frame when built by cc9, killing the
+# ImageDecoder on every ICC-profiled image; a cc9 codegen bug in third-party
+# SIMD code (the same skcms passes on macOS). Kept separate from 0007 so it does
+# not entangle with concurrent LibWeb work in that patch.
+gen 0010-plan9-skip-icc-colorprofile.patch \
+  Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
+
 echo "done."
