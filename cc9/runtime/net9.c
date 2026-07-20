@@ -286,6 +286,9 @@ int listen(int fd, int backlog) {
 	(void)backlog;
 	ns_ent *e = ns_get(fd);
 	if (!e) { errno = ENOTSOCK; return -1; }
+	/* getsockname() may already have announced this socket (see there): /net
+	 * rejects a second announce, so listen() must be idempotent about it. */
+	if (e->state >= 2) return 0;
 	char msg[64];
 	if (e->bind_port)
 		snprintf(msg, sizeof msg, "announce *!%d", e->bind_port);
@@ -360,6 +363,28 @@ static int read_endpoint(ns_ent *e, const char *which, void *sa, socklen_t *sale
 int getsockname(int fd, struct sockaddr *sa, socklen_t *salen) {
 	ns_ent *e = ns_get(fd);
 	if (!e) { errno = ENOTSOCK; return -1; }
+	/* A TCP socket bound to port 0 has no port until /net announces it, and cc9
+	 * defers the announce to listen(). POSIX says bind() ASSIGNS the port, so a
+	 * getsockname() before listen() must already report it — and that is exactly
+	 * what servers do: Python's socketserver.TCPServer.server_bind() records
+	 * `self.server_address = self.socket.getsockname()` between bind() and
+	 * listen(). Reporting the intent there handed it port 0, so the server
+	 * advertised port 0 and nothing could ever reach it. (This is what made
+	 * Ladybird's HTTP test fixture unreachable: it accepted connections on its
+	 * real port but published 0, so every [LoadFromHttpServer] test hung.)
+	 *
+	 * So announce on demand: the first getsockname() on a bound-but-unannounced
+	 * stream socket performs the announce, after which the real address is read
+	 * from /net like any other. listen() below is idempotent about this. */
+	if (e->state == 1 && e->type == SOCK_STREAM) {
+		char msg[64];
+		if (e->bind_port)
+			snprintf(msg, sizeof msg, "announce *!%d", e->bind_port);
+		else
+			snprintf(msg, sizeof msg, "announce *!0");
+		if (ctl_write(fd, msg, EADDRINUSE) == 0)
+			e->state = 2;
+	}
 	if (e->state < 2) {   /* not announced yet: report the bind() intent */
 		struct sockaddr_in a;
 		memset(&a, 0, sizeof a);
@@ -611,6 +636,31 @@ int getaddrinfo(const char *host, const char *serv,
 
 	if (!host || !*host)
 		host = (hints && (hints->ai_flags & AI_PASSIVE)) ? "*" : "127.0.0.1";
+
+	/* RFC 6761 6.3: "localhost" and ANY name ending in ".localhost" are reserved
+	 * and must resolve to loopback. Every mainstream resolver synthesizes this;
+	 * 9front's /net/cs does not — /lib/ndb/local carries a literal "localhost"
+	 * entry and nothing else, so a subdomain never resolves.
+	 *
+	 * That is load-bearing, not pedantry: Ladybird's test harness serves its
+	 * HTTP tests from http://test-web-<random-uuid>.localhost:<port>/, a fresh
+	 * UUID per run, which cannot be pre-registered in ndb by construction. With
+	 * no answer the fetch never completes and every [LoadFromHttpServer] test
+	 * hangs until the harness times it out.
+	 *
+	 * Only the exact label is matched ("localhost" or "<something>.localhost"),
+	 * so a real host like "localhost.example.com" still goes to cs. */
+	{
+		unsigned long hl = strlen(host);
+		int is_localhost = (hl == 9 && strcmp(host, "localhost") == 0)
+		                || (hl > 10 && strcmp(host + hl - 10, ".localhost") == 0);
+		if (is_localhost && family != AF_INET6) {
+			char lb[64];
+			snprintf(lb, sizeof lb, "127.0.0.1!%s", port);
+			*res = ai_one(lb, socktype);
+			return *res ? 0 : EAI_MEMORY;
+		}
+	}
 
 	/* numeric ip + numeric port: no cs round-trip */
 	struct sockaddr_storage tmp;
