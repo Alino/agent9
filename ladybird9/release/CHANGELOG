@@ -14,6 +14,32 @@ v0.2.0
   correctness fixes). Still 1:1 with upstream — additive PLAN9 arms + new
   platform files only.
 
+  Stability + correctness pass (cc9 runtime + port):
+  - Images render. Skia's skcms_Parse overflowed a stack buffer under cc9 on
+    every ICC-profiled image, killing the ImageDecoder; ICC parsing now falls
+    back to sRGB on Plan 9. (Verified: local + remote PNG/JPEG render.)
+  - HTTPS fixed end to end. A struct-tm ABI regression made OpenSSL read valid
+    certs as expired; reverted, with SDL3 taking its own tm_gmtoff-free path.
+    Works with no --certificate flag (curl's built-in /sys/lib/tls/ca.pem).
+  - IPC shm hardening: adopt an already-attached #g pool instead of failing
+    "segments overlap"; never detach a pool a sibling thread is still reading
+    (use-after-detach crash); LRU-bound idle pools. These killed a family of
+    mid-navigation crashes (the "terminal text over the browser" overlay was a
+    helper suicide note drawn on the page — also fixed by keeping helper stderr
+    off the window).
+  - "write on closed pipe" is now SIGPIPE (EPIPE), not a fatal fault.
+  - Networking: RFC 6761 .localhost resolution; getsockname() reports the real
+    port after an ephemeral bind (Python test servers work). Concurrent curl
+    connections are capped so a heavy page can't exhaust the process table.
+  - UI: macOS-style Super chords (Super-L focus+select-all, Super-T/W/R);
+    Plan 9 line editing (Ctrl-A/E/U) in the address bar; address-bar descenders
+    no longer clipped.
+  - Real SDL3 3.2.24 (was a stub): all 9 GamepadAPI tests pass, matching macOS.
+
+  Known limitations: heavy client-rendered SPAs (e.g. youtube.com) do not
+  settle and can drive a small box out of memory; static and moderate sites
+  (Wikipedia, news, forums) render fully with images.
+
 v0.1.0
   First release. A real multi-process Ladybird (LadybirdBrowser/ladybird,
   pinned master 8cc5d7a5ff) cross-compiled to native Plan 9 amd64 a.out via
