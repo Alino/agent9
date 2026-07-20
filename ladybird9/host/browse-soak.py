@@ -85,21 +85,28 @@ def visit(url, idx, outdir, budget=45, shm_trace=False):
     # (ICMP up, port open, nothing served). So run it in the background here,
     # give it a fixed budget, then sweep unconditionally — the cleanup happens
     # even if we lose the connection or get killed mid-run.
+    # The load AND its cleanup run inside one detached note group (rfork s). A
+    # dropped connection sends a hangup note to the process group listen1 spawned
+    # us in; without rfork s that note kills the rc running the sleep, so the
+    # cleanup never fires and the browser is orphaned -- which is precisely how
+    # the box gets wedged. Detached, the sweep happens no matter what we do.
     cmd = (
         "cd %s\n"
         "ICU_DATA=%s/share/icu\n"
         "%s"
         "rm -f %s %s\n"
-        "@{ bin/ladybird --headless --certificate %s/share/ca.pem "
+        "@{ rfork s\n"
+        "   @{ bin/ladybird --headless --certificate %s/share/ca.pem "
         "--screenshot-path %s '%s' >%s >[2=1] } &\n"
+        "   sleep %d\n"
+        "   for(n in %s){ kill $n | rc }\n"
+        "} &\n"
         "sleep %d\n"
-        "for(n in %s){ kill $n | rc }\n"
-        "sleep 1\n"
         "echo ---SOAK-DONE---\n"
         "ls -l %s >[2=1]\n"
         "echo ---SOAK-LOG---\n"
         "cat %s\n"
-    ) % (PREFIX, PREFIX, "CC9_SHM_TRACE=1\n" if shm_trace else "", shot, log, PREFIX, shot, url, log, budget, HELPERS, shot, log)
+    ) % (PREFIX, PREFIX, "CC9_SHM_TRACE=1\n" if shm_trace else "", shot, log, PREFIX, shot, url, log, budget, HELPERS, budget + 8, shot, log)
     out = run(cmd, wait=budget + 120)
     m = re.search(r"---SOAK-DONE---(.*?)---SOAK-LOG---(.*)", out, re.S)
     if not m:
