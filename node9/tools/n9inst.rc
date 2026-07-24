@@ -1,0 +1,87 @@
+#!/bin/rc
+# n9inst.rc manifest [destroot] — install an npm dependency tree on 9front.
+#
+# Each manifest line is "<node_modules/path> <tarball-url>" (see lock2manifest.py).
+# Fetching with hget and unpacking with the native tar keeps the whole job in C:
+# npm's JS tar extraction costs ~0.3s per file, which is hours for a real tree.
+#
+# Re-runnable: an existing package directory is replaced, not merged.
+
+rfork en
+if(! ~ $#* 1 2){
+	echo 'usage: n9inst.rc manifest [destroot]' >[1=2]
+	exit usage
+}
+manifest=$1
+destroot=$2
+if(~ $#destroot 0)
+	destroot=`{pwd}
+
+tmp=/tmp/n9inst.$pid
+mkdir -p $tmp || exit mkdir
+fail=()
+n=0
+
+nl='
+'
+
+# one package: fetch, unpack, replace the destination directory.
+# rc has no `continue`, so the body runs in a subshell that can exit early.
+fn install1 {
+	url=$1
+	dest=$2
+	rm -rf $tmp/x
+	mkdir -p $tmp/x || exit mkdir
+	if(! hget $url >$tmp/pkg.tgz){
+		echo '  FAIL hget '^$url >[1=2]
+		exit fail
+	}
+	# gunzip and tar are separate steps on purpose: a truncated download fails
+	# in gunzip with a diagnosable error instead of a confusing tar error.
+	if(! gunzip <$tmp/pkg.tgz >$tmp/pkg.tar){
+		echo '  FAIL gunzip (truncated download?) '^$url >[1=2]
+		exit fail
+	}
+	if(! @{cd $tmp/x && tar xf $tmp/pkg.tar}){
+		echo '  FAIL tar '^$url >[1=2]
+		exit fail
+	}
+	# npm tarballs wrap everything in a single top directory, usually "package/"
+	# but not always — @types/node ships one named "node v22.19", space included.
+	# Glob it rather than parsing ls: ls quotes such names, a glob match is one word.
+	top=($tmp/x/*)
+	if(! ~ $#top 1){
+		echo '  FAIL tarball has '^$#top^' top-level entries' >[1=2]
+		exit fail
+	}
+	rm -rf $dest
+	mkdir -p $dest || exit mkdir
+	# dircp (tar over a pipe) copies dotfiles too, which mv+glob would miss.
+	if(! dircp $top $dest){
+		echo '  FAIL dircp -> '^$dest >[1=2]
+		exit fail
+	}
+	exit ''
+}
+
+lines=()
+ifs=$nl {
+	lines=`{cat $manifest}
+}
+
+for(line in $lines){
+	pkgpath=`{echo $line | awk '{print $1}'}
+	url=`{echo $line | awk '{print $2}'}
+	n=`{echo $n | awk '{print $1+1}'}
+	echo '['^$n^'] '^$pkgpath
+	if(! @{install1 $url $destroot/$pkgpath})
+		fail=($fail $pkgpath)
+}
+
+rm -rf $tmp
+if(! ~ $#fail 0){
+	echo 'FAILED ('^$#fail^'):' $fail >[1=2]
+	exit failed
+}
+echo 'installed '^$n^' packages into '^$destroot
+exit ''

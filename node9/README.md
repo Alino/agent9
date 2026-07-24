@@ -11,7 +11,15 @@ interpreter that sidesteps every one of those blockers — plus a Node-compatibl
 standard library (`lib/boot.js`, 46 builtin modules), native bindings over Plan 9
 `libsec` (crypto/TLS) and `libz` (gzip), and async networking over `/net`.
 
-## Status: npm works
+## Status: npm works — and so does the real `pi` coding agent
+
+Upstream **pi** (`@earendil-works/pi-coding-agent` 0.82.0, unmodified) installs and runs on
+bare-metal 9front: `pi --help`, `pi --version`, and a real provider turn over TLS. See
+**[PI.md](PI.md)** for the install recipe, what node9 had to grow (a `fetch`/Web layer, an
+ESM↔CommonJS bridge, `console`, `Intl`, real `stdin`), and what still doesn't work (the
+`bash` tool, the interactive TUI).
+
+## npm works
 
 The actual **npm 10.9.8** runs on node9. Verified end to end:
 

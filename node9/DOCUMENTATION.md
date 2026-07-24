@@ -102,9 +102,41 @@ only — see below), `child_process` (sync `os.exec`; no streamed stdio), `worke
 `vm`, `inspector`, `perf_hooks`, `v8`, `domain`, `dns` (lookup via `/net/cs`), `readline`,
 `async_hooks` (+ `AsyncLocalStorage`), `node:test` (minimal runner).
 
-**Globals provided:** `URL`/`URLSearchParams`, `TextEncoder`/`TextDecoder`,
-`AbortController`/`AbortSignal`, `Event`/`EventTarget`, `crypto` (Web Crypto: getRandomValues/
-randomUUID/subtle.digest), `setImmediate`, `structuredClone`, `Buffer`, `process`.
+**Globals provided:** `fetch`/`Headers`/`Response`/`Request`/`FormData`/`Blob`/`File`,
+`URL`/`URLSearchParams`, `TextEncoder`/`TextDecoder` (streaming-safe), `AbortController`/
+`AbortSignal` (incl. `any`/`timeout`), `Event`/`EventTarget`, `crypto` (Web Crypto:
+getRandomValues/randomUUID/subtle.digest), `console` (the full method family),
+`Intl` (`Segmenter`/`Collator`/`NumberFormat`/`DateTimeFormat`), `setImmediate`,
+`structuredClone`, `Buffer`, `process`.
+
+### The Web layer (`fetch` and friends)
+Node's `fetch` is undici, whose HTTP parser is **llhttp compiled to WebAssembly** — and
+QuickJS has no WebAssembly at all. node9 implements `fetch` directly over its own
+`http`/`https` client instead (TLS via libsec, chunked framing, transparent gzip), and
+ships a dispatcher-shaped **`undici` shim** as a builtin so `import "undici"` resolves to
+it rather than to the installed npm package (builtins win in both resolvers). Response
+bodies are exposed as a minimal `ReadableStream` — `getReader()` plus async iteration —
+which is what SSE consumers (every LLM provider client) actually use. Covered by
+`examples/fetchtest.js` (47 checks, including live TLS to the npm registry, streamed
+bodies, redirects, and abort).
+
+### ES modules and CommonJS
+QuickJS's loader only understands ES modules, so an `import` of a CommonJS file used to
+fail with *"Could not find export 'default'"*. The resolver now applies Node's own rule
+(`.mjs` = ESM, `.cjs` = CJS, otherwise the nearest `package.json` `"type"`) and bridges
+CommonJS through a generated ES module that re-exports what `require()` actually returned.
+Wildcard `"exports"` subpaths (`"./providers/*"`) resolve, `.json` imports with
+`with { type: "json" }` go to the engine's JSON module support, and the bare specifier
+`os` means `node:os` (the engine's own module is reachable as `qjs:os`). Covered by
+`examples/esm-interop-test.mjs`.
+
+### stdin, console, watchers
+`process.stdin` is a real `Readable` over fd 0 driven by the event loop (`examples/stdin-test.js`);
+it also has `setRawMode`, which writes `rawon`/`rawoff` to `/dev/consctl`. `console` gained
+the whole method family — a missing `console.error` is worse than a missing feature, since
+library catch blocks call it and the resulting `TypeError` replaces the error being
+reported. `fs.watch`/`watchFile` are **polled** (Plan 9 has no change notification), so the
+interval is the resolution. Covered by `examples/runtime-test.js` (51 checks).
 
 ### npm
 npm runs **as-is** — the real 10.9.8 release tree. node9 was made compatible with npm, not
@@ -184,9 +216,27 @@ packages from the registry and runs a real operation on each. **Result: 30 / 30 
   exact inspect output (or exact `AssertionError`/`ERR_*` message strings) will differ.
 - **Negative zero is not preserved** — `-0` evaluates to `+0` (`1/-0 === +Infinity`,
   `Object.is(0,-0) === true`). A kencc unary-negate/fold quirk; negligible real-world impact.
-- **No ICU/Intl**; `string_decoder`/`Buffer` cover UTF-8/UTF-16LE/latin1/base64/hex but not
-  every Node encoding edge case.
+- **No ICU.** `Intl` is a hand-written approximation: `Segmenter` implements the grapheme
+  rules that matter (combining marks, ZWJ, variation selectors, skin tones, regional pairs)
+  rather than the full UAX #29 tables; `Collator` is codepoint order (plus a numeric mode);
+  `NumberFormat`/`DateTimeFormat` are en-US/ISO only. Locale-correct output needs real ICU.
+- **No WebAssembly** — QuickJS has none, so `WebAssembly` is absent entirely. Packages that
+  ship a `.wasm` core (undici's llhttp parser, image codecs like `@silvia-odwyer/photon`)
+  need a JS path or a shim.
+- **No asymmetric crypto**: `createPrivateKey`/`createPublicKey`/`sign`/`verify` throw. That
+  rules out JWT-signed service-account auth (e.g. Google Vertex); API-key auth is unaffected.
+- **No TLS server**: `https.createServer` throws (`http.createServer` works), so OAuth
+  loopback-redirect flows that need HTTPS locally can't complete.
+- **`string_decoder`/`Buffer`** cover UTF-8/UTF-16LE/latin1/base64/hex but not every Node
+  encoding edge case.
 - **HTTP client has no socket timeout** — a hung server would hang the request.
+- **An ES-module entry point that uses top-level `await` advances one microtask per timer
+  deadline.** quickjs-libc's `js_std_await()` runs a single pending job per poll, and the
+  poll sleeps until the next timer, so a program that arms a long timer (say a 5-minute idle
+  timeout) and then awaits I/O at module top level appears to hang. `port/plan9/n9_cli.c`
+  has the fix (`n9_await` drains the whole job queue before polling) — it takes effect after
+  the next `qjs` rebuild. Entry modules without top-level await (the usual CLI shape) are
+  unaffected.
 
 ### Performance
 - node9 is an **interpreter** with a JS-implemented tar/fs path, so it is much slower than

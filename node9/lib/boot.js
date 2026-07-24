@@ -10,6 +10,11 @@
   function fileExists(p) { return os.stat(p)[1] === 0; }
   function isDir(p) { var r = os.stat(p); return r[1] === 0 && ((r[0].mode & (os.S_IFMT || 0xF000)) === (os.S_IFDIR || 0x4000)); }
   function readText(p) { var f = std.open(p, 'rb'); if (!f) return null; var s = f.readAsString(); f.close(); return s; }
+  // shared network trace, same switch as the http client's: NODE9_HTTPTRACE -> /tmp/n9http
+  function ntrace(s) {
+    if (!std.getenv('NODE9_HTTPTRACE')) return;
+    try { var f = std.open('/tmp/n9http', 'a'); if (f) { f.puts(s + '\n'); f.close(); } } catch (e) {}
+  }
   // builtin-only require, used internally by the resolver (path, etc.) and as fallback
   function requireBuiltin(name) {
     if (cache[name]) return cache[name].exports;
@@ -121,12 +126,32 @@
     return null;
   }
   var ESM_COND = ['import', 'module', 'node', 'default', 'require'];
+  // exports subpath lookup, including "./providers/*" patterns (pi-ai and friends ship
+  // wildcard subpaths; without this every `pkg/sub/name` import misses the exports map
+  // and falls back to a path that does not exist because the real file is under dist/).
+  function exportsSubpath(e2, sub) {
+    var key = './' + sub;
+    if (e2[key] !== undefined) return condPick(e2[key], ESM_COND);
+    var best = null, bestPrefix = -1, captured = null;
+    for (var k in e2) {
+      var star = k.indexOf('*');
+      if (star < 0) continue;
+      var pre = k.slice(0, star), post = k.slice(star + 1);
+      if (key.length < pre.length + post.length) continue;
+      if (key.slice(0, pre.length) !== pre) continue;
+      if (post && key.slice(key.length - post.length) !== post) continue;
+      if (pre.length > bestPrefix) { bestPrefix = pre.length; best = e2[k]; captured = key.slice(pre.length, key.length - post.length); }
+    }
+    if (best === null) return null;
+    var t = condPick(best, ESM_COND);
+    return t ? t.split('*').join(captured) : null;
+  }
   function pkgMainESM(pkgdir, sub) {
     var pj = pkgdir + '/package.json', j = {};
     if (fileExists(pj)) { try { j = JSON.parse(readText(pj)); } catch (e) { j = {}; } }
     var target = null, e2 = j.exports;
     if (e2) {
-      if (sub) { var key = './' + sub; if (e2[key] !== undefined) target = condPick(e2[key], ESM_COND); }
+      if (sub) { if (typeof e2 !== 'string') target = exportsSubpath(e2, sub); }
       else { if (typeof e2 === 'string') target = e2; else target = condPick(e2['.'] !== undefined ? e2['.'] : e2, ESM_COND); }
     }
     if (!target && !sub) target = j.module || j.main || 'index.js';
@@ -166,6 +191,51 @@
       var up = P0().dirname(dir); if (up === dir) return null; dir = up;
     }
   }
+  // Node's own rule: .mjs is ESM, .cjs is CJS, anything else follows the nearest
+  // package.json "type".
+  function isESMFile(file) {
+    if (/\.mjs$/.test(file)) return true;
+    if (/\.cjs$/.test(file)) return false;
+    if (!/\.js$/.test(file)) return false;
+    var dir = P0().dirname(file);
+    for (;;) {
+      var pj = dir + '/package.json';
+      if (fileExists(pj)) { try { return JSON.parse(readText(pj)).type === 'module'; } catch (e) { return false; } }
+      var up = P0().dirname(dir); if (up === dir) return false; dir = up;
+    }
+  }
+  function hashName(s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) & 0x7fffffff;
+    return h.toString(36);
+  }
+  // QuickJS's loader only understands ES modules, so an `import` of a CommonJS file
+  // parses the file as a module and finds no exports at all ("Could not find export
+  // 'default'"). Bridge it the way the node: builtins are bridged: require the module
+  // here, then generate a real ES module that re-exports what it actually has.
+  globalThis.__n9_requireCJS = function (abs) { return loadFile(abs); };
+  function cjsShimFor(file) {
+    var sdir = '/tmp/n9esm'; os.mkdir(sdir, 0x1ff);
+    var base = file.replace(/[^a-zA-Z0-9]/g, '_');
+    if (base.length > 100) base = base.slice(base.length - 100);
+    var path = sdir + '/cjs_' + hashName(file) + '_' + base + '.mjs';
+    if (!fileExists(path)) {
+      var mod = null;
+      try { mod = loadFile(file); } catch (e) { mod = null; }   // default-only shim if it throws
+      var src = 'const _m = globalThis.__n9_requireCJS(' + JSON.stringify(file) + ');\n'
+        + 'export default (_m && _m.__esModule && _m.default !== undefined) ? _m.default : _m;\n';
+      if (mod && (typeof mod === 'object' || typeof mod === 'function')) {
+        var seen = {};
+        for (var k in mod) {
+          if (k === 'default' || seen[k] || !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k)) continue;
+          seen[k] = 1;
+          src += 'export const ' + k + ' = _m[' + JSON.stringify(k) + '];\n';
+        }
+      }
+      var f = std.open(path, 'w'); if (f) { f.puts(src); f.close(); }
+    }
+    return path;
+  }
   function esmShimFor(name) {
     var sdir = '/tmp/n9esm'; os.mkdir(sdir, 0x1ff);
     var safe = name.replace(/[^a-zA-Z0-9]/g, '_'), path = sdir + '/' + safe + '.mjs';
@@ -179,7 +249,11 @@
   }
   globalThis.__n9_resolve = function (base, name) {
     try {
-      if (name === 'std' || name === 'os') return name;                 // quickjs native modules
+      // quickjs's native modules. "os" deliberately is NOT one of them: Node code that
+      // imports "os" means node:os, and shadowing it costs every homedir()/platform()
+      // import. Reach the engine's own module as "qjs:os" if you really need it.
+      if (name === 'std' || name === 'qjs:std') return 'std';
+      if (name === 'qjs:os') return 'os';
       var bare = name.indexOf('node:') === 0 ? name.slice(5) : name;
       if (factories[bare]) return esmShimFor(bare);                     // node builtin -> ESM shim
       var baseDir = (base && base.charAt(0) === '/') ? P0().dirname(base) : dirStack[0];
@@ -187,6 +261,9 @@
       if (name.charAt(0) === '#') file = resolveImportsField(name, base && base.charAt(0) === '/' ? base : (baseDir + '/x'));
       else if (name.charAt(0) === '.' || name.charAt(0) === '/') file = resolveFileESM(name, baseDir);
       else file = resolvePackageESM(name, baseDir);
+      // .json imports carry `with { type: "json" }` and are handled by the engine's own
+      // JSON module support, so only real CommonJS JavaScript gets bridged.
+      if (file && /\.(js|cjs)$/.test(file) && !isESMFile(file)) return cjsShimFor(file);
       return file || name;
     } catch (e) { return name; }
   };
@@ -720,7 +797,48 @@
     };
     p.stdout = mkStream(std.out, 1);
     p.stderr = mkStream(std.err, 2);
-    p.stdin = (function () { var s = new EE(); s.readable = true; s.fd = 0; s.isTTY = false; s.read = function () { return null; }; s.on = EE.prototype.on; s.resume = function () { return s; }; s.pause = function () { return s; }; s.setEncoding = function () { return s; }; s.pipe = function (d) { return d; }; return s; })();
+    /* Real stdin: a Readable over fd 0, read through the event loop the same way sockets
+       are. It used to be an EventEmitter that never emitted, so `prog <file` and `... | prog`
+       silently saw no input at all — programs that read stdin when it is not a TTY (any
+       CLI with a --print/pipe mode) just exited with nothing. */
+    p.stdin = (function () {
+      var stream = require('stream'), Buffer = require('buffer').Buffer;
+      var s = new stream.Readable();
+      var rbuf = null, readerOn = false, done = false;
+      s.fd = 0; s.isTTY = false;
+      function stop() { if (readerOn) { try { os.setReadHandler(0, null); } catch (e) {} readerOn = false; } }
+      s._read = function () {
+        if (readerOn || done) return;
+        readerOn = true;
+        if (!rbuf) rbuf = new ArrayBuffer(65536);
+        os.setReadHandler(0, function () {
+          var n;
+          try { n = os.read(0, rbuf, 0, 65536); } catch (e) { n = -1; }
+          if (n > 0) {
+            var b = Buffer.alloc(n), src = new Uint8Array(rbuf, 0, n);
+            for (var i = 0; i < n; i++) b[i] = src[i];
+            if (s.push(b) === false) stop();
+          } else {
+            stop(); done = true;
+            if (n < 0) s.destroy(new Error('stdin read error')); else s.push(null);
+          }
+        });
+      };
+      // Plan 9 puts the terminal in raw mode by writing to /dev/consctl, and the control
+      // file must stay open for the setting to hold.
+      var ctl = -1;
+      s.setRawMode = function (on) {
+        try {
+          if (on) { if (ctl < 0) ctl = os.open('/dev/consctl', os.O_WRONLY); if (ctl >= 0) os.write(ctl, new TextEncoder().encode('rawon').buffer, 0, 5); }
+          else if (ctl >= 0) { os.write(ctl, new TextEncoder().encode('rawoff').buffer, 0, 6); os.close(ctl); ctl = -1; }
+        } catch (e) {}
+        s.isRaw = !!on;
+        return s;
+      };
+      s.isRaw = false;
+      s.unref = function () { return s; }; s.ref = function () { return s; };
+      return s;
+    })();
     p.exitCode = 0;
     m.exports = p;
   });
@@ -977,6 +1095,74 @@
     exports.chmod = cbify(exports.chmodSync); exports.chown = cbify(exports.chownSync); exports.utimes = cbify(exports.utimesSync);
     exports.mkdtemp = cbify(exports.mkdtempSync); exports.open = function (path, flags, mode, cb) { if (typeof flags === 'function') { cb = flags; flags = 'r'; mode = undefined; } else if (typeof mode === 'function') { cb = mode; mode = undefined; } nextTick(function () { try { cb(null, exports.openSync(path, flags, mode)); } catch (e) { cb(e); } }); };
     exports.close = cbify(exports.closeSync); exports.fsync = cbify(exports.fsyncSync); exports.fdatasync = cbify(exports.fdatasyncSync);
+
+    /* watch / watchFile — polled. Plan 9 has no change notification, so the interval is
+       the resolution: callers that need faster feedback pass {interval}. Watchers are
+       unref-ed in spirit (a bare timer would keep the loop alive), so close() matters. */
+    var WATCH_INTERVAL = 2000;
+    function snapshot(path, recursiveDir) {
+      try {
+        var st = exports.statSync(path);
+        if (!st.isDirectory()) return { kind: 'file', mtime: +st.mtimeMs, size: st.size };
+        var names = exports.readdirSync(path).slice().sort();
+        return { kind: 'dir', names: names.join(' '), mtime: +st.mtimeMs };
+      } catch (e) { return { kind: 'gone' }; }
+    }
+    function FSWatcher(path, opts, listener) {
+      require('events').call(this);
+      var self = this;
+      this._path = path;
+      this._closed = false;
+      var prev = snapshot(path);
+      var interval = (opts && opts.interval) || WATCH_INTERVAL;
+      if (listener) this.on('change', listener);
+      this._timer = globalThis.setInterval(function () {
+        if (self._closed) return;
+        var now = snapshot(path);
+        if (now.kind !== prev.kind || now.mtime !== prev.mtime || now.size !== prev.size || now.names !== prev.names) {
+          var evt = (now.kind === 'gone' || prev.kind === 'gone' || now.names !== prev.names) ? 'rename' : 'change';
+          prev = now;
+          self.emit('change', evt, require('path').basename(path));
+        }
+      }, interval);
+    }
+    require('util').inherits(FSWatcher, require('events'));
+    FSWatcher.prototype.close = function () { this._closed = true; if (this._timer) { globalThis.clearInterval(this._timer); this._timer = null; } this.emit('close'); };
+    FSWatcher.prototype.ref = function () { return this; };
+    FSWatcher.prototype.unref = function () { return this; };
+    exports.FSWatcher = FSWatcher;
+    exports.watch = function (path, opts, listener) {
+      if (typeof opts === 'function') { listener = opts; opts = undefined; }
+      return new FSWatcher(path, opts, listener);
+    };
+    var watchFiles = {};
+    exports.watchFile = function (path, opts, listener) {
+      if (typeof opts === 'function') { listener = opts; opts = undefined; }
+      var key = String(path);
+      exports.unwatchFile(key, null);
+      var prev = null;
+      try { prev = exports.statSync(key); } catch (e) { prev = null; }
+      var interval = (opts && opts.interval) || 5007;
+      var timer = globalThis.setInterval(function () {
+        var cur = null;
+        try { cur = exports.statSync(key); } catch (e) { cur = null; }
+        var changed = (!!cur !== !!prev) || (cur && prev && (+cur.mtimeMs !== +prev.mtimeMs || cur.size !== prev.size));
+        var before = prev; prev = cur;
+        if (changed) listener(cur || { mtimeMs: 0, size: 0 }, before || { mtimeMs: 0, size: 0 });
+      }, interval);
+      watchFiles[key] = (watchFiles[key] || []).concat([{ timer: timer, listener: listener }]);
+      return exports;
+    };
+    exports.unwatchFile = function (path, listener) {
+      var key = String(path), list = watchFiles[key];
+      if (!list) return;
+      var keep = [];
+      for (var i = 0; i < list.length; i++) {
+        if (listener && list[i].listener !== listener) { keep.push(list[i]); continue; }
+        globalThis.clearInterval(list[i].timer);
+      }
+      if (keep.length) watchFiles[key] = keep; else delete watchFiles[key];
+    };
     exports.read = function (fd, buffer, offset, length, position, cb) { nextTick(function () { var n; try { n = exports.readSync(fd, buffer, offset, length, position); } catch (e) { cb(e); return; } cb(null, n, buffer); }); };
     exports.write = function (fd, buffer, a, b, c, cb) { var args = [fd, buffer, a, b, c]; while (typeof args[args.length - 1] === 'undefined') args.pop(); if (typeof args[args.length - 1] === 'function') cb = args.pop(); nextTick(function () { var n; try { n = exports.writeSync.apply(null, args); } catch (e) { cb(e); return; } cb(null, n, buffer); }); };
 
@@ -1280,6 +1466,7 @@
 
     // low-level synchronous dial via /net/cs; returns {fd, ctl} or null
     function dialTcp(proto, host, port) {
+      ntrace('DIAL ' + proto + '!' + host + '!' + port);
       var cs = os.open('/net/cs', os.O_RDWR);
       if (cs < 0) return null;
       wrStr(cs, proto + '!' + host + '!' + port);
@@ -1294,6 +1481,7 @@
       var base = clonefile.replace(/\/clone$/, '');
       var fd = os.open(base + '/' + conn + '/data', os.O_RDWR);
       if (fd < 0) { os.close(ctl); return null; }
+      ntrace('DIAL ok fd=' + fd);
       return { fd: fd, ctl: ctl };
     }
     exports._dial = dialTcp;
@@ -1440,11 +1628,15 @@
       var servername = opts.servername || (net.isIP(host) ? '' : host);
       var sock = new net.Socket();
       if (secureConnectListener) sock.once('secureConnect', secureConnectListener);
+      ntrace('TLS connect queued ' + host + ':' + port);
       nextTick(function () {
+        ntrace('TLS tick ' + host);
         var c = net._dial('tcp', host, port);
         if (!c) { sock.emit('error', new Error('tls: connect failed ' + host + ':' + port)); return; }
         var tfd;
+        ntrace('TLS handshake start ' + host);
         try { tfd = nat.tlsClient(c.fd, servername); } catch (e) { tfd = -1; }
+        ntrace('TLS handshake done tfd=' + tfd);
         if (tfd < 0) { try { os.close(c.fd); } catch (e) {} try { os.close(c.ctl); } catch (e) {} sock.emit('error', new Error('tls: handshake failed with ' + host)); return; }
         // keep the raw tcp fd open (libsec's tls device reads/writes through it); use tfd for cleartext
         sock._rawfd = c.fd;
@@ -1744,6 +1936,46 @@
     exports.request = function (a, b, c) { return http._mkRequest('https', a, b, c); };
     exports.get = function (a, b, c) { var r = exports.request(a, b, c); r.end(); return r; };
     exports.Agent = function () {}; exports.globalAgent = new exports.Agent();
+    // A TLS *server* needs a certificate chain and libsec's server-side handshake, which
+    // the native bridge does not expose. http.createServer is the working half.
+    exports.createServer = function () { throw new Error('https.createServer is not supported on node9 (no TLS server); use http.createServer'); };
+  });
+
+  /* ---------------- undici (dispatcher-shaped shim over the global fetch) ----------------
+     undici's real transport is llhttp compiled to WebAssembly, which QuickJS cannot run.
+     Apps import undici only to tune connection pooling/proxying and to install its fetch;
+     node9's fetch already rides http/https over /net, so the dispatchers here are inert
+     bookkeeping objects and install() is a no-op. Builtins win over node_modules in both
+     resolvers, so an installed `undici` package never loads. */
+  define('undici', function (m, exports) {
+    var EventEmitter = require('events');
+    function Dispatcher(origin, options) { EventEmitter.call(this); this.origin = origin; this.options = options || {}; this.closed = false; this.destroyed = false; }
+    Dispatcher.prototype = Object.create(EventEmitter.prototype);
+    Dispatcher.prototype.constructor = Dispatcher;
+    Dispatcher.prototype.close = function (cb) { this.closed = true; if (cb) { cb(null); return; } return Promise.resolve(); };
+    Dispatcher.prototype.destroy = function (err, cb) { this.destroyed = this.closed = true; if (typeof err === 'function') { cb = err; err = null; } if (cb) { cb(null); return; } return Promise.resolve(); };
+    Dispatcher.prototype.dispatch = function () { throw new Error('undici.dispatch is not supported on node9 (use fetch)'); };
+    Dispatcher.prototype.request = function () { return Promise.reject(new Error('undici.request is not supported on node9 (use fetch)')); };
+    function subclass() {
+      var C = function (origin, options) { Dispatcher.call(this, origin, options); };
+      C.prototype = Object.create(Dispatcher.prototype); C.prototype.constructor = C; return C;
+    }
+    exports.Dispatcher = Dispatcher;
+    exports.Client = subclass(); exports.Pool = subclass(); exports.BalancedPool = subclass();
+    exports.Agent = subclass(); exports.ProxyAgent = subclass(); exports.EnvHttpProxyAgent = subclass();
+    exports.RetryAgent = subclass(); exports.MockAgent = subclass();
+    var globalDispatcher = new exports.Agent();
+    exports.setGlobalDispatcher = function (d) { globalDispatcher = d; return exports; };
+    exports.getGlobalDispatcher = function () { return globalDispatcher; };
+    exports.install = function () {};   // globalThis.fetch is already node9's
+    exports.uninstall = function () {};
+    exports.fetch = function (a, b) { return globalThis.fetch(a, b); };
+    exports.Headers = globalThis.Headers; exports.Response = globalThis.Response; exports.Request = globalThis.Request;
+    exports.FormData = globalThis.FormData; exports.File = globalThis.File; exports.Blob = globalThis.Blob;
+    function UndiciError(msg) { Error.call(this, msg); this.message = msg; this.name = 'UndiciError'; }
+    UndiciError.prototype = Object.create(Error.prototype); UndiciError.prototype.constructor = UndiciError;
+    exports.errors = { UndiciError: UndiciError, RequestAbortedError: UndiciError, ConnectTimeoutError: UndiciError, HeadersTimeoutError: UndiciError, BodyTimeoutError: UndiciError, ResponseStatusCodeError: UndiciError, SocketError: UndiciError };
+    exports.interceptors = {};
   });
 
   /* ---------------- tty / string_decoder / zlib / crypto (stubs/minimal) ---------------- */
@@ -1937,7 +2169,19 @@
     };
     exports.Hash = Hash; exports.Hmac = Hmac;
     exports.constants = {};
-    exports.webcrypto = { getRandomValues: function (ta) { var u = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength); nat.randomBytes(u); return ta; } };
+    exports.getRandomValues = function (ta) { var u = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength); nat.randomBytes(u); return ta; };
+    exports.webcrypto = { getRandomValues: exports.getRandomValues };
+    // Asymmetric keys need X.509/PKCS#8 parsing and RSA/EC signing, which libsec does not
+    // expose through the node9 native bridge. Fail loudly instead of returning something
+    // that silently produces invalid signatures.
+    function noAsym(what) { return function () { throw new Error('crypto.' + what + ' is not supported on node9 (no asymmetric key support)'); }; }
+    exports.createPrivateKey = noAsym('createPrivateKey');
+    exports.createPublicKey = noAsym('createPublicKey');
+    exports.createSign = noAsym('createSign');
+    exports.createVerify = noAsym('createVerify');
+    exports.sign = noAsym('sign');
+    exports.verify = noAsym('verify');
+    exports.generateKeyPairSync = noAsym('generateKeyPairSync');
   });
 
   /* ---------------- legacy `constants` (graceful-fs et al.) ---------------- */
@@ -2320,8 +2564,21 @@
     globalThis.TextEncoder.prototype.encodeInto = function (s, dest) { var b = __B.from(String(s), 'utf8'); var n = Math.min(b.length, dest.length); for (var i = 0; i < n; i++) dest[i] = b[i]; return { read: s.length, written: n }; };
   }
   if (!globalThis.TextDecoder) {
-    globalThis.TextDecoder = function (enc) { this.encoding = (enc || 'utf-8').toLowerCase(); this.fatal = false; };
-    globalThis.TextDecoder.prototype.decode = function (buf) { if (buf == null) return ''; var u = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf.buffer || buf); return __B.from(u).toString(this.encoding === 'utf-8' || this.encoding === 'utf8' ? 'utf8' : 'latin1'); };
+    globalThis.TextDecoder = function (enc) { this.encoding = (enc || 'utf-8').toLowerCase(); this.fatal = false; this.__sd = null; };
+    // decode(chunk, {stream:true}) must hold a split multi-byte sequence across calls —
+    // SSE readers decode arbitrary socket chunks, so a naive per-chunk toString() mangles
+    // any non-ASCII character that straddles a chunk boundary. string_decoder does that.
+    globalThis.TextDecoder.prototype.decode = function (buf, opts) {
+      var utf8 = this.encoding === 'utf-8' || this.encoding === 'utf8';
+      var streaming = !!(opts && opts.stream);
+      var u = buf == null ? null : ((buf instanceof Uint8Array) ? buf : new Uint8Array(buf.buffer || buf));
+      if (!utf8) return u == null ? '' : __B.from(u).toString('latin1');
+      if (!streaming && !this.__sd) return u == null ? '' : __B.from(u).toString('utf8');
+      if (!this.__sd) this.__sd = new (require('string_decoder').StringDecoder)('utf8');
+      var out = u == null ? '' : this.__sd.write(__B.from(u));
+      if (!streaming) { out += this.__sd.end(); this.__sd = null; }
+      return out;
+    };
   }
 
   /* Event / EventTarget / AbortController / AbortSignal */
@@ -2339,11 +2596,509 @@
     AbortSignal.prototype.throwIfAborted = function () { if (this.aborted) throw (this.reason || new Error('This operation was aborted')); };
     AbortSignal.abort = function (reason) { var s = new AbortSignal(); s.aborted = true; s.reason = reason || new Error('This operation was aborted'); return s; };
     AbortSignal.timeout = function (ms) { var s = new AbortSignal(); globalThis.setTimeout(function () { s.aborted = true; s.reason = new Error('TimeoutError'); s.dispatchEvent(new Event('abort')); }, ms); return s; };
+    AbortSignal.any = function (signals) {
+      var out = new AbortSignal(), list = Array.prototype.slice.call(signals || []);
+      function fire(reason) { if (out.aborted) return; out.aborted = true; out.reason = reason || new Error('This operation was aborted'); out.dispatchEvent(new Event('abort')); }
+      for (var i = 0; i < list.length; i++) {
+        var s = list[i]; if (!s) continue;
+        if (s.aborted) { fire(s.reason); break; }
+        (function (sig) { sig.addEventListener('abort', function () { fire(sig.reason); }); })(s);
+      }
+      return out;
+    };
     globalThis.AbortSignal = AbortSignal;
     var AbortController = function () { this.signal = new AbortSignal(); };
     AbortController.prototype.abort = function (reason) { if (this.signal.aborted) return; this.signal.aborted = true; this.signal.reason = reason || new Error('This operation was aborted'); this.signal.dispatchEvent(new Event('abort')); };
     globalThis.AbortController = AbortController;
   }
+
+  /* ---------------- fetch / Headers / Response / Request (Web layer over http+https) ----------------
+     Node gets these from undici (llhttp in WebAssembly). QuickJS has no WebAssembly, so this
+     is a direct implementation over node9's http/https client, which already does TLS,
+     chunked framing and transparent gzip. Response bodies are exposed as a minimal
+     ReadableStream (getReader + async iteration) because that is how SSE consumers read. */
+  if (!globalThis.fetch) (function () {
+    var Bf = require('buffer').Buffer;
+
+    function Headers(init) {
+      this._m = {};                       // lowercased name -> {n: original name, v: value}
+      if (!init) return;
+      if (init instanceof Headers) { for (var k in init._m) this._m[k] = { n: init._m[k].n, v: init._m[k].v }; return; }
+      if (Array.isArray(init)) { for (var i = 0; i < init.length; i++) this.append(init[i][0], init[i][1]); return; }
+      for (var k2 in init) {
+        var v = init[k2];
+        if (v === undefined || v === null) continue;
+        if (Array.isArray(v)) { for (var j = 0; j < v.length; j++) this.append(k2, v[j]); } else this.append(k2, v);
+      }
+    }
+    Headers.prototype.append = function (n, v) { var lk = String(n).toLowerCase(), e = this._m[lk]; if (e) e.v = e.v + ', ' + String(v); else this._m[lk] = { n: String(n), v: String(v) }; };
+    Headers.prototype.set = function (n, v) { this._m[String(n).toLowerCase()] = { n: String(n), v: String(v) }; };
+    Headers.prototype.get = function (n) { var e = this._m[String(n).toLowerCase()]; return e ? e.v : null; };
+    Headers.prototype.has = function (n) { return Object.prototype.hasOwnProperty.call(this._m, String(n).toLowerCase()); };
+    Headers.prototype['delete'] = function (n) { delete this._m[String(n).toLowerCase()]; };
+    Headers.prototype.forEach = function (fn, thisArg) { for (var k in this._m) fn.call(thisArg, this._m[k].v, k, this); };
+    Headers.prototype.entries = function () { var a = []; for (var k in this._m) a.push([k, this._m[k].v]); return a[Symbol.iterator](); };
+    Headers.prototype.keys = function () { var a = []; for (var k in this._m) a.push(k); return a[Symbol.iterator](); };
+    Headers.prototype.values = function () { var a = []; for (var k in this._m) a.push(this._m[k].v); return a[Symbol.iterator](); };
+    Headers.prototype[Symbol.iterator] = Headers.prototype.entries;
+    Headers.prototype.getSetCookie = function () { var e = this._m['set-cookie']; return e ? [e.v] : []; };
+
+    function toU8(c) { if (c instanceof Uint8Array) return c; var b = Bf.from(c); return new Uint8Array(b.buffer, b.byteOffset, b.length); }
+
+    // Minimal ReadableStream over a node9 stream.Readable: enough for getReader()/for-await.
+    function webStreamFrom(rs) {
+      var q = [], waiters = [], ended = false, failed = null;
+      function settle() {
+        while (waiters.length && (q.length || ended || failed)) {
+          var w = waiters.shift();
+          if (q.length) w.res({ value: q.shift(), done: false });
+          else if (failed) w.rej(failed);
+          else w.res({ value: undefined, done: true });
+        }
+        if (q.length < 8 && rs.resume) { try { rs.resume(); } catch (e) {} }
+      }
+      rs.on('data', function (c) { q.push(toU8(c)); if (q.length > 16 && rs.pause) { try { rs.pause(); } catch (e) {} } settle(); });
+      rs.on('end', function () { ended = true; settle(); });
+      rs.on('error', function (e) { failed = e; settle(); });
+      function read() {
+        if (q.length) return Promise.resolve({ value: q.shift(), done: false });
+        if (failed) { var e = failed; failed = null; ended = true; return Promise.reject(e); }
+        if (ended) return Promise.resolve({ value: undefined, done: true });
+        return new Promise(function (res, rej) { waiters.push({ res: res, rej: rej }); });
+      }
+      function cancel() { ended = true; try { if (rs.destroy) rs.destroy(); } catch (e) {} settle(); return Promise.resolve(); }
+      return mkStream(read, cancel);
+    }
+    function webStreamOf(u8) {
+      var sent = false;
+      return mkStream(function () { if (sent) return Promise.resolve({ value: undefined, done: true }); sent = true; return Promise.resolve({ value: u8, done: false }); },
+        function () { sent = true; return Promise.resolve(); });
+    }
+    function mkStream(read, cancel) {
+      var s = {
+        locked: false,
+        getReader: function () { s.locked = true; return { read: read, cancel: cancel, releaseLock: function () { s.locked = false; }, closed: Promise.resolve() }; },
+        cancel: cancel,
+        tee: function () { throw new Error('ReadableStream.tee is not supported on node9'); }
+      };
+      s[Symbol.asyncIterator] = function () { return { next: read, 'return': function () { return cancel().then(function () { return { value: undefined, done: true }; }); } }; };
+      return s;
+    }
+
+    function FormData() { this._e = []; }
+    FormData.prototype.append = function (name, value, filename) { this._e.push({ name: String(name), value: value, filename: filename || (value && value.name) }); };
+    FormData.prototype.set = function (name, value, filename) { this['delete'](name); this.append(name, value, filename); };
+    FormData.prototype.get = function (name) { for (var i = 0; i < this._e.length; i++) if (this._e[i].name === String(name)) return this._e[i].value; return null; };
+    FormData.prototype.getAll = function (name) { return this._e.filter(function (e) { return e.name === String(name); }).map(function (e) { return e.value; }); };
+    FormData.prototype.has = function (name) { return this.get(name) !== null; };
+    FormData.prototype['delete'] = function (name) { this._e = this._e.filter(function (e) { return e.name !== String(name); }); };
+    FormData.prototype.forEach = function (fn, thisArg) { this._e.forEach(function (e) { fn.call(thisArg, e.value, e.name, this); }, this); };
+    FormData.prototype.entries = function () { return this._e.map(function (e) { return [e.name, e.value]; })[Symbol.iterator](); };
+    FormData.prototype.keys = function () { return this._e.map(function (e) { return e.name; })[Symbol.iterator](); };
+    FormData.prototype.values = function () { return this._e.map(function (e) { return e.value; })[Symbol.iterator](); };
+    FormData.prototype[Symbol.iterator] = FormData.prototype.entries;
+
+    function multipart(fd, headers) {
+      var boundary = '----node9FormBoundary' + Math.floor(Math.random() * 1e16).toString(36);
+      var parts = [];
+      for (var i = 0; i < fd._e.length; i++) {
+        var e = fd._e[i], head = '--' + boundary + '\r\nContent-Disposition: form-data; name="' + e.name + '"';
+        var isFile = e.value && e.value.__bytes !== undefined;
+        if (isFile || e.filename) head += '; filename="' + (e.filename || 'blob') + '"';
+        if (isFile && e.value.type) head += '\r\nContent-Type: ' + e.value.type;
+        head += '\r\n\r\n';
+        parts.push(Bf.from(head, 'utf8'));
+        parts.push(isFile ? Bf.from(e.value.__bytes) : Bf.from(String(e.value), 'utf8'));
+        parts.push(Bf.from('\r\n', 'utf8'));
+      }
+      parts.push(Bf.from('--' + boundary + '--\r\n', 'utf8'));
+      if (headers && !headers.has('content-type')) headers.set('content-type', 'multipart/form-data; boundary=' + boundary);
+      return Bf.concat(parts);
+    }
+
+    function bodyToBytes(body, headers) {
+      if (body === undefined || body === null) return null;
+      if (typeof body === 'string') return Bf.from(body, 'utf8');
+      if (body instanceof FormData) return multipart(body, headers);
+      if (Bf.isBuffer(body)) return body;
+      if (body instanceof Uint8Array) return Bf.from(body.buffer, body.byteOffset, body.byteLength);
+      if (body instanceof ArrayBuffer) return Bf.from(new Uint8Array(body));
+      if (globalThis.URLSearchParams && body instanceof globalThis.URLSearchParams) {
+        if (headers && !headers.has('content-type')) headers.set('content-type', 'application/x-www-form-urlencoded;charset=UTF-8');
+        return Bf.from(body.toString(), 'utf8');
+      }
+      if (body && typeof body.arrayBuffer === 'function' && body.__bytes) return Bf.from(body.__bytes);   // Blob
+      throw new TypeError('fetch: unsupported body type (strings, bytes, URLSearchParams and Blob only)');
+    }
+
+    function Body(src) {
+      this.bodyUsed = false;
+      this._buf = null; this._stream = null;
+      if (src == null) this._buf = Bf.alloc(0);
+      else if (typeof src === 'string') this._buf = Bf.from(src, 'utf8');
+      else if (Bf.isBuffer(src) || src instanceof Uint8Array) this._buf = Bf.from(src);
+      else if (typeof src.getReader === 'function') this._stream = src;
+      else if (typeof src.on === 'function') this._stream = webStreamFrom(src);
+      else this._buf = Bf.from(String(src), 'utf8');
+    }
+    Body.prototype._collect = function () {
+      var self = this;
+      if (this.bodyUsed) return Promise.reject(new TypeError('Body is unusable: Body has already been read'));
+      this.bodyUsed = true;
+      if (this._buf) return Promise.resolve(this._buf);
+      var reader = this._stream.getReader(), parts = [];
+      return (function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) { self._buf = Bf.concat(parts.map(function (p) { return Bf.from(p); })); return self._buf; }
+          parts.push(r.value); return pump();
+        });
+      })();
+    };
+    Body.prototype.text = function () { return this._collect().then(function (b) { return b.toString('utf8'); }); };
+    Body.prototype.json = function () { return this.text().then(function (t) { return JSON.parse(t); }); };
+    Body.prototype.bytes = function () { return this._collect().then(function (b) { return new Uint8Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.length)); }); };
+    Body.prototype.arrayBuffer = function () { return this.bytes().then(function (u) { return u.buffer; }); };
+    Object.defineProperty(Body.prototype, 'body', {
+      configurable: true,
+      get: function () { if (!this._stream) this._stream = webStreamOf(new Uint8Array(this._buf)); return this._stream; }
+    });
+
+    function Response(body, init) {
+      init = init || {};
+      Body.call(this, body === undefined ? null : body);
+      this.status = init.status === undefined ? 200 : init.status;
+      this.statusText = init.statusText === undefined ? '' : String(init.statusText);
+      this.headers = (init.headers instanceof Headers) ? init.headers : new Headers(init.headers);
+      this.ok = this.status >= 200 && this.status < 300;
+      this.url = init.url || '';
+      this.redirected = !!init.redirected;
+      this.type = 'basic';
+    }
+    Response.prototype = Object.create(Body.prototype);
+    Response.prototype.constructor = Response;
+    Response.prototype.clone = function () {
+      if (this._stream && !this._buf) throw new TypeError('Response.clone of a streaming body is not supported on node9');
+      return new Response(this._buf, { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url, redirected: this.redirected });
+    };
+    Response.json = function (data, init) {
+      var r = new Response(JSON.stringify(data), init);
+      if (!r.headers.has('content-type')) r.headers.set('content-type', 'application/json');
+      return r;
+    };
+    Response.error = function () { var r = new Response(null, { status: 0 }); r.type = 'error'; return r; };
+
+    function Request(input, init) {
+      init = init || {};
+      var from = (input && typeof input === 'object' && input.url !== undefined) ? input : null;
+      this.url = from ? from.url : String(input);
+      this.method = String(init.method || (from && from.method) || 'GET').toUpperCase();
+      this.headers = new Headers(init.headers || (from && from.headers));
+      this.signal = init.signal || (from && from.signal) || null;
+      this.redirect = init.redirect || (from && from.redirect) || 'follow';
+      Body.call(this, init.body !== undefined ? init.body : (from ? from._buf : null));
+    }
+    Request.prototype = Object.create(Body.prototype);
+    Request.prototype.constructor = Request;
+    Request.prototype.clone = function () { return new Request(this, { body: this._buf }); };
+
+    function Blob(parts, opts) {
+      var bufs = (parts || []).map(function (p) { return typeof p === 'string' ? Bf.from(p, 'utf8') : Bf.from(p.__bytes || p); });
+      this.__bytes = Bf.concat(bufs);
+      this.size = this.__bytes.length;
+      this.type = (opts && opts.type) || '';
+    }
+    Blob.prototype.text = function () { var self = this; return Promise.resolve(self.__bytes.toString('utf8')); };
+    Blob.prototype.bytes = function () { var u = new Uint8Array(this.__bytes.length); u.set(this.__bytes); return Promise.resolve(u); };
+    Blob.prototype.arrayBuffer = function () { return this.bytes().then(function (u) { return u.buffer; }); };
+    Blob.prototype.slice = function (a, b, t) { return new Blob([this.__bytes.slice(a, b)], { type: t }); };
+
+    function abortError(signal) {
+      if (signal && signal.reason) return signal.reason;
+      var e = new Error('This operation was aborted'); e.name = 'AbortError'; return e;
+    }
+
+    function fetch(input, init) {
+      init = init || {};
+      var from = (input && typeof input === 'object' && input.url !== undefined) ? input : null;
+      var url = from ? from.url : String(input);
+      var method = String(init.method || (from && from.method) || 'GET').toUpperCase();
+      var headers = new Headers(init.headers || (from && from.headers));
+      var body = init.body !== undefined ? init.body : (from ? from._buf : null);
+      var signal = init.signal || (from && from.signal) || null;
+      var redirect = init.redirect || (from && from.redirect) || 'follow';
+      try { return step(url, method, headers, body, 0); } catch (e) { return Promise.reject(e); }
+
+      function step(u, meth, hd, bd, hops) {
+        return new Promise(function (resolve, reject) {
+          if (signal && signal.aborted) { reject(abortError(signal)); return; }
+          var parsed;
+          try { parsed = new URL(u); } catch (e) { reject(new TypeError('Failed to parse URL from ' + u)); return; }
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') { reject(new TypeError('fetch: unsupported protocol ' + parsed.protocol)); return; }
+          var payload = null;
+          if (bd != null && meth !== 'GET' && meth !== 'HEAD') {
+            try { payload = bodyToBytes(bd, hd); } catch (e) { reject(e); return; }
+            if (payload && !hd.has('content-length')) hd.set('content-length', String(payload.length));
+          }
+          var hobj = {};
+          hd.forEach(function (v, k) { hobj[k] = v; });
+          var mod = require(parsed.protocol === 'https:' ? 'https' : 'http');
+          var req = mod.request({
+            host: parsed.hostname,
+            port: parsed.port ? parseInt(parsed.port, 10) : (parsed.protocol === 'https:' ? 443 : 80),
+            path: (parsed.pathname || '/') + (parsed.search || ''),
+            method: meth,
+            headers: hobj
+          });
+          var settled = false, onAbort = null;
+          function unhook() { if (onAbort && signal && signal.removeEventListener) signal.removeEventListener('abort', onAbort); onAbort = null; }
+          if (signal && signal.addEventListener) {
+            onAbort = function () { try { req.destroy(); } catch (e) {} if (!settled) { settled = true; unhook(); reject(abortError(signal)); } };
+            signal.addEventListener('abort', onAbort);
+          }
+          req.on('error', function (e) { if (settled) return; settled = true; unhook(); reject(e); });
+          req.on('response', function (res) {
+            if (settled) { try { res.destroy && res.destroy(); } catch (e) {} return; }
+            var status = res.statusCode;
+            var loc = res.headers && (res.headers.location || res.headers.Location);
+            if (redirect !== 'manual' && loc && (status === 301 || status === 302 || status === 303 || status === 307 || status === 308)) {
+              settled = true; unhook();
+              if (redirect === 'error') { reject(new TypeError('fetch: unexpected redirect')); return; }
+              if (hops >= 20) { reject(new TypeError('fetch: too many redirects')); return; }
+              try { if (res.resume) res.resume(); } catch (e) {}
+              var next;
+              try { next = new URL(loc, u).toString(); } catch (e) { reject(new TypeError('fetch: bad redirect location')); return; }
+              var nmeth = meth, nbd = bd, nhd = new Headers(hd);
+              if (status === 303 || ((status === 301 || status === 302) && meth === 'POST')) { nmeth = 'GET'; nbd = null; nhd['delete']('content-type'); nhd['delete']('content-length'); }
+              // credentials must not leak to another origin
+              if (new URL(next).host !== parsed.host) { nhd['delete']('authorization'); nhd['delete']('cookie'); }
+              resolve(step(next, nmeth, nhd, nbd, hops + 1).then(function (r) { r.redirected = true; return r; }));
+              return;
+            }
+            settled = true; unhook();
+            resolve(new Response(res, {
+              status: status,
+              statusText: res.statusMessage || '',
+              headers: res.headers,
+              url: u,
+              redirected: hops > 0
+            }));
+          });
+          if (payload) req.write(payload);
+          req.end();
+        });
+      }
+    }
+
+    function File(parts, name, opts) { Blob.call(this, parts, opts); this.name = String(name); this.lastModified = (opts && opts.lastModified) || Date.now(); }
+    File.prototype = Object.create(Blob.prototype);
+    File.prototype.constructor = File;
+
+    globalThis.fetch = fetch;
+    globalThis.Headers = Headers;
+    globalThis.Response = Response;
+    globalThis.Request = Request;
+    globalThis.FormData = FormData;
+    if (!globalThis.Blob) globalThis.Blob = Blob;
+    if (!globalThis.File) globalThis.File = File;
+  })();
+
+  /* ---------------- Intl.Segmenter ----------------
+     This QuickJS build has no Intl at all. Terminal UIs need grapheme segmentation to
+     measure strings (an emoji with a skin-tone modifier is one column-pair, not four),
+     so implement the cluster rules that actually matter: CRLF, combining marks,
+     ZWJ joins, variation selectors, skin-tone modifiers and regional-indicator pairs.
+     ponytail: an approximation of UAX #29, not the full property tables — a rare exotic
+     cluster may split; upgrade path is a generated table if a script ever needs it. */
+  if (!globalThis.Intl) globalThis.Intl = {};
+  if (!globalThis.Intl.Segmenter) {
+    var isMark = function (cp) {
+      return (cp >= 0x0300 && cp <= 0x036f) || (cp >= 0x0483 && cp <= 0x0489) || (cp >= 0x0591 && cp <= 0x05bd) ||
+        (cp >= 0x0610 && cp <= 0x061a) || (cp >= 0x064b && cp <= 0x065f) || (cp >= 0x0670 && cp === 0x0670) ||
+        (cp >= 0x06d6 && cp <= 0x06dc) || (cp >= 0x0730 && cp <= 0x074a) || (cp >= 0x07a6 && cp <= 0x07b0) ||
+        (cp >= 0x0900 && cp <= 0x0903) || (cp >= 0x093a && cp <= 0x094f) || (cp >= 0x0951 && cp <= 0x0957) ||
+        (cp >= 0x0e31 && cp <= 0x0e3a) || (cp >= 0x0e47 && cp <= 0x0e4e) || (cp >= 0x1ab0 && cp <= 0x1aff) ||
+        (cp >= 0x1dc0 && cp <= 0x1dff) || (cp >= 0x20d0 && cp <= 0x20f0) || (cp >= 0xfe20 && cp <= 0xfe2f) ||
+        (cp >= 0x1e000 && cp <= 0x1e02a);
+    };
+    var isRegional = function (cp) { return cp >= 0x1f1e6 && cp <= 0x1f1ff; };
+    var isExtender = function (cp) {
+      return (cp >= 0xfe00 && cp <= 0xfe0f) ||          // variation selectors
+        (cp >= 0x1f3fb && cp <= 0x1f3ff) ||             // skin tone modifiers
+        cp === 0x200d ||                                // ZWJ
+        (cp >= 0xe0020 && cp <= 0xe007f);               // tag sequences
+    };
+    var isWordChar = function (cp) {
+      return (cp >= 0x30 && cp <= 0x39) || (cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a) ||
+        cp === 0x5f || cp === 0x27 || (cp >= 0xc0 && cp !== 0xd7 && cp !== 0xf7 && cp < 0x2000) ||
+        (cp >= 0x2c00 && cp < 0xfff0) || cp > 0x10000;
+    };
+    var codePoints = function (s) {
+      var out = [];
+      for (var i = 0; i < s.length; ) { var cp = s.codePointAt(i); out.push({ cp: cp, i: i }); i += cp > 0xffff ? 2 : 1; }
+      return out;
+    };
+    var graphemes = function (s) {
+      var cps = codePoints(s), segs = [], start = 0, k = 0;
+      while (k < cps.length) {
+        start = cps[k].i;
+        var cp = cps[k].cp;
+        k++;
+        if (cp === 0x0d && k < cps.length && cps[k].cp === 0x0a) k++;           // CRLF
+        else if (isRegional(cp) && k < cps.length && isRegional(cps[k].cp)) k++; // flag pair
+        for (;;) {
+          if (k >= cps.length) break;
+          var n = cps[k].cp;
+          if (isMark(n) || isExtender(n)) { k++; if (n === 0x200d && k < cps.length) k++; continue; }
+          break;
+        }
+        var end = (k < cps.length) ? cps[k].i : s.length;
+        segs.push({ segment: s.slice(start, end), index: start, input: s });
+      }
+      return segs;
+    };
+    var words = function (s) {
+      var cps = codePoints(s), segs = [], k = 0;
+      while (k < cps.length) {
+        var start = cps[k].i, wordLike = isWordChar(cps[k].cp);
+        k++;
+        while (k < cps.length && isWordChar(cps[k].cp) === wordLike && !(!wordLike && /\s/.test(s[cps[k].i]) !== /\s/.test(s[start]))) k++;
+        var end = (k < cps.length) ? cps[k].i : s.length;
+        segs.push({ segment: s.slice(start, end), index: start, input: s, isWordLike: wordLike });
+      }
+      return segs;
+    };
+    var Segmenter = function (locales, opts) { this.granularity = (opts && opts.granularity) || 'grapheme'; };
+    Segmenter.prototype.resolvedOptions = function () { return { locale: 'en', granularity: this.granularity }; };
+    Segmenter.prototype.segment = function (input) {
+      var s = String(input);
+      var segs = this.granularity === 'word' ? words(s) : (this.granularity === 'grapheme' ? graphemes(s) : [{ segment: s, index: 0, input: s }]);
+      var view = {
+        containing: function (idx) {
+          for (var i = 0; i < segs.length; i++) if (idx >= segs[i].index && idx < segs[i].index + segs[i].segment.length) return segs[i];
+          return undefined;
+        }
+      };
+      view[Symbol.iterator] = function () { var i = 0; return { next: function () { return i < segs.length ? { value: segs[i++], done: false } : { value: undefined, done: true }; }, }; };
+      return view;
+    };
+    globalThis.Intl.Segmenter = Segmenter;
+  }
+  /* The rest of Intl, minimally. These matter less for their formatting quality than for
+     feature detection: code that finds `Intl` present but `Intl.Collator` missing does not
+     fall back, it crashes (npm's sorted output did exactly that). */
+  if (!globalThis.Intl.Collator) {
+    var Collator = function (locales, opts) {
+      this._opts = opts || {};
+      var numeric = !!this._opts.numeric, sensitivity = this._opts.sensitivity;
+      var self = this;
+      this.compare = function (a, b) {
+        a = String(a); b = String(b);
+        if (sensitivity === 'base' || sensitivity === 'accent') { a = a.toLowerCase(); b = b.toLowerCase(); }
+        if (numeric) {
+          // digit runs compare by value: "file10" sorts after "file9"
+          var re = /(\d+|\D+)/g, xa = a.match(re) || [], xb = b.match(re) || [];
+          for (var i = 0; i < Math.min(xa.length, xb.length); i++) {
+            var na = parseInt(xa[i], 10), nb = parseInt(xb[i], 10);
+            if (!isNaN(na) && !isNaN(nb)) { if (na !== nb) return na < nb ? -1 : 1; }
+            else if (xa[i] !== xb[i]) return xa[i] < xb[i] ? -1 : 1;
+          }
+          return xa.length === xb.length ? 0 : (xa.length < xb.length ? -1 : 1);
+        }
+        return a < b ? -1 : (a > b ? 1 : 0);
+      };
+      this.resolvedOptions = function () { return { locale: 'en', usage: 'sort', sensitivity: sensitivity || 'variant', numeric: numeric, collation: 'default', ignorePunctuation: false }; };
+    };
+    Collator.supportedLocalesOf = function (l) { return typeof l === 'string' ? [l] : (l || []).slice(); };
+    globalThis.Intl.Collator = Collator;
+  }
+  if (!globalThis.Intl.NumberFormat) {
+    var NumberFormat = function (locales, opts) {
+      var o = opts || {};
+      this.format = function (n) {
+        n = Number(n);
+        if (!isFinite(n)) return String(n);
+        var min = o.minimumFractionDigits, max = o.maximumFractionDigits;
+        if (max === undefined) max = Math.max(min === undefined ? 0 : min, o.style === 'percent' ? 0 : 3);
+        var v = o.style === 'percent' ? n * 100 : n;
+        var s = Math.abs(v).toFixed(max);
+        if (max > (min === undefined ? 0 : min)) s = s.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+        var parts = s.split('.'), int = parts[0];
+        if (o.useGrouping !== false) int = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        var out = (v < 0 ? '-' : '') + int + (parts[1] ? '.' + parts[1] : '');
+        if (o.style === 'percent') out += '%';
+        if (o.style === 'currency' && o.currency) out = (o.currency === 'USD' ? '$' : o.currency + ' ') + out;
+        return out;
+      };
+      this.formatToParts = function (n) { return [{ type: 'literal', value: this.format(n) }]; };
+      this.resolvedOptions = function () { return { locale: 'en-US', style: o.style || 'decimal', numberingSystem: 'latn' }; };
+    };
+    NumberFormat.supportedLocalesOf = function (l) { return typeof l === 'string' ? [l] : (l || []).slice(); };
+    globalThis.Intl.NumberFormat = NumberFormat;
+  }
+  if (!globalThis.Intl.DateTimeFormat) {
+    var DateTimeFormat = function (locales, opts) {
+      var o = opts || {};
+      this.format = function (d) {
+        var t = (d === undefined) ? new Date() : (d instanceof Date ? d : new Date(d));
+        var iso = t.toISOString();
+        if (o.timeStyle && !o.dateStyle) return iso.slice(11, 19);
+        if (o.dateStyle && !o.timeStyle) return iso.slice(0, 10);
+        return iso.slice(0, 10) + ' ' + iso.slice(11, 19);
+      };
+      this.formatToParts = function (d) { return [{ type: 'literal', value: this.format(d) }]; };
+      this.resolvedOptions = function () { return { locale: 'en-US', calendar: 'gregory', numberingSystem: 'latn', timeZone: 'UTC' }; };
+    };
+    DateTimeFormat.supportedLocalesOf = function (l) { return typeof l === 'string' ? [l] : (l || []).slice(); };
+    globalThis.Intl.DateTimeFormat = DateTimeFormat;
+  }
+  if (!globalThis.Intl.getCanonicalLocales) globalThis.Intl.getCanonicalLocales = function (l) { return l === undefined ? [] : (typeof l === 'string' ? [l] : l.slice()); };
+
+  /* ---------------- console ----------------
+     QuickJS ships console.log and nothing else. A missing console.error is worse than a
+     missing feature: library error paths call it, so the TypeError it throws replaces the
+     real error and the program dies without a message. Route the whole family through
+     util.format, log-like methods to stdout and error-like ones to stderr. */
+  (function () {
+    var util = require('util'), proc = globalThis.process;
+    var groupIndent = '';
+    function emit(streamName, args) {
+      var text = util.format.apply(util, args);
+      if (groupIndent) text = groupIndent + text.split('\n').join('\n' + groupIndent);
+      try { proc[streamName].write(text + '\n'); } catch (e) {}
+    }
+    var con = globalThis.console || {};
+    var native = con.log;
+    con.log = function () { emit('stdout', arguments); };
+    con.info = con.log;
+    con.debug = con.log;
+    con.dir = function (o, opts) { emit('stdout', [util.inspect(o, opts || { depth: 2 })]); };
+    con.error = function () { emit('stderr', arguments); };
+    con.warn = con.error;
+    con.trace = function () {
+      var args = Array.prototype.slice.call(arguments);
+      emit('stderr', ['Trace: ' + util.format.apply(util, args) + '\n' + (new Error().stack || '')]);
+    };
+    con.assert = function (cond) { if (!cond) emit('stderr', ['Assertion failed:'].concat(Array.prototype.slice.call(arguments, 1))); };
+    con.group = function () { if (arguments.length) emit('stdout', arguments); groupIndent += '  '; };
+    con.groupCollapsed = con.group;
+    con.groupEnd = function () { groupIndent = groupIndent.slice(2); };
+    var timers = {}, counts = {};
+    con.time = function (label) { timers[label || 'default'] = Date.now(); };
+    con.timeEnd = function (label) {
+      var k = label || 'default', t = timers[k];
+      if (t === undefined) { emit('stderr', ["Warning: No such label '" + k + "' for console.timeEnd()"]); return; }
+      delete timers[k];
+      emit('stdout', [k + ': ' + (Date.now() - t) + 'ms']);
+    };
+    con.timeLog = function (label) { var k = label || 'default'; if (timers[k] !== undefined) emit('stdout', [k + ': ' + (Date.now() - timers[k]) + 'ms']); };
+    con.count = function (label) { var k = label || 'default'; counts[k] = (counts[k] || 0) + 1; emit('stdout', [k + ': ' + counts[k]]); };
+    con.countReset = function (label) { delete counts[label || 'default']; };
+    con.table = function (data) { emit('stdout', [util.inspect(data, { depth: 3 })]); };
+    con.clear = function () {};
+    con.Console = function () { return con; };
+    con.__quickjsLog = native;
+    globalThis.console = con;
+  })();
 
   /* fill process gaps npm relies on (HOME for config, emitWarning, config, getBuiltinModule, hrtime) */
   var __proc = globalThis.process;
