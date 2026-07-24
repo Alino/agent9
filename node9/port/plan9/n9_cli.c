@@ -80,52 +80,10 @@ static char *n9_module_normalize(JSContext *ctx, const char *base_name, const ch
     return ret;
 }
 
-/* Await a promise without starving the job queue.
- *
- * quickjs-libc's js_std_await() runs exactly ONE pending job per iteration and then polls,
- * and the poll blocks until the next timer expires. An ES-module entry point with a
- * top-level await therefore advances one microtask per timer deadline: with a 5-minute
- * idle timer armed (pi arms one), a promise chain effectively hangs. Drain the whole job
- * queue before every poll, the way js_std_loop() does.
- */
-static JSValue n9_await(JSContext *ctx, JSValue obj) {
-    JSRuntime *rt = JS_GetRuntime(ctx);
-    JSValue ret;
-
-    if (JS_IsException(obj))
-        return obj;
-    for (;;) {
-        JSContext *ctx1;
-        int state, err;
-
-        state = JS_PromiseState(ctx, obj);
-        if (state == JS_PROMISE_FULFILLED) {
-            ret = JS_PromiseResult(ctx, obj);
-            JS_FreeValue(ctx, obj);
-            return ret;
-        }
-        if (state == JS_PROMISE_REJECTED) {
-            ret = JS_PromiseResult(ctx, obj);
-            JS_FreeValue(ctx, obj);
-            JS_Throw(ctx, ret);
-            return JS_EXCEPTION;
-        }
-        if (state != JS_PROMISE_PENDING)
-            return obj;                 /* not a promise: nothing to await */
-
-        for (;;) {                      /* the fix: drain every ready job first */
-            err = JS_ExecutePendingJob(rt, &ctx1);
-            if (err <= 0) {
-                if (err < 0)
-                    js_std_dump_error(ctx1);
-                break;
-            }
-        }
-        if (JS_PromiseState(ctx, obj) != JS_PROMISE_PENDING)
-            continue;
-        js_std_loop_once(ctx);          /* blocks in poll for timers/fd handlers */
-    }
-}
+/* The entry module's completion promise, settled by the main event loop (see below).
+ * JS_UNDEFINED until an ES-module entry point is evaluated. */
+static JSValue n9_entry_promise;
+static int n9_entry_promise_set;
 
 static int eval_buf(JSContext *ctx, const char *buf, size_t len, const char *fn, int is_main) {
     JSValue val;
@@ -136,7 +94,18 @@ static int eval_buf(JSContext *ctx, const char *buf, size_t len, const char *fn,
             js_module_set_import_meta(ctx, val, 1, is_main);
             val = JS_EvalFunction(ctx, val);
         }
-        val = n9_await(ctx, val);
+        if (is_main && !JS_IsException(val)) {
+            /* Do NOT js_std_await() the entry module. That helper runs exactly ONE pending
+             * job per iteration and then polls, and the poll blocks until the next timer
+             * expires — so an entry module with a top-level `await` advances one microtask
+             * per timer deadline. With a 5-minute idle timer armed (pi arms one) the
+             * program looks hung. js_std_loop() in main() drains the whole job queue
+             * before each poll; hand the promise to it and check the result afterwards. */
+            n9_entry_promise = val;
+            n9_entry_promise_set = 1;
+            return 0;
+        }
+        val = js_std_await(ctx, val);
     } else {
         val = JS_Eval(ctx, buf, len, fn, JS_EVAL_TYPE_GLOBAL);
     }
@@ -202,6 +171,17 @@ int main(int argc, char **argv) {
         }
     }
     js_std_loop(ctx);
+    /* The entry module ran to completion inside the loop above; report a rejection the way
+     * js_std_await() would have, now that nothing is left to wait for. */
+    if (n9_entry_promise_set) {
+        if (JS_PromiseState(ctx, n9_entry_promise) == JS_PROMISE_REJECTED) {
+            JS_Throw(ctx, JS_PromiseResult(ctx, n9_entry_promise));
+            js_std_dump_error(ctx);
+            ret = -1;
+        }
+        JS_FreeValue(ctx, n9_entry_promise);
+        n9_entry_promise_set = 0;
+    }
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);

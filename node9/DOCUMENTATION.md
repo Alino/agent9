@@ -231,12 +231,19 @@ packages from the registry and runs a real operation on each. **Result: 30 / 30 
   encoding edge case.
 - **HTTP client has no socket timeout** — a hung server would hang the request.
 - **An ES-module entry point that uses top-level `await` advances one microtask per timer
-  deadline.** quickjs-libc's `js_std_await()` runs a single pending job per poll, and the
-  poll sleeps until the next timer, so a program that arms a long timer (say a 5-minute idle
-  timeout) and then awaits I/O at module top level appears to hang. `port/plan9/n9_cli.c`
-  has the fix (`n9_await` drains the whole job queue before polling) — it takes effect after
-  the next `qjs` rebuild. Entry modules without top-level await (the usual CLI shape) are
-  unaffected.
+  deadline** *(fixed in source, pending a `qjs` rebuild)*. quickjs-libc's `js_std_await()`
+  runs a single pending job per poll and the poll sleeps until the next timer, so a program
+  that arms a long timer (say a 5-minute idle timeout) and then awaits I/O at module top
+  level appears to hang. `port/plan9/n9_cli.c` no longer awaits the entry module: it hands
+  the completion promise to `js_std_loop()` (which drains the whole job queue before each
+  poll) and reports a rejection afterwards. Verified with a test build on cirno — the
+  starvation repro completes instead of hanging. Entry modules without top-level await (the
+  usual CLI shape, including `pi`) were never affected.
+  **Rebuild caveat:** a fresh build from the quickjs-ng **v0.15.1 tag** passes the whole
+  test battery but trips `assert(list_empty(&rt->gc_obj_list))` in `JS_FreeRuntime` on every
+  exit, which the shipped binary does not — the shipped one came from a `quickjs-master`
+  snapshot, not the tag. Reconcile the snapshot (or build `-DNDEBUG`) before replacing
+  `/amd64/bin/qjs`.
 
 ### Performance
 - node9 is an **interpreter** with a JS-implemented tar/fs path, so it is much slower than

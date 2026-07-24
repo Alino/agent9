@@ -21,10 +21,11 @@ you get the API's own `401 invalid x-api-key`, which is the same path proving ou
 
 ## Install
 
-pi is 140 packages / ~19k files. `npm install` *works* on node9, but arborist's dependency
-resolution for a tree that size is impractically slow on an interpreter, and npm's JS tar
-extraction costs ~0.3 s per file. Resolve on the host, unpack on the box with the native
-tools:
+pi is 140 packages / ~19k files. npm itself runs fine on node9 (`npm install left-pad`
+finishes in 3 s), but a tree this size is a different animal: arborist's resolution alone
+burned 13 minutes of CPU without producing a `node_modules/` entry, and npm's JS tar
+extraction costs ~0.3 s per file on top. Resolve on the host, unpack on the box with the
+native tools — `hget` + `gunzip` + `tar` are C, and the whole tree lands in ~2 minutes:
 
 ```sh
 # 1. host: resolve the tree with a real npm, then flatten the lockfile to a manifest
