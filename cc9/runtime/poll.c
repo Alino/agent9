@@ -45,8 +45,22 @@ extern void *memcpy(void *, const void *, unsigned long);
  * tabs polls ~45 fds; IPC messages are framed in 64K windows). Rings are
  * malloc'd on first use so the static table stays small. */
 #define PFD_MAX 256
-#define PFD_BUF 65536
-#define PFD_WBUF 65536
+/* Ring sizes are runtime-tunable via CC9_POLL_RING (bytes). Default 64 KiB. A
+ * large ring lets cc9's per-fd reader/writer thread buffer a whole big transfer
+ * so a slow event-loop consumer (ladybird's RequestServer->WebContent response
+ * pipe) never backs up the pipe and stalls delivery. */
+static unsigned pfd_buf = 65536;
+static unsigned pfd_wbuf = 65536;
+static void pfd_ring_init(void){
+    static int done = 0; if(done) return; done = 1;
+    extern char *getenv(const char *);
+    char *e = getenv("CC9_POLL_RING");
+    if(!e) return;
+    unsigned long v = 0; for(char *p = e; *p >= '0' && *p <= '9'; p++) v = v*10 + (unsigned)(*p - '0');
+    if(v >= 4096 && v <= 64UL*1024*1024){ pfd_buf = (unsigned)v; pfd_wbuf = (unsigned)v; }
+}
+#define PFD_BUF pfd_buf
+#define PFD_WBUF pfd_wbuf
 
 /* An "infinite" poll (timeout<0) waits on poll_sem in bounded slices instead of
  * forever: readiness is recomputed from ring state every scan (poll is
@@ -277,7 +291,7 @@ static cc9_pfd *ensure(int fd, int start_reader){
 		for(int i = 0; i < PFD_MAX; i++)
 			if(tab[i].fd == -1){ p = &tab[i]; break; }
 		if(p){
-			if(!p->buf) p->buf = malloc(PFD_BUF);
+			pfd_ring_init(); if(!p->buf) p->buf = malloc(PFD_BUF);
 			if(!p->buf){ n9_semrelease(&tab_lock, 1); return 0; }
 			p->fd = fd; p->flags = 0; p->reader = 0; p->rfd = -1; p->dead = 0;
 			p->eof = p->err = 0; p->lock = 1; p->space = 0; p->data = 0;
@@ -385,7 +399,7 @@ long cc9_poll_write(int fd, const void *buf, long n){
 	if(p->werr){ errno = EPIPE; return -1; }
 	if(!p->wbuf){
 		n9_semacquire(&tab_lock, 1);
-		if(!p->wbuf) p->wbuf = malloc(PFD_WBUF);
+		pfd_ring_init(); if(!p->wbuf) p->wbuf = malloc(PFD_WBUF);
 		n9_semrelease(&tab_lock, 1);
 		if(!p->wbuf){ errno = ENOMEM; return -1; }
 	}
