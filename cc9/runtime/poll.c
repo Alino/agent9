@@ -39,28 +39,40 @@ extern long n9_errstr(char *, unsigned long);
 extern int strncmp(const char *, const char *, unsigned long);
 extern char *strstr(const char *, const char *);
 extern void *malloc(unsigned long);
+extern void free(void *);
 extern void *memcpy(void *, const void *, unsigned long);
 
 /* 256 fds / 64K rings: sized for a multi-process browser (UI process at a few
  * tabs polls ~45 fds; IPC messages are framed in 64K windows). Rings are
  * malloc'd on first use so the static table stays small. */
 #define PFD_MAX 256
-/* Ring sizes are runtime-tunable via CC9_POLL_RING (bytes). Default 64 KiB. A
- * large ring lets cc9's per-fd reader/writer thread buffer a whole big transfer
+/* Read rings START at 64 KiB and GROW ON DEMAND, doubling up to CC9_POLL_RING
+ * (default: no growth at all, so a plain cc9 program behaves exactly as before).
+ * A big read ring lets the per-fd reader thread buffer a whole large transfer,
  * so a slow event-loop consumer (ladybird's RequestServer->WebContent response
- * pipe) never backs up the pipe and stalls delivery. */
-static unsigned pfd_buf = 65536;
-static unsigned pfd_wbuf = 65536;
+ * pipe) never backs the pipe up and stalls delivery.
+ *
+ * It MUST be a ceiling and not a fixed size: rings are per fd, and a fixed 8 MiB
+ * across ladybird's ~64 curl connections reserved ~1 GiB in RequestServer alone,
+ * which blew RLIMIT_AS and killed the process mid-page. Growth means only the
+ * few fds carrying multi-MB bodies ever pay for the space.
+ *
+ * The WRITE ring is deliberately NOT growable. A full write ring is just EAGAIN,
+ * which is the contract a non-blocking writer already handles by retrying; there
+ * is no stall to fix, so there is no reason to spend the memory. */
+#define PFD_WBUF 65536u
+static unsigned pfd_buf = 65536;        /* initial read-ring size */
+static unsigned pfd_max = 65536;        /* growth ceiling; CC9_POLL_RING raises it */
 static void pfd_ring_init(void){
     static int done = 0; if(done) return; done = 1;
     extern char *getenv(const char *);
     char *e = getenv("CC9_POLL_RING");
     if(!e) return;
     unsigned long v = 0; for(char *p = e; *p >= '0' && *p <= '9'; p++) v = v*10 + (unsigned)(*p - '0');
-    if(v >= 4096 && v <= 64UL*1024*1024){ pfd_buf = (unsigned)v; pfd_wbuf = (unsigned)v; }
+    if(v >= 4096 && v <= 64UL*1024*1024) pfd_max = (unsigned)v;
+    if(pfd_max < pfd_buf) pfd_buf = pfd_max;
 }
 #define PFD_BUF pfd_buf
-#define PFD_WBUF pfd_wbuf
 
 /* An "infinite" poll (timeout<0) waits on poll_sem in bounded slices instead of
  * forever: readiness is recomputed from ring state every scan (poll is
@@ -95,7 +107,8 @@ typedef struct {
 	int space;              /* reader waits here when the ring is full */
 	int data;               /* blocking cc9_poll_read waiters */
 	unsigned head, tail;    /* ring positions: head = fill, tail = drain */
-	char *buf;              /* PFD_BUF, malloc'd when the slot is claimed */
+	char *buf;              /* bufsz bytes, malloc'd when the slot is claimed */
+	unsigned bufsz;         /* current read-ring size; grows toward pfd_max */
 	/* write side (O_NONBLOCK fds only) */
 	int writer;             /* writer thread started */
 	int werr;               /* a drain pwrite failed; fd is done for */
@@ -189,15 +202,50 @@ static int was_interrupted(void){
 static void poll_wake(void){ int w = poll_waiters; n9_semrelease(&poll_sem, w > 0 ? w : 1); }
 
 static unsigned ring_avail(cc9_pfd *p){ return p->head - p->tail; }
-static unsigned ring_space(cc9_pfd *p){ return PFD_BUF - ring_avail(p); }
+static unsigned ring_space(cc9_pfd *p){ return p->bufsz - ring_avail(p); }
 static unsigned wring_avail(cc9_pfd *p){ return p->whead - p->wtail; }
 static unsigned wring_space(cc9_pfd *p){ return PFD_WBUF - wring_avail(p); }
+
+/* Double the read ring, up to pfd_max. Returns 1 if it grew.
+ *
+ * ONLY the reader thread may call this, and only between preads: the reader is
+ * the sole writer of buf CONTENTS, so the move has to exclude just the consumer,
+ * which copies out under p->lock. Growing re-linearizes the ring (tail lands at
+ * 0), because head/tail are absolute counters reduced mod the size — changing
+ * the size under a wrapped ring would otherwise reinterpret every live byte. */
+static int ring_grow(cc9_pfd *p){
+	if(p->bufsz >= pfd_max) return 0;
+	unsigned nsz = p->bufsz * 2;
+	if(nsz > pfd_max) nsz = pfd_max;
+	char *nb = malloc(nsz);
+	if(!nb) return 0;                       /* out of memory: fall back to blocking */
+	n9_semacquire(&p->lock, 1);
+	unsigned avail = ring_avail(p);
+	unsigned off = p->tail % p->bufsz;
+	unsigned cont = p->bufsz - off;
+	if(cont > avail) cont = avail;
+	memcpy(nb, p->buf + off, cont);
+	if(avail > cont) memcpy(nb + cont, p->buf, avail - cont);
+	char *ob = p->buf;
+	p->buf = nb;
+	p->bufsz = nsz;
+	p->tail = 0;
+	p->head = avail;
+	n9_semrelease(&p->lock, 1);
+	free(ob);
+	trace("grow", p->fd, (long)nsz);
+	return 1;
+}
 
 static void *reader_main(void *arg){
 	cc9_pfd *p = arg;
 	for(;;){
+		/* Full ring: try to grow before parking. Growing here rather than at
+		 * claim time is the whole point — only an fd that actually backs up
+		 * (a multi-MB body against a slow consumer) ever costs more than 64 KiB. */
 		while(!p->dead && ring_space(p) == 0)
-			n9_semacquire(&p->space, 1);
+			if(!ring_grow(p))
+				n9_semacquire(&p->space, 1);
 		if(p->dead) break;
 		/* pread STRAIGHT into the ring's contiguous span (mirror writer_main):
 		 * no bounce buffer, no byte-by-byte copy, no artificial 2K cap — one
@@ -206,8 +254,8 @@ static void *reader_main(void *arg){
 		 * head, so writing [head, head+want) without p->lock is safe; we take the
 		 * lock only to advance head after the read completes. */
 		unsigned space = ring_space(p);
-		unsigned off = p->head % PFD_BUF;
-		unsigned cont = PFD_BUF - off;              /* contiguous run to buffer end */
+		unsigned off = p->head % p->bufsz;
+		unsigned cont = p->bufsz - off;             /* contiguous run to buffer end */
 		unsigned want = space < cont ? space : cont;
 		long r = n9_pread(p->rfd, p->buf + off, (long)want, -1);   /* private dup, not p->fd: immune to fd-number reuse */
 		trace("rdthr", p->fd, r);
@@ -291,8 +339,14 @@ static cc9_pfd *ensure(int fd, int start_reader){
 		for(int i = 0; i < PFD_MAX; i++)
 			if(tab[i].fd == -1){ p = &tab[i]; break; }
 		if(p){
-			pfd_ring_init(); if(!p->buf) p->buf = malloc(PFD_BUF);
-			if(!p->buf){ n9_semrelease(&tab_lock, 1); return 0; }
+			pfd_ring_init();
+			/* Slots are recycled across fds. Hand a grown ring back rather than
+			 * letting it become the slot's permanent size — otherwise every slot
+			 * that ever carried one big body keeps pfd_max reserved forever, which
+			 * is the fixed-size allocation this growth scheme exists to avoid. */
+			if(p->buf && p->bufsz > PFD_BUF){ free(p->buf); p->buf = 0; }
+			if(!p->buf){ p->buf = malloc(PFD_BUF); p->bufsz = PFD_BUF; }
+			if(!p->buf){ p->bufsz = 0; n9_semrelease(&tab_lock, 1); return 0; }
 			p->fd = fd; p->flags = 0; p->reader = 0; p->rfd = -1; p->dead = 0;
 			p->eof = p->err = 0; p->lock = 1; p->space = 0; p->data = 0;
 			p->head = p->tail = 0;
@@ -371,7 +425,7 @@ long cc9_poll_read(int fd, void *buf, long n){
 		if(avail > 0){
 			long take = (long)avail < n ? (long)avail : n;
 			for(long i = 0; i < take; i++)
-				d[i] = p->buf[(p->tail + i) % PFD_BUF];
+				d[i] = p->buf[(p->tail + i) % p->bufsz];
 			p->tail += (unsigned)take;
 			n9_semrelease(&p->lock, 1);
 			n9_semrelease(&p->space, 1);   /* wake the reader if it was full */
@@ -399,7 +453,7 @@ long cc9_poll_write(int fd, const void *buf, long n){
 	if(p->werr){ errno = EPIPE; return -1; }
 	if(!p->wbuf){
 		n9_semacquire(&tab_lock, 1);
-		pfd_ring_init(); if(!p->wbuf) p->wbuf = malloc(PFD_WBUF);
+		if(!p->wbuf) p->wbuf = malloc(PFD_WBUF);
 		n9_semrelease(&tab_lock, 1);
 		if(!p->wbuf){ errno = ENOMEM; return -1; }
 	}
