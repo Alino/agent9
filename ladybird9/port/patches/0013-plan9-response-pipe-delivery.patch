@@ -1,0 +1,212 @@
+diff --git a/Libraries/LibRequests/Request.cpp b/Libraries/LibRequests/Request.cpp
+index 1cef12b7a0..59a2a2f617 100644
+--- a/Libraries/LibRequests/Request.cpp
++++ b/Libraries/LibRequests/Request.cpp
+@@ -44,6 +44,13 @@ ErrorOr<NonnullOwnPtr<ReadStream>> ReadStream::create(int reader_fd)
+     return adopt_own(*new ReadStream(move(local_socket), notifier.release_nonnull()));
+ #else
+     auto file = TRY(Core::File::adopt_fd(reader_fd, Core::File::OpenMode::Read));
++#    if defined(AK_OS_PLAN9)
++    // plan9/cc9: the response-pipe fd arrives blocking (fds are passed by name
++    // through /srv, not SCM_RIGHTS, so the receiver opens a fresh blocking fd).
++    // The drain loop below reads until read_some() fails; on a blocking fd that
++    // blocks inside the notifier callback and wedges the event loop.
++    TRY(file->set_blocking(false));
++#    endif
+     auto notifier = Core::Notifier::construct(reader_fd, Core::Notifier::Type::Read);
+     return adopt_own(*new ReadStream(move(file), move(notifier)));
+ #endif
+@@ -368,12 +375,39 @@ void Request::set_up_internal_stream_data(DataReceived on_data_available)
+             }
+         } while (true);
+ 
+-        if (m_internal_stream_data->read_stream->is_eof())
++#if defined(AK_OS_PLAN9)
++        // plan9/cc9: only tear the notifier down once the request is actually
++        // finished. The pipe is non-blocking here, so is_eof() can report true
++        // simply because it is momentarily drained (EAGAIN); closing on that
++        // permanently stops delivery — capping large bodies at a few hundred KB
++        // and leaving the main document half-delivered, so the parser never
++        // completes.
++        auto may_close_notifier = m_internal_stream_data->request_done && m_internal_stream_data->read_stream->is_eof();
++#else
++        auto may_close_notifier = m_internal_stream_data->read_stream->is_eof();
++#endif
++        if (may_close_notifier)
+             m_internal_stream_data->read_notifier->close();
+ 
+         if (m_internal_stream_data->request_done)
+             m_internal_stream_data->on_finish();
+     };
++
++#if defined(AK_OS_PLAN9)
++    // See read_drain_timer in the header: re-drive the drain on a timer because the
++    // readable notifier stops firing mid-body on cc9/plan9.
++    if (!m_internal_stream_data->read_drain_timer) {
++        m_internal_stream_data->read_drain_timer = Core::Timer::create_repeating(10, [this] {
++            if (!m_internal_stream_data || m_body_delivery_paused)
++                return;
++            if (!m_internal_stream_data->read_stream || !m_internal_stream_data->read_notifier)
++                return;
++            if (auto& activation = m_internal_stream_data->read_notifier->on_activation)
++                activation();
++        });
++        m_internal_stream_data->read_drain_timer->start();
++    }
++#endif
+ }
+ 
+ Request::InternalBufferedData::InternalBufferedData()
+diff --git a/Libraries/LibRequests/Request.h b/Libraries/LibRequests/Request.h
+index ad9b71a5c1..ff8184ce0d 100644
+--- a/Libraries/LibRequests/Request.h
++++ b/Libraries/LibRequests/Request.h
+@@ -14,6 +14,7 @@
+ #include <AK/RefCounted.h>
+ #include <AK/WeakPtr.h>
+ #include <LibCore/ImmutableBytes.h>
++#include <LibCore/Timer.h>
+ #include <LibCore/Notifier.h>
+ #include <LibHTTP/HeaderList.h>
+ #include <LibRequests/NetworkError.h>
+@@ -167,6 +168,10 @@ private:
+ 
+         OwnPtr<ReadStream> read_stream;
+         RefPtr<Core::Notifier> read_notifier;
++        // cc9/plan9: the readable Core::Notifier on the response pipe stops firing
++        // mid-body, leaving multi-MB resources (and the main document) undelivered
++        // while RequestServer buffers megabytes. Re-drive the drain on a timer.
++        RefPtr<Core::Timer> read_drain_timer;
+         u64 total_size { 0 };
+         u64 delivered_size { 0 };
+         Optional<NetworkError> network_error;
+diff --git a/Services/RequestServer/Request.cpp b/Services/RequestServer/Request.cpp
+index ddd7492357..e7c709030b 100644
+--- a/Services/RequestServer/Request.cpp
++++ b/Services/RequestServer/Request.cpp
+@@ -11,6 +11,7 @@
+ #include <LibCore/MimeData.h>
+ #include <LibCore/Notifier.h>
+ #include <LibCore/System.h>
++#include <LibCore/Timer.h>
+ #include <LibHTTP/Cache/DiskCache.h>
+ #include <LibHTTP/Cache/Utilities.h>
+ #include <LibHTTP/Status.h>
+@@ -881,6 +882,13 @@ void Request::handle_connect_state()
+     set_option(CURLOPT_URL, m_url.to_byte_string().characters());
+     set_option(CURLOPT_PORT, m_url.port_or_default());
+     set_option(CURLOPT_CONNECTTIMEOUT, s_connect_timeout_seconds);
++#if defined(AK_OS_PLAN9)
++    // plan9/cc9: without a stall timeout a transfer that connects and then goes
++    // quiet hangs forever. A render-blocking stylesheet in that state wedges the
++    // HTML parser, so the page never renders at all. Abort below 1 B/s for 30 s.
++    set_option(CURLOPT_LOW_SPEED_LIMIT, 1L);
++    set_option(CURLOPT_LOW_SPEED_TIME, 30L);
++#endif
+     set_option(CURLOPT_CONNECT_ONLY, 1L);
+ 
+     // Pre-populate the multi's hostcache so libcurl skips its threaded resolver entirely.
+@@ -933,6 +941,13 @@ void Request::handle_fetch_state()
+     set_option(CURLOPT_URL, m_url.to_byte_string().characters());
+     set_option(CURLOPT_PORT, m_url.port_or_default());
+     set_option(CURLOPT_CONNECTTIMEOUT, s_connect_timeout_seconds);
++#if defined(AK_OS_PLAN9)
++    // plan9/cc9: without a stall timeout a transfer that connects and then goes
++    // quiet hangs forever. A render-blocking stylesheet in that state wedges the
++    // HTML parser, so the page never renders at all. Abort below 1 B/s for 30 s.
++    set_option(CURLOPT_LOW_SPEED_LIMIT, 1L);
++    set_option(CURLOPT_LOW_SPEED_TIME, 30L);
++#endif
+ 
+     if (m_alt_svc_cache_path.has_value())
+         set_option(CURLOPT_ALTSVC, m_alt_svc_cache_path->characters());
+@@ -1005,6 +1020,7 @@ void Request::handle_fetch_state()
+     set_option(CURLOPT_WRITEFUNCTION, &on_data_received);
+     set_option(CURLOPT_WRITEDATA, this);
+ 
++
+     if constexpr (REQUESTSERVER_WIRE_DEBUG) {
+         set_option(CURLOPT_NOPROGRESS, 0L);
+         set_option(CURLOPT_XFERINFOFUNCTION, &on_xferinfo);
+@@ -1341,6 +1357,19 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
+         return {};
+     }
+ 
++#if defined(AK_OS_PLAN9)
++    // cc9/plan9 fallback: re-drive the drain even if the writable notifier never
++    // activates (see Request.h). Stopped as soon as the buffer empties. Every
++    // start/stop site below is null-guarded, so on other platforms the timer
++    // simply never exists.
++    if (!m_client_writer_retry_timer) {
++        m_client_writer_retry_timer = Core::Timer::create_repeating(10, [this] {
++            if (auto result = write_queued_bytes_without_blocking(); result.is_error())
++                m_client_writer_retry_timer->stop();
++        });
++    }
++#endif
++
+     if (!m_client_writer_notifier) {
+         m_client_writer_notifier = Core::Notifier::construct(m_client_request_pipe->writer_fd(), Core::NotificationType::Write);
+         m_client_writer_notifier->set_enabled(false);
+@@ -1387,6 +1416,8 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
+             }
+ 
+             m_client_writer_notifier->set_enabled(true);
++            if (m_client_writer_retry_timer && !m_client_writer_retry_timer->is_active())
++                m_client_writer_retry_timer->start();
+             return {};
+         }
+ 
+@@ -1398,11 +1429,15 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
+ 
+         if (written < bytes.size()) {
+             m_client_writer_notifier->set_enabled(true);
++            if (m_client_writer_retry_timer && !m_client_writer_retry_timer->is_active())
++                m_client_writer_retry_timer->start();
+             return {};
+         }
+     }
+ 
+     m_client_writer_notifier->set_enabled(false);
++    if (m_client_writer_retry_timer)
++        m_client_writer_retry_timer->stop();
+     if (m_curl_result_code.has_value())
+         transition_to_state(State::Complete);
+ 
+diff --git a/Services/RequestServer/Request.h b/Services/RequestServer/Request.h
+index 8ecad328a7..5f2ae2bfdf 100644
+--- a/Services/RequestServer/Request.h
++++ b/Services/RequestServer/Request.h
+@@ -33,6 +33,20 @@ namespace RequestServer {
+ 
+ class Request final : public HTTP::CacheRequest {
+ public:
++    // cc9/plan9: connection-level timer pump — re-drive queued writes for this
++    // request regardless of the (unreliable) writable notifier.
++    void pump_writes()
++    {
++        // Only safe once the client pipe exists and there is data to push. The
++        // per-request state (curl handle, response code Optionals) is not ready
++        // for every request the connection timer iterates, so guard first.
++        if (!m_client_request_pipe.has_value())
++            return;
++        if (m_response_buffer.is_eof())
++            return;
++        (void)write_queued_bytes_without_blocking();
++    }
++
+     static NonnullOwnPtr<Request> fetch(
+         u64 request_id,
+         Optional<HTTP::DiskCache&> disk_cache,
+@@ -237,6 +251,11 @@ private:
+ 
+     AllocatingMemoryStream m_response_buffer;
+     RefPtr<Core::Notifier> m_client_writer_notifier;
++    // cc9/plan9: the writable Core::Notifier on the client pipe proved unreliable
++    // (708 EAGAINs vs 6 activations), stalling large subresources forever and
++    // blocking the HTML parser. This timer re-drives the drain so progress never
++    // depends on the notifier alone.
++    RefPtr<Core::Timer> m_client_writer_retry_timer;
+     Optional<RequestPipe> m_client_request_pipe;
+     Optional<TransferredBodyFile> m_transferred_body_file;
+     size_t m_bytes_transferred_to_client { 0 };

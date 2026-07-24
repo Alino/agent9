@@ -41,7 +41,7 @@ index b4482d68a5..5e8f2d924e 100644
          if (!font_manager) {
              font_manager = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
 diff --git a/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp b/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
-index fbae5ff9a5..72f168852d 100644
+index fbae5ff9a5..51e89bf6e6 100644
 --- a/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
 +++ b/Libraries/LibGfx/ImageFormats/ImageDecoder.cpp
 @@ -4,13 +4,14 @@
@@ -86,7 +86,6 @@ index fbae5ff9a5..72f168852d 100644
  }
  
  ErrorOr<RefPtr<ImageDecoder>> ImageDecoder::try_create_for_raw_bytes(ReadonlyBytes bytes, [[maybe_unused]] Optional<ByteString> mime_type)
-
 diff --git a/Libraries/LibTLS/TLSv12.cpp b/Libraries/LibTLS/TLSv12.cpp
 index f67b58889a..a526a4fc37 100644
 --- a/Libraries/LibTLS/TLSv12.cpp
@@ -201,7 +200,7 @@ index 4eb76e7b27..1411bab4e6 100644
  elseif (APPLE)
      target_sources(Compositor PRIVATE SandboxMacOS.cpp)
 diff --git a/Services/Compositor/OpenGLContext.cpp b/Services/Compositor/OpenGLContext.cpp
-index 825841e8a4..9c6d091573 100644
+index 825841e8a4..5d8ed25db2 100644
 --- a/Services/Compositor/OpenGLContext.cpp
 +++ b/Services/Compositor/OpenGLContext.cpp
 @@ -34,7 +34,10 @@ extern "C" {
@@ -269,6 +268,56 @@ index 825841e8a4..9c6d091573 100644
      if (m_impl->uses_cpu_painting_surface)
          copy_default_framebuffer_to_cpu_painting_surface();
  #    endif
+@@ -685,6 +691,28 @@ Vector<String> OpenGLContext::get_supported_opengl_extensions()
+             extensions.append(MUST(String::from_utf8(extension)));
+     }
+ 
++#    if defined(AK_OS_PLAN9)
++    // gl9 is desktop Mesa (softpipe) exposed through OSMesa, so glGetString reports ARB/desktop extension spellings.
++    // The WebGL extension gate in LibWeb compares GLES/OES/ANGLE spellings, which never match those. Advertise the
++    // GLES aliases the gate expects, each gated on the desktop extension that actually backs it, so we only claim what
++    // softpipe supports.
++    auto add_extension_alias = [&extensions](StringView alias) {
++        auto alias_string = MUST(String::from_utf8(alias));
++        if (!extensions.contains_slow(alias_string))
++            extensions.append(move(alias_string));
++    };
++    if (extensions.contains_slow("GL_ARB_vertex_array_object"sv))
++        add_extension_alias("GL_OES_vertex_array_object"sv);
++    if (extensions.contains_slow("GL_ARB_texture_float"sv)) {
++        add_extension_alias("GL_OES_texture_float"sv);
++        add_extension_alias("GL_OES_texture_float_linear"sv);
++    }
++    if (extensions.contains_slow("GL_ARB_instanced_arrays"sv))
++        add_extension_alias("GL_ANGLE_instanced_arrays"sv);
++    // softpipe always supports 32-bit element indices.
++    add_extension_alias("GL_OES_element_index_uint"sv);
++#    endif
++
+     // We must cache this, because once extensions have been requested, they're no longer requestable extensions and would
+     // not appear in this list. However, we must always report every supported extension, regardless of what has already
+     // been requested.
+diff --git a/Services/Compositor/OpenGLContext.h b/Services/Compositor/OpenGLContext.h
+index fb93a84699..6f7c36e73b 100644
+--- a/Services/Compositor/OpenGLContext.h
++++ b/Services/Compositor/OpenGLContext.h
+@@ -51,6 +51,7 @@ public:
+ 
+     Vector<String> get_supported_opengl_extensions();
+ 
++
+ private:
+     RefPtr<Gfx::SkiaBackendContext> m_skia_backend_context;
+     Gfx::IntSize m_size;
+@@ -70,7 +71,7 @@ private:
+ #if defined(USE_VULKAN_DMABUF_IMAGES)
+     bool allocate_vkimage_painting_surface();
+ #endif
+-#if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID))
++#if defined(AK_OS_MACOS) || (defined(AK_OS_LINUX) && !defined(AK_OS_ANDROID)) || defined(AK_OS_PLAN9)
+     void allocate_cpu_painting_surface();
+     void copy_default_framebuffer_to_cpu_painting_surface();
+ #endif
 diff --git a/Services/Compositor/main.cpp b/Services/Compositor/main.cpp
 index f74576f28f..0ba58b4098 100644
 --- a/Services/Compositor/main.cpp
@@ -316,10 +365,27 @@ index 723b507bcc..4b920283e7 100644
  elseif (APPLE)
      list(APPEND SOURCES SandboxMacOS.cpp)
 diff --git a/Services/RequestServer/main.cpp b/Services/RequestServer/main.cpp
-index d5acf45747..fb34d6e9fa 100644
+index d5acf45747..645c684c06 100644
 --- a/Services/RequestServer/main.cpp
 +++ b/Services/RequestServer/main.cpp
-@@ -86,6 +86,9 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <AK/ByteString.h>
++#include <cstdio>
+ #include <AK/Format.h>
+ #include <AK/StringView.h>
+ #include <AK/Vector.h>
+@@ -38,6 +39,8 @@ static void handle_signal(int signal)
+ 
+ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+ {
++    (void)freopen("/tmp/rs-stderr.log", "a", stderr);   // WIRE-DBG: capture RequestServer dbgln
++    setvbuf(stderr, nullptr, _IONBF, 0);                 // unbuffered so wire-debug flushes immediately
+     AK::set_rich_debug_enabled(true);
+ 
+     Vector<ByteString> certificates;
+@@ -86,6 +89,9 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
  
      Optional<HTTP::DiskCache> disk_cache;
  
@@ -355,3 +421,37 @@ index 0b9390c994..56b7a3a19b 100644
      target_sources(WebWorker PRIVATE ../RendererSandboxLinux.cpp)
  elseif (APPLE)
      target_sources(WebWorker PRIVATE ../RendererSandboxMacOS.cpp)
+diff --git a/Services/WebWorker/main.cpp b/Services/WebWorker/main.cpp
+index ead0b1218b..c7cdac476f 100644
+--- a/Services/WebWorker/main.cpp
++++ b/Services/WebWorker/main.cpp
+@@ -10,6 +10,10 @@
+ #include <LibCore/System.h>
+ #include <LibCrypto/OpenSSLForward.h>
+ #include <LibFileSystem/FileSystem.h>
++#if defined(AK_OS_PLAN9)
++#    include <LibGfx/Font/FontDatabase.h>
++#    include <LibGfx/Font/PathFontProvider.h>
++#endif
+ #include <LibIPC/SingleServer.h>
+ #include <LibIPC/Transport.h>
+ #include <LibIPC/TransportHandle.h>
+@@ -95,7 +99,18 @@ ErrorOr<int> ladybird_main(Main::Arguments arguments)
+ 
+     Web::Platform::EventLoopPlugin::install(*new Web::Platform::EventLoopPlugin);
+ 
++#if defined(AK_OS_PLAN9)
++    // Plan 9 has no system font directories, so FontPlugin's font_directories()
++    // fallback (used when no provider is passed) loads nothing and
++    // VERIFY(m_default_fixed_width_font) aborts EVERY worker at startup — hanging
++    // every test that spawns a Worker. Load the bundled fonts as resources and
++    // hand FontPlugin a ready provider, exactly as WebContent's main does.
++    auto& font_provider = static_cast<Gfx::PathFontProvider&>(Gfx::FontDatabase::the().install_system_font_provider(make<Gfx::PathFontProvider>()));
++    font_provider.load_all_fonts_from_uri("resource://fonts"sv);
++    Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false, &font_provider));
++#else
+     Web::Platform::FontPlugin::install(*new Web::Platform::FontPlugin(false));
++#endif
+ 
+     Web::Bindings::initialize_main_thread_vm(worker_type);
+ 

@@ -27,10 +27,10 @@ index 49c66b30e8..4f743f2961 100644
  #else
 diff --git a/Libraries/LibIPC/TransportPlan9.cpp b/Libraries/LibIPC/TransportPlan9.cpp
 new file mode 100644
-index 0000000000..9e035b2bf6
+index 0000000000..1b4507acbf
 --- /dev/null
 +++ b/Libraries/LibIPC/TransportPlan9.cpp
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,440 @@
 +/*
 + * Copyright (c) 2024, Andrew Kaster <andrew@ladybird.org>
 + * Copyright (c) 2025, stasoid <stasoid@yahoo.com>
@@ -63,6 +63,7 @@ index 0000000000..9e035b2bf6
 +
 +#include <errno.h>
 +#include <fcntl.h>
++#include <sys/stat.h>
 +#include <poll.h>
 +#include <stdio.h>
 +#include <unistd.h>
@@ -287,7 +288,15 @@ index 0000000000..9e035b2bf6
 +        }
 +        // Re-apply the sender's file-status flags (see serialize_attachments:
 +        // cc9's O_NONBLOCK is per-process, unlike Linux's per-description).
-+        if (wire_flags & 1)
++        // A /srv reopen does not preserve the sender's O_NONBLOCK (observed:
++        // sender sets it via ioctl(FIONBIO), receiver still saw nonblock=0), and a
++        // BLOCKING pipe/socket handed to an event-loop-driven reader wedges the
++        // receiver on its first drain — that is how response bodies stopped being
++        // delivered. Force it for sockets/FIFOs only: a regular file forced
++        // non-blocking returns EAGAIN and the loader reports it as a failed load.
++        struct stat st;
++        bool is_stream = (::fstat(fd, &st) == 0) && (S_ISSOCK(st.st_mode) || S_ISFIFO(st.st_mode));
++        if ((wire_flags & 1) || is_stream)
 +            (void)::fcntl(fd, F_SETFL, O_NONBLOCK);
 +        // Receiver removes: each send posts a fresh entry, so multi-hop and
 +        // multi-peer sharing both re-post — never reuse a name.

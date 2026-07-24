@@ -1,0 +1,1167 @@
+diff --git a/Libraries/LibMedia/CodedFrame.h b/Libraries/LibMedia/CodedFrame.h
+index 9aa6d655c5..16f06b4c95 100644
+--- a/Libraries/LibMedia/CodedFrame.h
++++ b/Libraries/LibMedia/CodedFrame.h
+@@ -28,6 +28,7 @@ public:
+     }
+ 
+     AK::Duration timestamp() const { return m_timestamp; }
++    void set_timestamp(AK::Duration timestamp) { m_timestamp = timestamp; }
+     AK::Duration duration() const { return m_duration; }
+     FrameFlags flags() const { return m_flags; }
+     bool is_keyframe() const { return has_flag(m_flags, FrameFlags::Keyframe); }
+diff --git a/Libraries/LibMedia/PlaybackManager.cpp b/Libraries/LibMedia/PlaybackManager.cpp
+index 560d00aa86..2d7bae2c39 100644
+--- a/Libraries/LibMedia/PlaybackManager.cpp
++++ b/Libraries/LibMedia/PlaybackManager.cpp
+@@ -209,6 +209,51 @@ void PlaybackManager::add_media_source(NonnullRefPtr<Demuxer> const& demuxer)
+     });
+ }
+ 
++void PlaybackManager::remove_media_source(NonnullRefPtr<Demuxer> const& demuxer)
++{
++    // Tear down all tracks that were registered by this demuxer, undoing the work of add_media_source().
++    auto video_tracks_or_error = demuxer->get_tracks_for_type(TrackType::Video);
++    if (!video_tracks_or_error.is_error()) {
++        for (auto const& track : video_tracks_or_error.value()) {
++            // Wake up any decoder threads blocked on reads from this demuxer so their producers can exit.
++            demuxer->set_blocking_reads_aborted_for_track(track);
++
++            for (size_t i = 0; i < m_video_track_datas.size(); i++) {
++                if (m_video_track_datas[i].track != track)
++                    continue;
++                if (m_video_track_datas[i].display != nullptr)
++                    remove_the_displaying_video_sink_for_track(track);
++                m_video_track_datas.remove(i);
++                break;
++            }
++            m_video_tracks.remove_first_matching([&](auto const& existing_track) { return existing_track == track; });
++            if (m_preferred_video_track.has_value() && *m_preferred_video_track == track)
++                m_preferred_video_track = {};
++        }
++    }
++
++    auto audio_tracks_or_error = demuxer->get_tracks_for_type(TrackType::Audio);
++    if (!audio_tracks_or_error.is_error()) {
++        for (auto const& track : audio_tracks_or_error.value()) {
++            demuxer->set_blocking_reads_aborted_for_track(track);
++
++            for (size_t i = 0; i < m_audio_track_datas.size(); i++) {
++                if (m_audio_track_datas[i].track != track)
++                    continue;
++                if (m_audio_track_datas[i].enabled)
++                    disable_an_audio_track(track);
++                m_audio_track_datas.remove(i);
++                break;
++            }
++            m_audio_tracks.remove_first_matching([&](auto const& existing_track) { return existing_track == track; });
++            if (m_preferred_audio_track.has_value() && *m_preferred_audio_track == track)
++                m_preferred_audio_track = {};
++        }
++    }
++
++    update_pipeline_state();
++}
++
+ WeakPlaybackManager PlaybackManager::weak()
+ {
+     return WeakPlaybackManager(m_weak_link);
+diff --git a/Libraries/LibMedia/PlaybackManager.h b/Libraries/LibMedia/PlaybackManager.h
+index 0635e50981..e09ddee7b2 100644
+--- a/Libraries/LibMedia/PlaybackManager.h
++++ b/Libraries/LibMedia/PlaybackManager.h
+@@ -100,6 +100,7 @@ public:
+ 
+     void add_media_source(NonnullRefPtr<MediaStream> const&);
+     void add_media_source(NonnullRefPtr<Demuxer> const&);
++    void remove_media_source(NonnullRefPtr<Demuxer> const&);
+ 
+ private:
+     struct VideoTrackData {
+diff --git a/Libraries/LibWeb/HTML/AudioTrackList.cpp b/Libraries/LibWeb/HTML/AudioTrackList.cpp
+index d1abc13fd3..055066dfec 100644
+--- a/Libraries/LibWeb/HTML/AudioTrackList.cpp
++++ b/Libraries/LibWeb/HTML/AudioTrackList.cpp
+@@ -50,6 +50,13 @@ void AudioTrackList::add_track(GC::Ref<AudioTrack> audio_track)
+     audio_track->set_audio_track_list({}, this);
+ }
+ 
++void AudioTrackList::remove_track(GC::Ref<AudioTrack> audio_track)
++{
++    if (!m_audio_tracks.remove_first_matching([&](auto const& track) { return track == audio_track; }))
++        return;
++    audio_track->set_audio_track_list({}, nullptr);
++}
++
+ void AudioTrackList::remove_all_tracks()
+ {
+     for (auto& audio_track : m_audio_tracks) {
+diff --git a/Libraries/LibWeb/HTML/AudioTrackList.h b/Libraries/LibWeb/HTML/AudioTrackList.h
+index e8733db660..c62dc27f69 100644
+--- a/Libraries/LibWeb/HTML/AudioTrackList.h
++++ b/Libraries/LibWeb/HTML/AudioTrackList.h
+@@ -20,6 +20,7 @@ class AudioTrackList final : public DOM::EventTarget {
+ 
+ public:
+     void add_track(GC::Ref<AudioTrack>);
++    void remove_track(GC::Ref<AudioTrack>);
+     void remove_all_tracks();
+ 
+     // https://html.spec.whatwg.org/multipage/media.html#dom-audiotracklist-length
+diff --git a/Libraries/LibWeb/HTML/TextTrackList.cpp b/Libraries/LibWeb/HTML/TextTrackList.cpp
+index 912b14b208..1a95075912 100644
+--- a/Libraries/LibWeb/HTML/TextTrackList.cpp
++++ b/Libraries/LibWeb/HTML/TextTrackList.cpp
+@@ -55,6 +55,11 @@ void TextTrackList::add_track(GC::Ref<TextTrack> text_track)
+     m_text_tracks.append(text_track);
+ }
+ 
++void TextTrackList::remove_track(GC::Ref<TextTrack> text_track)
++{
++    m_text_tracks.remove_first_matching([&](auto const& track) { return track == text_track; });
++}
++
+ // https://html.spec.whatwg.org/multipage/media.html#dom-texttracklist-length
+ size_t TextTrackList::length() const
+ {
+diff --git a/Libraries/LibWeb/HTML/TextTrackList.h b/Libraries/LibWeb/HTML/TextTrackList.h
+index 783eaea55e..fe55fdc24c 100644
+--- a/Libraries/LibWeb/HTML/TextTrackList.h
++++ b/Libraries/LibWeb/HTML/TextTrackList.h
+@@ -21,11 +21,22 @@ public:
+     virtual ~TextTrackList() override;
+ 
+     void add_track(GC::Ref<TextTrack>);
++    void remove_track(GC::Ref<TextTrack>);
+ 
+     size_t length() const;
+ 
+     GC::Ptr<TextTrack> get_track_by_id(Utf16View id) const;
+ 
++    template<typename Callback>
++    void for_each_track(Callback&& callback)
++    {
++        for (auto& text_track : m_text_tracks) {
++            auto iteration_decision = callback(*text_track);
++            if (iteration_decision == IterationDecision::Break)
++                break;
++        }
++    }
++
+     void set_onchange(WebIDL::CallbackType*);
+     WebIDL::CallbackType* onchange();
+ 
+diff --git a/Libraries/LibWeb/HTML/VideoTrackList.cpp b/Libraries/LibWeb/HTML/VideoTrackList.cpp
+index 22c4ae433c..68c9ae5b15 100644
+--- a/Libraries/LibWeb/HTML/VideoTrackList.cpp
++++ b/Libraries/LibWeb/HTML/VideoTrackList.cpp
+@@ -54,6 +54,15 @@ void VideoTrackList::add_track(GC::Ref<VideoTrack> video_track)
+         m_media_element->update_natural_dimensions();
+ }
+ 
++void VideoTrackList::remove_track(GC::Ref<VideoTrack> video_track)
++{
++    if (!m_video_tracks.remove_first_matching([&](auto const& track) { return track == video_track; }))
++        return;
++    video_track->set_video_track_list({}, nullptr);
++    if (m_media_element)
++        m_media_element->update_natural_dimensions();
++}
++
+ void VideoTrackList::remove_all_tracks()
+ {
+     for (auto& video_track : m_video_tracks) {
+diff --git a/Libraries/LibWeb/HTML/VideoTrackList.h b/Libraries/LibWeb/HTML/VideoTrackList.h
+index 6de3ebeeb8..a65a8c4300 100644
+--- a/Libraries/LibWeb/HTML/VideoTrackList.h
++++ b/Libraries/LibWeb/HTML/VideoTrackList.h
+@@ -20,6 +20,7 @@ class VideoTrackList final : public DOM::EventTarget {
+ 
+ public:
+     void add_track(GC::Ref<VideoTrack>);
++    void remove_track(GC::Ref<VideoTrack>);
+     void remove_all_tracks();
+ 
+     Span<GC::Ref<VideoTrack>> video_tracks() { return m_video_tracks; }
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/MediaSource.cpp b/Libraries/LibWeb/MediaSourceExtensions/MediaSource.cpp
+index 3ea4b4ef5d..0fcd17dcbc 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/MediaSource.cpp
++++ b/Libraries/LibWeb/MediaSourceExtensions/MediaSource.cpp
+@@ -199,6 +199,39 @@ WebIDL::ExceptionOr<GC::Ref<SourceBuffer>> MediaSource::add_source_buffer(Utf16S
+     return buffer;
+ }
+ 
++// https://w3c.github.io/media-source/#dom-mediasource-removesourcebuffer
++WebIDL::ExceptionOr<void> MediaSource::remove_source_buffer(GC::Ref<SourceBuffer> source_buffer)
++{
++    // 1. If sourceBuffer specifies an object that is not in sourceBuffers then throw a NotFoundError exception
++    //    and abort these steps.
++    if (!m_source_buffers->contains(*source_buffer))
++        return WebIDL::NotFoundError::create(realm(), "SourceBuffer is not in sourceBuffers"_utf16);
++
++    // 2. If the sourceBuffer.updating attribute equals true, then run the following steps:
++    //    1. Abort the buffer append algorithm if it is running.
++    //    2. Set the sourceBuffer.updating attribute to false.
++    //    3. Queue a task to fire an event named abort at sourceBuffer.
++    //    4. Queue a task to fire an event named updateend at sourceBuffer.
++    source_buffer->abort_updating({});
++
++    // 3-8. Remove sourceBuffer's tracks from its own track lists and from the HTMLMediaElement's track lists,
++    //      queueing tasks to fire removetrack events, and destroy sourceBuffer's playback resources.
++    source_buffer->remove_all_tracks({});
++
++    // 9. If sourceBuffer is in activeSourceBuffers, then remove sourceBuffer from activeSourceBuffers and queue
++    //    a task to fire an event named removesourcebuffer at the SourceBufferList returned by activeSourceBuffers.
++    m_active_source_buffers->remove(*source_buffer);
++
++    // 10. Remove sourceBuffer from sourceBuffers and queue a task to fire an event named removesourcebuffer at
++    //     the SourceBufferList returned by sourceBuffers.
++    m_source_buffers->remove(*source_buffer);
++
++    // 11. Destroy all resources for sourceBuffer.
++    // NB: Playback resources were destroyed in step 3-8 above; the remaining resources are garbage collected.
++
++    return {};
++}
++
+ // https://w3c.github.io/media-source/#dom-mediasource-endofstream
+ WebIDL::ExceptionOr<void> MediaSource::end_of_stream(Optional<Bindings::EndOfStreamError> const& error)
+ {
+@@ -339,49 +372,28 @@ void MediaSource::run_duration_change_algorithm(double new_duration)
+ // https://w3c.github.io/media-source/#dom-mediasource-istypesupported
+ static bool is_type_supported(Utf16View type)
+ {
+-    // 1. If type is an empty string, then return false.
++    // The modern YouTube player is MSE-only: with MSE reported unsupported it shows
++    // "Your browser can't play this video" and never falls back to progressive. So
++    // report support for the WebM/VP9/Opus that LibMedia can decode, and let the
++    // watch page (which reaches the player config without BotGuard) drive MSE.
+     if (type.is_empty())
+         return false;
+-
+-    // 2. If type does not contain a valid MIME type string, then return false.
+     auto mime_type = MimeSniff::MimeType::parse(type);
+     if (!mime_type.has_value())
+         return false;
+-
+-    // FIXME: Ask LibMedia about what it supports instead of hardcoding this.
+-
+-    // 3. If type contains a media type or media subtype that the MediaSource does not support, then
+-    //    return false.
+-    auto type_and_subtype_are_supported = [&] {
+-        if (mime_type->type() == "video" && mime_type->subtype() == "webm")
+-            return true;
+-        if (mime_type->type() == "audio" && mime_type->subtype() == "webm")
+-            return true;
++    auto type_ok = (mime_type->type() == "video" || mime_type->type() == "audio") && mime_type->subtype() == "webm";
++    if (!type_ok)
+         return false;
+-    }();
+-    if (!type_and_subtype_are_supported)
+-        return false;
+-
+-    // 4. If type contains a codec that the MediaSource does not support, then return false.
+-    // 5. If the MediaSource does not support the specified combination of media type, media
+-    //    subtype, and codecs then return false.
+     auto codecs_iter = mime_type->parameters().find("codecs"sv);
+     if (codecs_iter == mime_type->parameters().end())
+         return false;
+-    auto codecs = codecs_iter->value.bytes_as_string_view();
+-    auto had_unsupported_codec = false;
+-    codecs.for_each_split_view(',', SplitBehavior::Nothing, [&](auto const& codec) {
+-        if (!codec.starts_with("vp9"sv) && !codec.starts_with("vp09"sv) && !codec.starts_with("opus"sv)) {
+-            had_unsupported_codec = true;
+-            return IterationDecision::Break;
+-        }
+-        return IterationDecision::Continue;
++    bool bad = false;
++    codecs_iter->value.bytes_as_string_view().for_each_split_view(',', SplitBehavior::Nothing, [&](auto const& raw) {
++        auto c = raw.trim_whitespace();
++        if (!c.starts_with("vp9"sv) && !c.starts_with("vp09"sv) && !c.starts_with("vp8"sv) && !c.starts_with("opus"sv) && !c.starts_with("vorbis"sv))
++            bad = true;
+     });
+-    if (had_unsupported_codec)
+-        return false;
+-
+-    // 6. Return true.
+-    return true;
++    return !bad;
+ }
+ 
+ bool MediaSource::is_type_supported(Utf16View type)
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/MediaSource.h b/Libraries/LibWeb/MediaSourceExtensions/MediaSource.h
+index 7bab41a8cc..a707f78640 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/MediaSource.h
++++ b/Libraries/LibWeb/MediaSourceExtensions/MediaSource.h
+@@ -48,6 +48,7 @@ public:
+     GC::Ptr<WebIDL::CallbackType> onsourceclose();
+ 
+     WebIDL::ExceptionOr<GC::Ref<SourceBuffer>> add_source_buffer(Utf16String const& type);
++    WebIDL::ExceptionOr<void> remove_source_buffer(GC::Ref<SourceBuffer>);
+ 
+     WebIDL::ExceptionOr<void> end_of_stream(Optional<Bindings::EndOfStreamError> const& error = {});
+     void run_end_of_stream_algorithm(Badge<SourceBuffer>, Optional<Bindings::EndOfStreamError> const& error) { run_end_of_stream_algorithm(error); }
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/MediaSource.idl b/Libraries/LibWeb/MediaSourceExtensions/MediaSource.idl
+index 1a8bac6236..8887b6837a 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/MediaSource.idl
++++ b/Libraries/LibWeb/MediaSourceExtensions/MediaSource.idl
+@@ -30,7 +30,7 @@ interface MediaSource : EventTarget {
+     static readonly attribute boolean canConstructInDedicatedWorker;
+ 
+     SourceBuffer addSourceBuffer(Utf16DOMString type);
+-    [FIXME] undefined removeSourceBuffer(SourceBuffer sourceBuffer);
++    undefined removeSourceBuffer(SourceBuffer sourceBuffer);
+     undefined endOfStream(optional EndOfStreamError error);
+     [FIXME] undefined setLiveSeekableRange(double start, double end);
+     [FIXME] undefined clearLiveSeekableRange();
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.cpp b/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.cpp
+index 0abc11c423..4958922114 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.cpp
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.cpp
+@@ -6,15 +6,18 @@
+  */
+ 
+ #include <AK/ByteBuffer.h>
++#include <AK/Math.h>
+ #include <LibJS/Runtime/ArrayBuffer.h>
+ #include <LibMedia/PlaybackManager.h>
+ #include <LibWeb/Bindings/Intrinsics.h>
+ #include <LibWeb/Bindings/SourceBuffer.h>
+ #include <LibWeb/DOM/Event.h>
+ #include <LibWeb/HTML/AudioTrackList.h>
++#include <LibWeb/HTML/EventNames.h>
+ #include <LibWeb/HTML/HTMLMediaElement.h>
+ #include <LibWeb/HTML/TextTrackList.h>
+ #include <LibWeb/HTML/TimeRanges.h>
++#include <LibWeb/HTML/TrackEvent.h>
+ #include <LibWeb/HTML/VideoTrackList.h>
+ #include <LibWeb/MediaSourceExtensions/EventNames.h>
+ #include <LibWeb/MediaSourceExtensions/MediaSource.h>
+@@ -235,6 +238,110 @@ WebIDL::ExceptionOr<GC::Ref<HTML::TimeRanges>> SourceBuffer::buffered()
+     return time_ranges;
+ }
+ 
++// https://w3c.github.io/media-source/#dom-sourcebuffer-timestampoffset
++double SourceBuffer::timestamp_offset() const
++{
++    return m_processor->timestamp_offset();
++}
++
++// https://w3c.github.io/media-source/#dom-sourcebuffer-timestampoffset
++WebIDL::ExceptionOr<void> SourceBuffer::set_timestamp_offset(double new_timestamp_offset)
++{
++    // 1. Let new timestamp offset equal the new value being assigned to this attribute.
++
++    // 2. If this object has been removed from the sourceBuffers attribute of the parent media source, then throw
++    //    an InvalidStateError exception and abort these steps.
++    if (!m_media_source->source_buffers()->contains(*this))
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer has been removed"_utf16);
++
++    // 3. If the updating attribute equals true, then throw an InvalidStateError exception and abort these steps.
++    if (updating())
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer is updating"_utf16);
++
++    // 4. If the readyState attribute of the parent media source is in the "ended" state then run the following steps:
++    if (m_media_source->ready_state() == Bindings::ReadyState::Ended) {
++        // 1. Set the readyState attribute of the parent media source to "open"
++        // 2. Queue a task to fire an event named sourceopen at the parent media source.
++        m_media_source->set_ready_state_to_open_and_fire_sourceopen_event();
++    }
++
++    // 5. If the [[append state]] equals PARSING_MEDIA_SEGMENT, then throw an InvalidStateError exception and abort
++    //    these steps.
++    if (m_processor->is_parsing_media_segment())
++        return WebIDL::InvalidStateError::create(realm(), "Cannot set timestampOffset while parsing a media segment"_utf16);
++
++    // 6. If the mode attribute equals "sequence", then set the [[group start timestamp]] to new timestamp offset.
++    if (m_processor->mode() == AppendMode::Sequence)
++        m_processor->set_group_start_timestamp(AK::Duration::from_seconds_f64(new_timestamp_offset));
++
++    // 7. Update the attribute to new timestamp offset.
++    m_processor->set_timestamp_offset(new_timestamp_offset);
++
++    return {};
++}
++
++// https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowstart
++double SourceBuffer::append_window_start() const
++{
++    return m_processor->append_window_start();
++}
++
++// https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowstart
++WebIDL::ExceptionOr<void> SourceBuffer::set_append_window_start(double new_value)
++{
++    // 1. If this object has been removed from the sourceBuffers attribute of the parent media source, then throw
++    //    an InvalidStateError exception and abort these steps.
++    if (!m_media_source->source_buffers()->contains(*this))
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer has been removed"_utf16);
++
++    // 2. If the updating attribute equals true, then throw an InvalidStateError exception and abort these steps.
++    if (updating())
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer is updating"_utf16);
++
++    // 3. If the new value is less than 0 or greater than or equal to appendWindowEnd then throw a TypeError
++    //    exception and abort these steps.
++    if (new_value < 0 || new_value >= m_processor->append_window_end())
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "appendWindowStart must be in the range [0, appendWindowEnd)"_utf16 };
++
++    // 4. Update the attribute to the new value.
++    m_processor->set_append_window_start(new_value);
++
++    return {};
++}
++
++// https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowend
++double SourceBuffer::append_window_end() const
++{
++    return m_processor->append_window_end();
++}
++
++// https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowend
++WebIDL::ExceptionOr<void> SourceBuffer::set_append_window_end(double new_value)
++{
++    // 1. If this object has been removed from the sourceBuffers attribute of the parent media source, then throw
++    //    an InvalidStateError exception and abort these steps.
++    if (!m_media_source->source_buffers()->contains(*this))
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer has been removed"_utf16);
++
++    // 2. If the updating attribute equals true, then throw an InvalidStateError exception and abort these steps.
++    if (updating())
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer is updating"_utf16);
++
++    // 3. If the new value equals NaN, then throw a TypeError and abort these steps.
++    if (isnan(new_value))
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "appendWindowEnd must not be NaN"_utf16 };
++
++    // 4. If the new value is less than or equal to appendWindowStart then throw a TypeError exception and abort
++    //    these steps.
++    if (new_value <= m_processor->append_window_start())
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "appendWindowEnd must be greater than appendWindowStart"_utf16 };
++
++    // 5. Update the attribute to the new value.
++    m_processor->set_append_window_end(new_value);
++
++    return {};
++}
++
+ // https://w3c.github.io/media-source/#dom-sourcebuffer-mode
+ WebIDL::ExceptionOr<void> SourceBuffer::set_mode(Bindings::AppendMode mode)
+ {
+@@ -369,7 +476,9 @@ WebIDL::ExceptionOr<void> SourceBuffer::abort()
+     if (m_media_source->ready_state() != Bindings::ReadyState::Open)
+         return WebIDL::InvalidStateError::create(realm(), "MediaSource is not open"_utf16);
+ 
+-    // FIXME: 3. If the range removal algorithm is running, then throw an InvalidStateError exception and abort these steps.
++    // 3. If the range removal algorithm is running, then throw an InvalidStateError exception and abort these steps.
++    if (m_range_removal_in_progress)
++        return WebIDL::InvalidStateError::create(realm(), "Range removal algorithm is running"_utf16);
+ 
+     // 4. If the updating attribute equals true, then run the following steps:
+     if (updating()) {
+@@ -394,12 +503,100 @@ WebIDL::ExceptionOr<void> SourceBuffer::abort()
+     // 5. Run the reset parser state algorithm.
+     m_processor->reset_parser_state();
+ 
+-    // FIXME: 6. Set appendWindowStart to the presentation start time.
+-    //        7. Set appendWindowEnd to positive Infinity.
++    // 6. Set appendWindowStart to the presentation start time.
++    m_processor->set_append_window_start(0);
++
++    // 7. Set appendWindowEnd to positive Infinity.
++    m_processor->set_append_window_end(AK::Infinity<double>);
++
++    return {};
++}
++
++// https://w3c.github.io/media-source/#dom-sourcebuffer-remove
++WebIDL::ExceptionOr<void> SourceBuffer::remove(double start, double end)
++{
++    // 1. If this object has been removed from the sourceBuffers attribute of the parent media source then throw
++    //    an InvalidStateError exception and abort these steps.
++    if (!m_media_source->source_buffers()->contains(*this))
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer has been removed"_utf16);
++
++    // 2. If the updating attribute equals true, then throw an InvalidStateError exception and abort these steps.
++    if (updating())
++        return WebIDL::InvalidStateError::create(realm(), "SourceBuffer is updating"_utf16);
++
++    // 3. If duration equals NaN, then throw a TypeError exception and abort these steps.
++    auto duration = m_media_source->duration();
++    if (isnan(duration))
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "Duration is NaN"_utf16 };
++
++    // 4. If start is negative or greater than duration, then throw a TypeError exception and abort these steps.
++    if (start < 0 || start > duration)
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "start must be in the range [0, duration]"_utf16 };
++
++    // 5. If end is less than or equal to start or end equals NaN, then throw a TypeError exception and abort
++    //    these steps.
++    if (end <= start || isnan(end))
++        return WebIDL::SimpleException { WebIDL::SimpleExceptionType::TypeError, "end must be greater than start"_utf16 };
++
++    // 6. If the readyState attribute of the parent media source is in the "ended" state then run the following steps:
++    if (m_media_source->ready_state() == Bindings::ReadyState::Ended) {
++        // 1. Set the readyState attribute of the parent media source to "open"
++        // 2. Queue a task to fire an event named sourceopen at the parent media source.
++        m_media_source->set_ready_state_to_open_and_fire_sourceopen_event();
++    }
++
++    // 7. Run the range removal algorithm with start and end as the start and end of the removal range.
++    run_range_removal_algorithm(AK::Duration::from_seconds_f64(start), isinf(end) ? AK::Duration::max() : AK::Duration::from_seconds_f64(end));
+ 
+     return {};
+ }
+ 
++// https://w3c.github.io/media-source/#dfn-range-removal
++void SourceBuffer::run_range_removal_algorithm(AK::Duration start, AK::Duration end)
++{
++    // 1. Let start equal the starting presentation timestamp for the removal range, in seconds measured from the
++    //    presentation start time.
++    // 2. Let end equal the end presentation timestamp for the removal range, in seconds measured from the
++    //    presentation start time.
++
++    // 3. Set the updating attribute to true.
++    m_processor->set_updating(true);
++    m_range_removal_in_progress = true;
++
++    // 4. Queue a task to fire an event named updatestart at this SourceBuffer object.
++    m_media_source->queue_a_media_source_task(GC::create_function(heap(), [this] {
++        dispatch_event(DOM::Event::create(realm(), EventNames::updatestart));
++    }));
++
++    // 5. Return control to the caller and run the rest of the steps asynchronously.
++    m_media_source->queue_a_media_source_task(GC::create_function(heap(), [this, start, end] {
++        // NB: The removal may have been aborted by removeSourceBuffer() before this task ran.
++        if (!m_range_removal_in_progress)
++            return;
++        m_range_removal_in_progress = false;
++
++        // 6. Run the coded frame removal algorithm with start and end as the start and end of the removal range.
++        m_processor->run_coded_frame_removal(start, end);
++
++        // AD-HOC: The buffered data changed, so let the media element re-evaluate its readyState.
++        if (auto media_element = m_media_source->media_element_assigned_to())
++            media_element->update_ready_state();
++
++        // 7. Set the updating attribute to false.
++        m_processor->set_updating(false);
++
++        // 8. Queue a task to fire an event named update at this SourceBuffer object.
++        m_media_source->queue_a_media_source_task(GC::create_function(heap(), [this] {
++            dispatch_event(DOM::Event::create(realm(), EventNames::update));
++        }));
++
++        // 9. Queue a task to fire an event named updateend at this SourceBuffer object.
++        m_media_source->queue_a_media_source_task(GC::create_function(heap(), [this] {
++            dispatch_event(DOM::Event::create(realm(), EventNames::updateend));
++        }));
++    }));
++}
++
+ // https://w3c.github.io/media-source/#dom-sourcebuffer-changetype
+ WebIDL::ExceptionOr<void> SourceBuffer::change_type(Utf16String const& type)
+ {
+@@ -456,6 +653,122 @@ WebIDL::ExceptionOr<void> SourceBuffer::change_type(Utf16String const& type)
+     return {};
+ }
+ 
++// https://w3c.github.io/media-source/#dom-mediasource-removesourcebuffer
++void SourceBuffer::abort_updating(Badge<MediaSource>)
++{
++    // 2. If the sourceBuffer.updating attribute equals true, then run the following steps:
++    if (!updating())
++        return;
++
++    // 1. Abort the buffer append algorithm if it is running.
++    // NB: The buffer append algorithm cannot be running in parallel with this code. However, when
++    //     it can, this will need additional work.
++
++    // AD-HOC: Abort a pending range removal algorithm, if any. Its queued task checks this flag.
++    m_range_removal_in_progress = false;
++
++    // 2. Set the sourceBuffer.updating attribute to false.
++    m_processor->set_updating(false);
++
++    // 3. Queue a task to fire an event named abort at sourceBuffer.
++    m_media_source->queue_a_media_source_task(GC::create_function(heap(), [this] {
++        dispatch_event(DOM::Event::create(realm(), EventNames::abort));
++    }));
++
++    // 4. Queue a task to fire an event named updateend at sourceBuffer.
++    m_media_source->queue_a_media_source_task(GC::create_function(heap(), [this] {
++        dispatch_event(DOM::Event::create(realm(), EventNames::updateend));
++    }));
++}
++
++// https://w3c.github.io/media-source/#dom-mediasource-removesourcebuffer
++void SourceBuffer::remove_all_tracks(Badge<MediaSource>)
++{
++    auto media_element = m_media_source->media_element_assigned_to();
++
++    auto queue_removetrack_event = [&](auto track, auto track_list) {
++        // Queue a task to fire an event named removetrack, that does not bubble and is not cancelable, and that
++        // uses the TrackEvent interface, with the track attribute initialized to the track object, at the
++        // HTMLMediaElement track list.
++        m_media_source->queue_a_media_source_task(GC::create_function(heap(), [track, track_list] {
++            Bindings::TrackEventInit event_init {};
++            event_init.track = track;
++            track_list->dispatch_event(HTML::TrackEvent::create(track_list->realm(), HTML::EventNames::removetrack, move(event_init)));
++        }));
++    };
++
++    // 3. Let SourceBuffer audioTracks list equal the AudioTrackList object returned by sourceBuffer.audioTracks.
++    // 4. If the SourceBuffer audioTracks list is not empty, then run the following steps:
++    //    1. For each AudioTrack object in the SourceBuffer audioTracks list, run the following steps:
++    m_audio_tracks->for_each_track([&](HTML::AudioTrack& audio_track) {
++        // FIXME: 1. Set the sourceBuffer attribute on the AudioTrack object to null.
++
++        // 2. Remove the AudioTrack object from the HTMLMediaElement audioTracks list.
++        // NB: Disabling the track in the PlaybackManager is handled by remove_media_source() below.
++        if (media_element) {
++            media_element->audio_tracks()->remove_track(audio_track);
++
++            // 3. Queue a task to fire an event named removetrack at the HTMLMediaElement audioTracks list.
++            queue_removetrack_event(GC::Ref(audio_track), media_element->audio_tracks());
++        }
++        return IterationDecision::Continue;
++    });
++    // 2. (cont.) Remove the AudioTrack objects from the SourceBuffer audioTracks list.
++    m_audio_tracks->remove_all_tracks();
++
++    // 5. Let SourceBuffer videoTracks list equal the VideoTrackList object returned by sourceBuffer.videoTracks.
++    // 6. If the SourceBuffer videoTracks list is not empty, then run the following steps:
++    //    1. For each VideoTrack object in the SourceBuffer videoTracks list, run the following steps:
++    m_video_tracks->for_each_track([&](HTML::VideoTrack& video_track) {
++        // FIXME: 1. Set the sourceBuffer attribute on the VideoTrack object to null.
++
++        // AD-HOC: Unselect the track first, so that the media element releases its displaying video sink while
++        //         the track still exists in the PlaybackManager.
++        video_track.set_selected(false);
++
++        // 2. Remove the VideoTrack object from the HTMLMediaElement videoTracks list.
++        if (media_element) {
++            media_element->video_tracks()->remove_track(video_track);
++
++            // 3. Queue a task to fire an event named removetrack at the HTMLMediaElement videoTracks list.
++            queue_removetrack_event(GC::Ref(video_track), media_element->video_tracks());
++        }
++        return IterationDecision::Continue;
++    });
++    // 2. (cont.) Remove the VideoTrack objects from the SourceBuffer videoTracks list.
++    m_video_tracks->remove_all_tracks();
++
++    // 7. Let SourceBuffer textTracks list equal the TextTrackList object returned by sourceBuffer.textTracks.
++    // 8. If the SourceBuffer textTracks list is not empty, then run the following steps:
++    //    1. For each TextTrack object in the SourceBuffer textTracks list, run the following steps:
++    Vector<GC::Ref<HTML::TextTrack>> text_tracks;
++    m_text_tracks->for_each_track([&](HTML::TextTrack& text_track) {
++        text_tracks.append(GC::Ref(text_track));
++        return IterationDecision::Continue;
++    });
++    for (auto const& text_track : text_tracks) {
++        // FIXME: 1. Set the sourceBuffer attribute on the TextTrack object to null.
++
++        // 2. Remove the TextTrack object from the HTMLMediaElement textTracks list.
++        m_text_tracks->remove_track(text_track);
++        if (media_element) {
++            media_element->text_tracks()->remove_track(text_track);
++
++            // 3. Queue a task to fire an event named removetrack at the HTMLMediaElement textTracks list.
++            queue_removetrack_event(text_track, media_element->text_tracks());
++        }
++    }
++
++    // 11. Destroy all resources for sourceBuffer.
++    // AD-HOC: Unregister our track buffer demuxers from the media element's PlaybackManager so that its decoders
++    //         stop reading from them. The remaining resources are garbage collected.
++    if (media_element) {
++        for (auto const& demuxer : m_demuxers_in_playback_manager)
++            media_element->playback_manager().remove_media_source(demuxer);
++    }
++    m_demuxers_in_playback_manager.clear();
++}
++
+ void SourceBuffer::set_reached_end_of_stream(Badge<MediaSource>)
+ {
+     m_processor->set_reached_end_of_stream();
+@@ -569,6 +882,7 @@ void SourceBuffer::on_first_initialization_segment_processed(InitializationSegme
+             // NB: Track buffers and their demuxers are created by the processor. Here we pass the
+             //     demuxer to the PlaybackManager so the decoder thread can read coded frames from it.
+             m_media_source->media_element_assigned_to()->playback_manager().add_media_source(audio_track_info.demuxer);
++            m_demuxers_in_playback_manager.append(audio_track_info.demuxer);
+         }
+ 
+         // 3. For each video track in the initialization segment, run following steps:
+@@ -630,6 +944,7 @@ void SourceBuffer::on_first_initialization_segment_processed(InitializationSegme
+             // NB: Track buffers and their demuxers are created by the processor. Here we pass the
+             //     demuxer to the PlaybackManager so the decoder thread can read coded frames from it.
+             m_media_source->media_element_assigned_to()->playback_manager().add_media_source(video_track_info.demuxer);
++            m_demuxers_in_playback_manager.append(video_track_info.demuxer);
+         }
+ 
+         // 4. For each text track in the initialization segment, run following steps:
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.h b/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.h
+index b1131e7d5c..298b7c19b5 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.h
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.h
+@@ -8,6 +8,7 @@
+ #pragma once
+ 
+ #include <AK/NonnullRefPtr.h>
++#include <AK/Vector.h>
+ #include <LibWeb/Bindings/SourceBuffer.h>
+ #include <LibWeb/DOM/EventTarget.h>
+ #include <LibWeb/WebIDL/Buffers.h>
+@@ -15,6 +16,7 @@
+ namespace Web::MediaSourceExtensions {
+ 
+ class SourceBufferProcessor;
++class TrackBufferDemuxer;
+ struct InitializationSegmentData;
+ 
+ // https://w3c.github.io/media-source/#dom-sourcebuffer
+@@ -48,6 +50,18 @@ public:
+     // https://w3c.github.io/media-source/#dom-sourcebuffer-buffered
+     WebIDL::ExceptionOr<GC::Ref<HTML::TimeRanges>> buffered();
+ 
++    // https://w3c.github.io/media-source/#dom-sourcebuffer-timestampoffset
++    double timestamp_offset() const;
++    WebIDL::ExceptionOr<void> set_timestamp_offset(double);
++
++    // https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowstart
++    double append_window_start() const;
++    WebIDL::ExceptionOr<void> set_append_window_start(double);
++
++    // https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowend
++    double append_window_end() const;
++    WebIDL::ExceptionOr<void> set_append_window_end(double);
++
+     void set_content_type(Utf16View type);
+ 
+     // https://w3c.github.io/media-source/#addsourcebuffer-method
+@@ -59,9 +73,15 @@ public:
+     // https://w3c.github.io/media-source/#dom-sourcebuffer-changetype
+     WebIDL::ExceptionOr<void> change_type(Utf16String const& type);
+ 
++    // https://w3c.github.io/media-source/#dom-sourcebuffer-remove
++    WebIDL::ExceptionOr<void> remove(double start, double end);
++
+     void set_reached_end_of_stream(Badge<MediaSource>);
+     void clear_reached_end_of_stream(Badge<MediaSource>);
+ 
++    void abort_updating(Badge<MediaSource>);
++    void remove_all_tracks(Badge<MediaSource>);
++
+ protected:
+     SourceBuffer(JS::Realm&, MediaSource&);
+ 
+@@ -74,6 +94,7 @@ private:
+     WebIDL::ExceptionOr<void> prepare_append(size_t new_data_size, AK::Duration current_time);
+     void run_buffer_append_algorithm();
+     void run_append_error_algorithm();
++    void run_range_removal_algorithm(AK::Duration start, AK::Duration end);
+     void on_first_initialization_segment_processed(InitializationSegmentData const&);
+     void update_ready_state_and_duration_after_coded_frame_processing();
+     void finish_buffer_append();
+@@ -81,6 +102,13 @@ private:
+     GC::Ref<MediaSource> m_media_source;
+     NonnullRefPtr<SourceBufferProcessor> m_processor;
+ 
++    // https://w3c.github.io/media-source/#dfn-range-removal
++    bool m_range_removal_in_progress { false };
++
++    // Demuxers for this SourceBuffer's track buffers that have been registered with the media element's
++    // PlaybackManager, so that they can be unregistered when this SourceBuffer is removed.
++    Vector<NonnullRefPtr<TrackBufferDemuxer>> m_demuxers_in_playback_manager;
++
+     // https://w3c.github.io/media-source/#dom-sourcebuffer-audiotracks
+     GC::Ref<HTML::AudioTrackList> m_audio_tracks;
+ 
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.idl b/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.idl
+index 136d64668e..21865cc74b 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.idl
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBuffer.idl
+@@ -10,12 +10,12 @@ interface SourceBuffer : EventTarget {
+     attribute AppendMode mode;
+     readonly  attribute boolean updating;
+     readonly  attribute TimeRanges buffered;
+-    [FIXME] attribute double timestampOffset;
++    attribute double timestampOffset;
+     [FIXME] readonly  attribute AudioTrackList audioTracks;
+     [FIXME] readonly  attribute VideoTrackList videoTracks;
+     [FIXME] readonly  attribute TextTrackList textTracks;
+-    [FIXME] attribute double appendWindowStart;
+-    [FIXME] attribute unrestricted double appendWindowEnd;
++    attribute double appendWindowStart;
++    attribute unrestricted double appendWindowEnd;
+ 
+     attribute EventHandler onupdatestart;
+     attribute EventHandler onupdate;
+@@ -26,5 +26,5 @@ interface SourceBuffer : EventTarget {
+     undefined appendBuffer(BufferSource data);
+     undefined abort();
+     undefined changeType(Utf16DOMString type);
+-    [FIXME] undefined remove(double start, unrestricted double end);
++    undefined remove(double start, unrestricted double end);
+ };
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp
+index f14554f74a..c95933caab 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.cpp
+@@ -49,6 +49,22 @@ void SourceBufferList::append(GC::Ref<SourceBuffer> buffer)
+     }));
+ }
+ 
++void SourceBufferList::remove(SourceBuffer const& buffer)
++{
++    // From https://w3c.github.io/media-source/#dom-mediasource-removesourcebuffer
++    // 9./10. Remove sourceBuffer from this list...
++    if (!m_buffers.remove_first_matching([&](GC::Ref<SourceBuffer> const& contained_buffer) { return contained_buffer == &buffer; }))
++        return;
++
++    // ...and queue a task to fire an event named removesourcebuffer at this SourceBufferList.
++    // FIXME: Should this have a task source? An event loop? A document?
++    HTML::queue_a_task(HTML::Task::Source::Unspecified, nullptr, nullptr, GC::create_function(heap(), [weak_self = GC::Weak(*this)] {
++        if (!weak_self)
++            return;
++        weak_self->dispatch_event(DOM::Event::create(weak_self->realm(), EventNames::removesourcebuffer));
++    }));
++}
++
+ size_t SourceBufferList::length() const
+ {
+     return m_buffers.size();
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h
+index d723e6458a..205000e7f1 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferList.h
+@@ -17,6 +17,7 @@ class SourceBufferList : public DOM::EventTarget {
+ 
+ public:
+     void append(GC::Ref<SourceBuffer>);
++    void remove(SourceBuffer const&);
+ 
+     size_t length() const;
+     GC::Ref<SourceBuffer> const& item(u32 index) const;
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.cpp b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.cpp
+index 8399e3eea6..e67a6e7963 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.cpp
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.cpp
+@@ -433,7 +433,14 @@ void SourceBufferProcessor::run_coded_frame_processing(Vector<DemuxedCodedFrame>
+ 
+         // FIXME: 3. If mode equals "sequence" and group start timestamp is set, then run the following steps:
+ 
+-        // FIXME: 4. If timestampOffset is not 0, then run the following steps:
++        // 4. If timestampOffset is not 0, then run the following steps:
++        if (m_timestamp_offset != 0) {
++            auto timestamp_offset = AK::Duration::from_seconds_f64(m_timestamp_offset);
++            // 1. Add timestampOffset to the presentation timestamp.
++            presentation_timestamp += timestamp_offset;
++            // 2. Add timestampOffset to the decode timestamp.
++            decode_timestamp += timestamp_offset;
++        }
+ 
+         // 5. Let track buffer equal the track buffer that the coded frame will be added to.
+         auto maybe_track_buffer = m_track_buffers.get(demuxed_frame.track_number);
+@@ -491,11 +498,15 @@ void SourceBufferProcessor::run_coded_frame_processing(Vector<DemuxedCodedFrame>
+         // 7. Let frame end timestamp equal the sum of presentation timestamp and frame duration.
+         auto frame_end_timestamp = presentation_timestamp + frame_duration;
+ 
+-        // FIXME: 8. If presentation timestamp is less than appendWindowStart, then set the need random access
+-        //           point flag to true, drop the coded frame, and jump to the top of the loop.
+-
+-        // FIXME: 9. If frame end timestamp is greater than appendWindowEnd, then set the need random access
+-        //           point flag to true, drop the coded frame, and jump to the top of the loop.
++        // 8. If presentation timestamp is less than appendWindowStart, then set the need random access
++        //    point flag to true, drop the coded frame, and jump to the top of the loop.
++        // 9. If frame end timestamp is greater than appendWindowEnd, then set the need random access
++        //    point flag to true, drop the coded frame, and jump to the top of the loop.
++        if (presentation_timestamp.to_seconds_f64() < m_append_window_start
++            || frame_end_timestamp.to_seconds_f64() > m_append_window_end) {
++            track_buffer.set_need_random_access_point_flag(true);
++            continue;
++        }
+ 
+         // 10. If the need random access point flag on track buffer equals true, then run the following steps:
+         if (track_buffer.need_random_access_point_flag()) {
+@@ -528,6 +539,9 @@ void SourceBufferProcessor::run_coded_frame_processing(Vector<DemuxedCodedFrame>
+         //     Otherwise:
+         //         Add the coded frame with the presentation timestamp, decode timestamp, and frame
+         //         duration to the track buffer.
++        // NB: The presentation timestamp may differ from the coded frame's own timestamp if [[timestamp offset]]
++        //     is not 0, so make sure the stored frame carries the adjusted timestamp.
++        frame.set_timestamp(presentation_timestamp);
+         demuxer.add_coded_frame(move(frame));
+ 
+         // 17. Set last decode timestamp for track buffer to decode timestamp.
+@@ -665,6 +679,57 @@ void SourceBufferProcessor::run_coded_frame_eviction(size_t new_data_size, AK::D
+         m_buffer_full_flag = false;
+ }
+ 
++// https://w3c.github.io/media-source/#dfn-coded-frame-removal
++void SourceBufferProcessor::run_coded_frame_removal(AK::Duration start, AK::Duration end)
++{
++    // 1. Let start be the starting presentation timestamp for the removal range.
++    // 2. Let end be the end presentation timestamp for the removal range.
++    // 3. For each track buffer in this SourceBuffer, run the following steps:
++    for (auto& [track_id, track_buffer] : m_track_buffers) {
++        // 1. Let remove end timestamp be the current value of duration.
++        // 2. If this track buffer has a random access point timestamp that is greater than or equal to end,
++        //    then update remove end timestamp to that random access point timestamp.
++        // 3. Remove all media data, from this track buffer, that contain starting timestamps greater than or
++        //    equal to start and less than the remove end timestamp.
++        //    1. For each removed frame, if the frame has a decode timestamp equal to the last decode timestamp
++        //       for the frame's track, run the following steps:
++        //       -> If mode equals "segments": Set [[group end timestamp]] to presentation timestamp.
++        //       -> If mode equals "sequence": Set [[group start timestamp]] equal to the [[group end timestamp]].
++        //       2. Unset the last decode timestamp on all track buffers.
++        //       3. Unset the last frame duration on all track buffers.
++        //       4. Unset the highest end timestamp on all track buffers.
++        //       5. Set the need random access point flag on all track buffers to true.
++        // 4. Remove all possible decoding dependencies on the coded frames removed in the previous step by
++        //    removing all coded frames from this track buffer between those frames removed in the previous step
++        //    and the next random access point after those removed frames.
++        // NB: The demuxer removes all frames with a presentation timestamp in [start, end) plus all dependent
++        //     frames up to the next random access point, which is equivalent to using the remove end timestamp
++        //     from steps 1-2 above.
++        auto last_decode_timestamp = track_buffer->last_decode_timestamp();
++        track_buffer->demuxer().remove_coded_frames_and_dependants_in_range(start, end);
++
++        if (last_decode_timestamp.has_value() && last_decode_timestamp.value() >= start && last_decode_timestamp.value() < end) {
++            // NB: For the formats we currently support, the decode timestamp equals the presentation timestamp.
++            if (m_mode == AppendMode::Segments)
++                m_group_end_timestamp = last_decode_timestamp.value();
++            else if (m_mode == AppendMode::Sequence)
++                m_group_start_timestamp = m_group_end_timestamp;
++            unset_all_track_buffer_timestamps();
++            set_need_random_access_point_flag_on_all_track_buffers(true);
++        }
++
++        // FIXME: 5. If this object is in activeSourceBuffers, the current playback position is greater than or
++        //           equal to start and less than the remove end timestamp, and HTMLMediaElement.readyState is
++        //           greater than HAVE_METADATA, then set the HTMLMediaElement.readyState attribute to
++        //           HAVE_METADATA and stall playback.
++    }
++
++    // 4. If [[buffer full flag]] equals true and this object is ready to accept more bytes, then set the
++    //    [[buffer full flag]] to false.
++    if (m_buffer_full_flag && !m_track_buffers.is_empty() && total_buffered_bytes() < capacity_in_bytes())
++        m_buffer_full_flag = false;
++}
++
+ void SourceBufferProcessor::drop_consumed_bytes_from_input_buffer()
+ {
+     auto consumed = m_cursor->position();
+diff --git a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.h b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.h
+index cf58a5ac9b..f9d36c2e33 100644
+--- a/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.h
++++ b/Libraries/LibWeb/MediaSourceExtensions/SourceBufferProcessor.h
+@@ -11,6 +11,7 @@
+ #include <AK/Forward.h>
+ #include <AK/Function.h>
+ #include <AK/HashMap.h>
++#include <AK/Math.h>
+ #include <AK/NonnullRefPtr.h>
+ #include <AK/Optional.h>
+ #include <AK/OwnPtr.h>
+@@ -70,6 +71,15 @@ public:
+     size_t total_buffered_bytes() const;
+     size_t capacity_in_bytes() const;
+ 
++    double timestamp_offset() const { return m_timestamp_offset; }
++    void set_timestamp_offset(double offset) { m_timestamp_offset = offset; }
++
++    double append_window_start() const { return m_append_window_start; }
++    void set_append_window_start(double start) { m_append_window_start = start; }
++
++    double append_window_end() const { return m_append_window_end; }
++    void set_append_window_end(double end) { m_append_window_end = end; }
++
+     void set_mode(AppendMode);
+     void set_generate_timestamps_flag(bool);
+     void set_group_start_timestamp(Optional<AK::Duration>);
+@@ -94,6 +104,7 @@ public:
+     void run_segment_parser_loop();
+     void reset_parser_state();
+     void run_coded_frame_eviction(size_t new_data_size, AK::Duration current_time);
++    void run_coded_frame_removal(AK::Duration start, AK::Duration end);
+ 
+     void set_reached_end_of_stream();
+     void clear_reached_end_of_stream();
+@@ -130,6 +141,12 @@ private:
+     Optional<AK::Duration> m_group_start_timestamp;
+     // https://w3c.github.io/media-source/#dfn-group-end-timestamp
+     AK::Duration m_group_end_timestamp;
++    // https://w3c.github.io/media-source/#dom-sourcebuffer-timestampoffset
++    double m_timestamp_offset { 0 };
++    // https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowstart
++    double m_append_window_start { 0 };
++    // https://w3c.github.io/media-source/#dom-sourcebuffer-appendwindowend
++    double m_append_window_end { AK::Infinity<double> };
+     // https://w3c.github.io/media-source/#dfn-generate-timestamps-flag
+     bool m_generate_timestamps_flag { false };
+     // https://w3c.github.io/media-source/#dfn-first-initialization-segment-received-flag
+diff --git a/Tests/LibWeb/TestConfig.ini b/Tests/LibWeb/TestConfig.ini
+index aba3b7f72f..b35358db68 100644
+--- a/Tests/LibWeb/TestConfig.ini
++++ b/Tests/LibWeb/TestConfig.ini
+@@ -13,6 +13,7 @@ Text/input/Worker/XHttpRequest-responseXML-unavailable-in-worker.html
+ ; fetching a file only works from an HTTP server.
+ Crash/HTML/video-track-switch-during-seek.html
+ Text/input/HTML/media-source-buffered.html
++Text/input/HTML/media-source-remove.html
+ Text/input/HTML/media-source-setup.html
+ Text/input/HTML/HTMLMediaElement-preload-none-does-not-fetch.html
+ Text/input/css/FontFace-arraybuffer-matching.html
+diff --git a/Tests/LibWeb/Text/expected/HTML/media-source-remove.txt b/Tests/LibWeb/Text/expected/HTML/media-source-remove.txt
+new file mode 100644
+index 0000000000..7129a37793
+--- /dev/null
++++ b/Tests/LibWeb/Text/expected/HTML/media-source-remove.txt
+@@ -0,0 +1,21 @@
++ranges before remove: 1
++remove(-1, 5): TypeError
++remove(5, 5): TypeError
++remove(5, NaN): TypeError
++updating during remove: true
++events: updatestart, update, updateend
++ranges after remove: 2
++range 0 start unchanged: true
++range 0 ends at removed range: true
++range 1 starts after removed range: true
++range 1 end unchanged: true
++timestampOffset default: 0
++timestampOffset: 2.5
++appendWindowStart default: 0
++appendWindowEnd default: Infinity
++appendWindowStart: 1.5
++appendWindowEnd: 10
++appendWindowStart = -1: TypeError
++sourceBuffers length after removeSourceBuffer: 0
++activeSourceBuffers length after removeSourceBuffer: 0
++second removeSourceBuffer: NotFoundError
+diff --git a/Tests/LibWeb/Text/input/HTML/media-source-remove.html b/Tests/LibWeb/Text/input/HTML/media-source-remove.html
+new file mode 100644
+index 0000000000..54dc81febc
+--- /dev/null
++++ b/Tests/LibWeb/Text/input/HTML/media-source-remove.html
+@@ -0,0 +1,118 @@
++<!DOCTYPE html>
++<video id="video"></video>
++<script src="../include.js"></script>
++<script>
++    asyncTest(done => {
++        function step(text) {
++            println(text);
++        }
++
++        function fail(name, error) {
++            println(`FAIL: ${name}: ${error}`);
++            done();
++        }
++
++        try {
++            const video = document.getElementById("video");
++            const mimeType = 'video/webm;codecs="vp9,opus"';
++            const mediaSource = new MediaSource();
++            video.src = URL.createObjectURL(mediaSource);
++
++            // The test WebM file has:
++            //   Init segment: bytes 0-529
++            //   Cluster 1 (0ms): bytes 530-946884
++            //   Cluster 2 (4981ms): bytes 946885-1605920, no video keyframes
++            //   Cluster 3 (9601ms): bytes 1605921-end, starts with a video keyframe
++            mediaSource.addEventListener("sourceopen", async () => {
++                try {
++                    const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
++
++                    const response = await fetch("../../../Assets/test-webm.webm");
++                    if (!response.ok) {
++                        fail("fetch", `HTTP ${response.status}`);
++                        return;
++                    }
++                    const data = await response.arrayBuffer();
++
++                    // Append the entire file: init segment plus all three clusters.
++                    await new Promise((resolve, reject) => {
++                        sourceBuffer.addEventListener("updateend", resolve, { once: true });
++                        sourceBuffer.addEventListener("error", () => reject(new Error("error")), { once: true });
++                        sourceBuffer.appendBuffer(data);
++                    });
++
++                    const before = sourceBuffer.buffered;
++                    step(`ranges before remove: ${before.length}`);
++                    const startBefore = before.start(0);
++                    const endBefore = before.end(0);
++
++                    // remove() argument validation.
++                    for (const [start, end] of [[-1, 5], [5, 5], [5, NaN]]) {
++                        try {
++                            sourceBuffer.remove(start, end);
++                            step(`remove(${start}, ${end}): no exception`);
++                        } catch (e) {
++                            step(`remove(${start}, ${end}): ${e.name}`);
++                        }
++                    }
++
++                    // Remove the middle of the buffered range. Cluster 3 starts with a video
++                    // keyframe at ~9.604s, so the removal should stop there.
++                    const events = [];
++                    for (const name of ["updatestart", "update", "updateend"])
++                        sourceBuffer.addEventListener(name, () => events.push(name));
++                    await new Promise((resolve, reject) => {
++                        sourceBuffer.addEventListener("updateend", resolve, { once: true });
++                        sourceBuffer.addEventListener("error", () => reject(new Error("error")), { once: true });
++                        sourceBuffer.remove(5.004, 9.604);
++                        step(`updating during remove: ${sourceBuffer.updating}`);
++                    });
++                    step(`events: ${events.join(", ")}`);
++
++                    const after = sourceBuffer.buffered;
++                    step(`ranges after remove: ${after.length}`);
++                    step(`range 0 start unchanged: ${after.start(0) === startBefore}`);
++                    step(`range 0 ends at removed range: ${after.end(0) <= 5.005}`);
++                    step(`range 1 starts after removed range: ${after.length > 1 && after.start(1) >= 9.6}`);
++                    step(`range 1 end unchanged: ${after.length > 1 && after.end(1) === endBefore}`);
++
++                    // timestampOffset round-trips.
++                    step(`timestampOffset default: ${sourceBuffer.timestampOffset}`);
++                    sourceBuffer.timestampOffset = 2.5;
++                    step(`timestampOffset: ${sourceBuffer.timestampOffset}`);
++                    sourceBuffer.timestampOffset = 0;
++
++                    // appendWindowStart/appendWindowEnd round-trip and validate.
++                    step(`appendWindowStart default: ${sourceBuffer.appendWindowStart}`);
++                    step(`appendWindowEnd default: ${sourceBuffer.appendWindowEnd}`);
++                    sourceBuffer.appendWindowStart = 1.5;
++                    sourceBuffer.appendWindowEnd = 10;
++                    step(`appendWindowStart: ${sourceBuffer.appendWindowStart}`);
++                    step(`appendWindowEnd: ${sourceBuffer.appendWindowEnd}`);
++                    try {
++                        sourceBuffer.appendWindowStart = -1;
++                        step("appendWindowStart = -1: no exception");
++                    } catch (e) {
++                        step(`appendWindowStart = -1: ${e.name}`);
++                    }
++
++                    // removeSourceBuffer() removes the buffer without throwing.
++                    mediaSource.removeSourceBuffer(sourceBuffer);
++                    step(`sourceBuffers length after removeSourceBuffer: ${mediaSource.sourceBuffers.length}`);
++                    step(`activeSourceBuffers length after removeSourceBuffer: ${mediaSource.activeSourceBuffers.length}`);
++                    try {
++                        mediaSource.removeSourceBuffer(sourceBuffer);
++                        step("second removeSourceBuffer: no exception");
++                    } catch (e) {
++                        step(`second removeSourceBuffer: ${e.name}`);
++                    }
++                    done();
++                } catch (e) {
++                    fail("sourceopen handler", e);
++                }
++            });
++        } catch (e) {
++            fail("setup", e);
++        }
++    });
++</script>

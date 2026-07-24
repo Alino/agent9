@@ -103,6 +103,35 @@ index 938d1bc33c..72e58a6fb0 100644
      list(APPEND SOURCES Platform/ProcessStatisticsLinux.cpp)
  elseif (APPLE AND NOT IOS)
      list(APPEND SOURCES Platform/ProcessStatisticsMach.cpp)
+diff --git a/Libraries/LibCore/Process.cpp b/Libraries/LibCore/Process.cpp
+index f34bf60de9..dd3a2284e5 100644
+--- a/Libraries/LibCore/Process.cpp
++++ b/Libraries/LibCore/Process.cpp
+@@ -43,6 +43,11 @@ extern "C" {
+ 
+ namespace Core {
+ 
++#if defined(AK_OS_PLAN9)
++// cc9: opt spawned child services into their own note group (see spawn use below).
++extern "C" void cc9_spawn_set_new_group(int);
++#endif
++
+ struct ArgvList {
+     ByteString m_path;
+     Vector<char const*, 10> m_argv;
+@@ -225,6 +230,12 @@ ErrorOr<Process> Process::spawn(ProcessSpawnOptions const& options)
+ #undef CHECK
+ 
+     pid_t pid;
++#if defined(AK_OS_PLAN9)
++    // Give the spawned child service its own note group so it (and its pthread
++    // procs) can be killed as a group later without touching this process.
++    cc9_spawn_set_new_group(1);
++    ScopeGuard clear_spawn_group = [] { cc9_spawn_set_new_group(0); };
++#endif
+     if (options.search_for_executable_in_path) {
+         pid = TRY(System::posix_spawnp(options.executable.view(), &spawn_actions, nullptr, const_cast<char**>(argv_list.get().data()), Core::Environment::raw_environ()));
+     } else {
 diff --git a/Libraries/LibCore/Resource.h b/Libraries/LibCore/Resource.h
 index 7ab853c488..f4951540cf 100644
 --- a/Libraries/LibCore/Resource.h

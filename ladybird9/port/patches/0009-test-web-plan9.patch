@@ -13,3 +13,26 @@ index f20440e499..269f2db723 100644
  #else
  #    error "Unhandled platform for screenshot expectations"
  #endif
+diff --git a/Tests/LibWeb/test-web/main.cpp b/Tests/LibWeb/test-web/main.cpp
+index f39f5a4518..f2a3814f8e 100644
+--- a/Tests/LibWeb/test-web/main.cpp
++++ b/Tests/LibWeb/test-web/main.cpp
+@@ -1217,6 +1217,18 @@ static ErrorOr<int> run_tests(Core::AnonymousBuffer const& theme, Web::DevicePix
+             view->test_promise().when_resolved([&tests, &tests_remaining, &non_passing_tests, &app, view, cleanup_test, view_id, &test_run_capture, &fail_fast_triggered](auto result) {
+                 cleanup_test(result.test_index, result.result);
+ 
++#if defined(AK_OS_PLAN9)
++                // cc9's GC does not trigger on its own during the light per-test
++                // reset (WebContent is reused across the whole run, never
++                // respawned), so canvas/WebGL finalizers never fire -> the
++                // GC-driven destroy_context IPC is never sent -> the Compositor's
++                // shm pool grows unbounded and it crashes ~200 tests in. Force a
++                // collection each test so the previous documents' backing stores
++                // are reclaimed (the cc9 shm9 free-list then reuses the freed
++                // pool slots instead of minting new 256 MiB pools).
++                view->debug_request("collect-garbage", "");
++#endif
++
+                 auto& test = tests[result.test_index];
+ 
+                 // Clear screenshots to free memory

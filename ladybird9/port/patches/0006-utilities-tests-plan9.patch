@@ -20,6 +20,36 @@ index 8f05adaf32..865dfb9376 100644
  
      CountingStub stub;
      auto connection = TestConnection::construct(stub, move(transport));
+diff --git a/Tests/LibWeb/Fixtures/http-test-server.py b/Tests/LibWeb/Fixtures/http-test-server.py
+index fd16fff4b8..909e8426c3 100755
+--- a/Tests/LibWeb/Fixtures/http-test-server.py
++++ b/Tests/LibWeb/Fixtures/http-test-server.py
+@@ -116,7 +116,14 @@ class WPTContext:
+         self.python_script_handler = python_script_handler
+         self.http_exception = HTTPException
+         self.stash_class = Stash
+-        self.stash_manager, self.stash_address, self.stash_authkey = start_stash_server()
++        # python9 (cc9 CPython on 9front) has no working multiprocessing:
++        # start_stash_server() -> manager.start() spawns a child that crashes on
++        # AF_UNIX and pollutes stdout BEFORE any exception reaches us, corrupting
++        # the port line the C++ fixture reads. This is a single-process
++        # ThreadingTCPServer, so skip the cross-process stash entirely and use
++        # wptserve's in-process-dict stash (address/authkey None -> in-process
++        # branch). No child spawns, stdout stays clean.
++        self.stash_manager, self.stash_address, self.stash_authkey = None, None, None
+ 
+     def configure_server(self, port):
+         def make_subdomains_product(subdomains, depth=2):
+@@ -141,7 +148,8 @@ class WPTContext:
+             cast(Any, self.server_class).config = config
+ 
+     def close(self):
+-        self.stash_manager.shutdown()
++        if self.stash_manager is not None:
++            self.stash_manager.shutdown()
+ 
+ 
+ class TestHTTPServer(socketserver.ThreadingTCPServer):
 diff --git a/Utilities/js.cpp b/Utilities/js.cpp
 index 716225f959..da2fe2e1e6 100644
 --- a/Utilities/js.cpp

@@ -1,0 +1,92 @@
+diff --git a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+index 59a35cd88a..5525c47e78 100644
+--- a/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
++++ b/Libraries/LibWeb/HTML/HTMLMediaElement.cpp
+@@ -2291,6 +2291,25 @@ void HTMLMediaElement::set_ready_state(ReadyState ready_state)
+         if (!paused())
+             notify_about_playing();
+ 
++        // Autoplay may start here too. Spec places the autoplay steps only in the
++        // HAVE_ENOUGH_DATA branch below, but a source that buffers just ahead of the
++        // playhead (never reaching "5s ahead" or EOF while paused) stays at
++        // HAVE_FUTURE_DATA forever, so autoplay would never fire — the video sits at
++        // its first frame. A video that has HAVE_FUTURE_DATA can play, so run the
++        // autoplay steps here as well; once playing, the pipeline buffers ahead
++        // normally. (Matches the HAVE_ENOUGH_DATA branch's substeps.)
++        if (is_eligible_for_autoplay() && is_allowed_to_play()) {
++            set_paused(false);
++            if (m_show_poster) {
++                set_show_poster(false);
++                time_marches_on();
++            }
++            queue_a_media_element_task([](HTMLMediaElement& self) {
++                self.dispatch_event(DOM::Event::create(self.realm(), HTML::EventNames::play));
++            });
++            notify_about_playing();
++        }
++
+         return;
+     }
+ 
+diff --git a/Libraries/LibWeb/HTML/Navigator.idl b/Libraries/LibWeb/HTML/Navigator.idl
+index 90dd9f2931..7f1da65d6c 100644
+--- a/Libraries/LibWeb/HTML/Navigator.idl
++++ b/Libraries/LibWeb/HTML/Navigator.idl
+@@ -31,7 +31,14 @@ interface Navigator {
+     [SecureContext, SameObject] readonly attribute CredentialsContainer credentials;
+ 
+     // https://w3c.github.io/battery/
+-    [SecureContext, Experimental] Promise<BatteryManager> getBattery();
++    // plan9 port: LibWeb has no BatteryManager yet, so getBattery() exists but
++    // ALWAYS rejects with NotAllowedError. YouTube calls it without a .catch(),
++    // so the rejection is unhandled and kills the player init chain
++    // ("Unhandled JavaScript exception (in promise): NotAllowedError: Battery
++    // Status API is not yet implemented"). Firefox ships no Battery API at all
++    // and sites cope, so hide the method rather than expose a always-rejecting
++    // one. Restore when BatteryManager is implemented.
++    // [SecureContext, Experimental] Promise<BatteryManager> getBattery();
+ 
+     // https://immersive-web.github.io/webxr/#navigator-xr-attribute
+     [SecureContext, SameObject] readonly attribute XRSystem xr;
+diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
+index 2fcaff298a..093e560417 100644
+--- a/Libraries/LibWebView/Application.cpp
++++ b/Libraries/LibWebView/Application.cpp
+@@ -32,6 +32,8 @@
+ #include <LibWebView/Application.h>
+ #include <LibWebView/AutocompleteService.h>
+ #include <LibWebView/CompositorClient.h>
++#include <LibHTTP/Cookie/Cookie.h>
++#include <LibHTTP/Cookie/ParsedCookie.h>
+ #include <LibWebView/CookieJar.h>
+ #include <LibWebView/HSTSStore.h>
+ #include <LibWebView/HeadlessWebView.h>
+@@ -1088,6 +1090,28 @@ ErrorOr<void> Application::launch_services()
+         m_storage_jar = StorageJar::create();
+     }
+ 
++#if defined(AK_OS_PLAN9)
++    // plan9 port: headless runs start with an empty cookie jar, so youtube.com
++    // shows its "Before you continue" consent interstitial and never begins
++    // playback. Seed the same consent-acknowledgement cookies a user click
++    // would set, so the watch page proceeds. Opt-in via LB9_YT_CONSENT=1.
++    if (m_cookie_jar && Core::Environment::has("LB9_YT_CONSENT"sv)) {
++        auto seed = [&](StringView name, StringView value) {
++            HTTP::Cookie::ParsedCookie cookie;
++            cookie.name = MUST(String::from_utf8(name));
++            cookie.value = MUST(String::from_utf8(value));
++            cookie.domain = MUST(String::from_utf8(".youtube.com"sv));
++            cookie.path = MUST(String::from_utf8("/"sv));
++            cookie.expiry_time_from_max_age_attribute = UnixDateTime::now() + AK::Duration::from_seconds(60LL * 60 * 24 * 365);
++            auto url = URL::Parser::basic_parse("https://www.youtube.com/"sv);
++            if (url.has_value())
++                m_cookie_jar->set_cookie(*url, cookie, HTTP::Cookie::Source::Http);
++        };
++        seed("SOCS"sv, "CAISNQgDEitib3FfaWRlbnRpdHlodHRwc2Vzc2lvbmlkX3YxGgJlbiACGgYIgLC_pgY"sv);
++        seed("CONSENT"sv, "YES+cb.20240101-00-p0.en+FX+000"sv);
++    }
++#endif
++
+     VERIFY(m_event_loop);
+     m_autocomplete_service = make<AutocompleteService>(*m_event_loop, move(history_database_directory));
+     m_autocomplete_service->update_bookmarks(autocomplete_bookmark_snapshot(*m_bookmark_store));

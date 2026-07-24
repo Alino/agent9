@@ -1,5 +1,5 @@
 diff --git a/Services/RequestServer/ConnectionFromClient.cpp b/Services/RequestServer/ConnectionFromClient.cpp
-index 4eec73ec9d..2dbf71afe7 100644
+index 4eec73ec9d..987a7c4f93 100644
 --- a/Services/RequestServer/ConnectionFromClient.cpp
 +++ b/Services/RequestServer/ConnectionFromClient.cpp
 @@ -107,6 +107,19 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
@@ -16,9 +16,57 @@ index 4eec73ec9d..2dbf71afe7 100644
 +    // down. 32 total / 6 per host is plenty for real pages (dsl.sk and Wikipedia
 +    // use far fewer) while keeping the fd -- and therefore process -- count
 +    // bounded. curl serializes the excess onto the pooled connections.
-+    set_option(CURLMOPT_MAX_TOTAL_CONNECTIONS, static_cast<long>(32));
-+    set_option(CURLMOPT_MAX_HOST_CONNECTIONS, static_cast<long>(6));
++    set_option(CURLMOPT_MAX_TOTAL_CONNECTIONS, static_cast<long>(64));
++    set_option(CURLMOPT_MAX_HOST_CONNECTIONS, static_cast<long>(16));
 +#endif
  
      m_timer = Core::Timer::create_single_shot(0, [this] {
          note_event_tick("curl-timer-fired"sv);
+@@ -117,6 +130,31 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
+         VERIFY(result == CURLM_OK);
+         check_active_requests();
+     });
++
++#if defined(AK_OS_PLAN9)
++    // See m_progress_timer in the header: drive curl even if socket notifiers miss.
++    m_progress_timer = Core::Timer::create_repeating(20, [this] {
++        // cc9/plan9: re-drive every active request's queued writes (the writable
++        // notifier on the client pipe is unreliable here). pump_writes() self-
++        // guards on pipe-present + buffered-data.
++        for (auto& it : m_active_requests)
++            it.value->pump_writes();
++        auto result = curl_multi_socket_action(m_curl_multi, CURL_SOCKET_TIMEOUT, 0, nullptr);
++        VERIFY(result == CURLM_OK);
++        // CURL_SOCKET_TIMEOUT alone does not make curl re-poll individual sockets,
++        // so nudge every socket curl told us about. Without this, a missed socket
++        // notifier stalls a multi-MB transfer indefinitely.
++        Vector<int> fds;
++        for (auto const& entry : m_read_notifiers)
++            fds.append(entry.key);
++        for (auto fd : fds) {
++            result = curl_multi_socket_action(m_curl_multi, fd, CURL_CSELECT_IN, nullptr);
++            VERIFY(result == CURLM_OK);
++        }
++        check_active_requests();
++    });
++    m_progress_timer->start();
++#endif
+ }
+ 
+ ConnectionFromClient::~ConnectionFromClient()
+diff --git a/Services/RequestServer/ConnectionFromClient.h b/Services/RequestServer/ConnectionFromClient.h
+index 123ee81a6d..b58b866835 100644
+--- a/Services/RequestServer/ConnectionFromClient.h
++++ b/Services/RequestServer/ConnectionFromClient.h
+@@ -102,6 +102,11 @@ private:
+     HashMap<u64, RefPtr<WebSocket::WebSocket>> m_websockets;
+ 
+     RefPtr<Core::Timer> m_timer;
++    // cc9/plan9 safety net: curl is driven purely by socket Core::Notifiers, and
++    // those proved unreliable here — large transfers (multi-MB scripts) stalled
++    // forever mid-download while the same URL fetched in <1s via hget. This
++    // repeating timer keeps curl_multi progressing regardless of notifier delivery.
++    RefPtr<Core::Timer> m_progress_timer;
+     HashMap<int, NonnullRefPtr<Core::Notifier>> m_read_notifiers;
+     HashMap<int, NonnullRefPtr<Core::Notifier>> m_write_notifiers;
+ 
