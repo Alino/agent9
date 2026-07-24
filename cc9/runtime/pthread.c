@@ -489,9 +489,14 @@ static void trampoline(void *p){
 
 /* RLIMIT_NPROC emulation: 9front has no per-process thread cap, but the suite's
  * thread_create_failure test sets the limit to 1 and expects creation to throw.
- * setrlimit (posix_llvm.c) routes the cap here; pthread_create honors it. */
+ * setrlimit (posix_llvm.c) routes the cap here; pthread_create honors it.
+ * 0x7fffffff is the "unlimited" sentinel (the fork/pthread_create guards test
+ * `< 0x7fffffff`). RLIM_INFINITY arrives here as (long)~0ul == -1, and a
+ * non-positive or out-of-range value all mean "no cap" — so map them to the
+ * sentinel, NOT to 1 (mapping infinity->1 pinned the process at one child/thread
+ * and broke the standard save/lower/restore idiom). Matches the AS setter. */
 static long cc9_nproc_limit = 0x7fffffff;
-void cc9_set_nproc_limit(long n){ cc9_nproc_limit = n > 0 ? n : 1; }
+void cc9_set_nproc_limit(long n){ cc9_nproc_limit = (n > 0 && n < 0x7fffffff) ? n : 0x7fffffff; }
 long cc9_get_nproc_limit(void){ return cc9_nproc_limit; }
 
 int pthread_create(pthread_t *th, const pthread_attr_t *attr, void *(*start)(void *), void *arg){

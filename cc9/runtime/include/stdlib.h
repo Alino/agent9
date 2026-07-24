@@ -14,8 +14,11 @@ extern "C" {
 void *malloc(size_t); void free(void *); void *calloc(size_t, size_t);
 void *realloc(void *, size_t); void *aligned_alloc(size_t, size_t);
 int posix_memalign(void **, size_t, size_t);   /* defined in n9libc.c; was undeclared */
-void abort(void); void exit(int); void _Exit(int); int atexit(void (*)(void));
-void quick_exit(int); int at_quick_exit(void (*)(void));
+__attribute__((__noreturn__)) void abort(void);
+__attribute__((__noreturn__)) void exit(int);
+__attribute__((__noreturn__)) void _Exit(int);
+int atexit(void (*)(void));
+__attribute__((__noreturn__)) void quick_exit(int); int at_quick_exit(void (*)(void));
 long strtol(const char *, char **, int);
 unsigned long strtoul(const char *, char **, int);
 long long strtoll(const char *, char **, int);

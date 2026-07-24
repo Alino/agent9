@@ -191,6 +191,40 @@ int cc9_note_handler(unsigned long framesp)
 		}
 	}
 #endif
+	/* Lazy #g fault-attach: a cc9 thread (rfork(RFMEM) proc) reading a shm pool a
+	 * sibling mmap'd but that this proc never segattached (Plan 9 doesn't share
+	 * segment tables across siblings) faults here. If the fault addr lands in a
+	 * known pool, attach it in this proc and NCONT-retry the load — the web-font
+	 * crash (Skia/FreeType reading a font AnonymousBuffer built on another thread)
+	 * that took down the box on youtube. Runs before the in-note guard so a first
+	 * fault gets its retry; cc9_shm_fault_attach attaches at most once per addr, so
+	 * a still-faulting retry falls through to the fatal path below. */
+	{
+		int fi = -1;
+		for (int i = 0; i < 60 && msg[i]; i++)
+			if (msg[i]=='f'&&msg[i+1]=='a'&&msg[i+2]=='u'&&msg[i+3]=='l'&&msg[i+4]=='t') { fi = i; break; }
+		if (fi >= 0) {
+			int ai = -1;
+			for (int i = fi; i < 110 && msg[i]; i++)
+				if (msg[i]=='a'&&msg[i+1]=='d'&&msg[i+2]=='d'&&msg[i+3]=='r'&&msg[i+4]=='=') { ai = i + 5; break; }
+			if (ai >= 0) {
+				const char *p = msg + ai;
+				if (p[0]=='0' && (p[1]=='x'||p[1]=='X')) p += 2;
+				unsigned long a = 0;
+				for (const char *end = msg + 128; p < end; p++) {   /* bounded like the scans above */
+					char c = *p;
+					if (c>='0'&&c<='9') a = (a<<4) | (unsigned long)(c-'0');
+					else if (c>='a'&&c<='f') a = (a<<4) | (unsigned long)(c-'a'+10);
+					else if (c>='A'&&c<='F') a = (a<<4) | (unsigned long)(c-'A'+10);
+					else break;
+				}
+				if (a) {
+					extern int cc9_shm_fault_attach(unsigned long);
+					if (cc9_shm_fault_attach(a)) return 0;   /* NCONT: retry the now-attached read */
+				}
+			}
+		}
+	}
 	if (cc9_in_note) return 1;     /* reentrant fault: NDFLT (die) */
 	cc9_in_note = 1;
 	/* Name the cause when a fatal fault is actually a thread stack overflow: cc9
@@ -237,6 +271,23 @@ int cc9_note_handler(unsigned long framesp)
 				for (int j=15;j>=0;j--){ int d=(v>>(j*4))&0xf; b[k++]=d<10?'0'+d:'a'+d-10; }
 				b[k++]='\n'; n9_pwrite(ffd, b, k, -1);
 			}
+		}
+		/* Segment table at fault time: proves whether the faulting addr is inside
+		 * an attached segment (a cross-thread #g mapping the reader proc lacks) or
+		 * genuinely unmapped. Ground truth for the font-crash diagnosis. */
+		{ extern long n9_open(const char *, int); extern int getpid(void);
+		  extern long n9_pread(int, void *, long, long long); extern long n9_close(int);
+		  char pp[40]; int pk=0; const char *a="/proc/";
+		  while (*a) pp[pk++]=*a++;
+		  int pid=getpid(); char t[12]; int tk=0;
+		  if(!pid)t[tk++]='0'; while(pid){t[tk++]='0'+pid%10;pid/=10;}
+		  while(tk)pp[pk++]=t[--tk];
+		  const char *b2="/segment"; while(*b2)pp[pk++]=*b2++; pp[pk]=0;
+		  int sfd=(int)n9_open(pp,0);
+		  if(sfd>=0){ n9_pwrite(ffd,"segments:\n",10,-1);
+			char sb[512]; long r; long o=0;
+			while((r=n9_pread(sfd,sb,sizeof sb,o))>0){ n9_pwrite(ffd,sb,r,-1); o+=r; }
+			n9_close(sfd); }
 		}
 	  }
 	}
@@ -351,6 +402,23 @@ void __cc9_run(void)
 	STAGE('d');
 	__cc9_build_environ();
 	STAGE('e');
+	/* Resource caps from the environment (RLIMIT_AS / RLIMIT_NPROC emulation).
+	 * A launcher (e.g. ladybird9's rc) sets these to bound a runaway page; unset
+	 * = unlimited, so every other cc9 program is unaffected. Seeded here in crt0
+	 * so they survive exec — each exec'd helper re-reads them from its own /env. */
+	{ extern char *getenv(const char *);
+	  extern unsigned long strtoul(const char *, char **, int);
+	  extern void cc9_set_as_limit(long);
+	  extern void cc9_set_nproc_limit(long);
+	  char *e;
+	  if ((e = getenv("CC9_AS_LIMIT_MB")) && *e) {
+	  	unsigned long mb = strtoul(e, 0, 10);
+	  	if (mb) cc9_set_as_limit((long)(mb * 1024UL * 1024UL));
+	  }
+	  if ((e = getenv("CC9_NPROC_LIMIT")) && *e) {
+	  	unsigned long n = strtoul(e, 0, 10);
+	  	if (n) cc9_set_nproc_limit((long)n);
+	  } }
 #ifdef CC9_PAUSE_ATTACH
 	/* sleep at startup so a debugger can attach by pid (acid <pid>) — the process
 	 * is kernel-exec'd so its bss stack is valid (unlike acid's own new()), and it

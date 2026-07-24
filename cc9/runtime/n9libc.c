@@ -11,10 +11,26 @@ long strtol(const char*, char**, int); unsigned long strtoul(const char*, char**
 extern char end[];
 extern long n9_brk(void *);
 static char *cur_brk = 0;
+static char *brk_base = 0;
+
+/* RLIMIT_AS soft cap (bytes of program break; ~0 = unlimited). setrlimit routes
+ * here (posix_llvm.c); crt0 seeds it from $CC9_AS_LIMIT_MB. A runaway page that
+ * malloc()s unbounded used to make the kernel run dry and fault gefs, taking the
+ * whole box down; capping the break makes malloc return NULL (a soft bad_alloc,
+ * which Ladybird already handles) instead. ponytail: counts the break only — the
+ * runaway-growth term; segattach'd #g shm pools are separately bounded. */
+static unsigned long cc9_as_limit = ~0UL;
+void cc9_set_as_limit(long n){ cc9_as_limit = n > 0 ? (unsigned long)n : ~0UL; }
+long cc9_get_as_limit(void){ return (long)cc9_as_limit; }
 
 static void *n9_sbrk(long incr){
 	if(!cur_brk) cur_brk = (char*)(((unsigned long)end + 0xfff) & ~0xfffUL);
+	if(!brk_base) brk_base = cur_brk;
 	char *old = cur_brk;
+	/* serialized by the malloc lock (every caller — cc9_sbrk and kr_morecore —
+	 * holds it), so the cursor read is race-free. */
+	if(incr > 0 && cc9_as_limit != ~0UL &&
+	   (unsigned long)((cur_brk + incr) - brk_base) > cc9_as_limit) return (void*)-1;
 	if(incr && n9_brk(cur_brk + incr) < 0) return (void*)-1;
 	cur_brk += incr;
 	return old;
@@ -70,6 +86,26 @@ static void *malloc_u(size_t nbytes){
 		}
 		if(p == kr_freep && (p = kr_morecore(nunits)) == 0) return 0;
 	}
+}
+/* Bump region for FRESH class-sized carves (<= MC_MAX). The K&R malloc_u is a
+ * first-fit scan of the whole free list — O(n) per call, and LibJS parsing a big
+ * script (youtube base.js) does ~1M fresh small allocations, each scanning a free
+ * list polluted by earlier frees => O(n^2). A bump pointer makes a fresh carve
+ * O(1); freed blocks return to the per-class cache/g_class (never to the K&R
+ * list), so the scan never grows. Caller must hold malloc_lock. Returns the
+ * Header (payload at h+1) or 0 to fall back to malloc_u. */
+static Header *bump_cur, *bump_end;
+static Header *bump_alloc(size_t nu){
+	if(bump_cur + nu > bump_end){
+		size_t chunk = 1u << 20;                 /* 1 MB */
+		if(nu * sizeof(Header) > chunk) return 0; /* too big to bump; use malloc_u */
+		void *cp = n9_sbrk((long)chunk);
+		if(cp == (void*)-1) return 0;
+		bump_cur = (Header*)cp;
+		bump_end = (Header*)((char*)cp + chunk);
+	}
+	Header *h = bump_cur; bump_cur += nu; h->s.size = nu;
+	return h;
 }
 /* Public allocator: serializes the shared heap across threads (cc9 threads share
  * memory via rfork(RFMEM)). Uncontended calls take an atomic, not a syscall. */
@@ -163,10 +199,27 @@ void *cc9_sbrk(long incr){
  * back to its class with no extra metadata: usable bytes = (hdr.size-1)*16 (the
  * same arithmetic realloc/malloc_usable_size already rely on), so class index
  * c = hdr.size-2. A cached block therefore always has >= its class's bytes. */
-#define MC_MAX     512               /* largest request served from the cache */
-#define MC_CLASSES 32                /* 16,32,..,512 */
-#define MC_CAP     32                /* blocks kept per class before giving back */
+#define MC_MAX     2048              /* largest request served from the cache */
+#define MC_CLASSES 128               /* 16,32,..,2048 (16-byte granularity) */
+#define MC_CAP     32                /* blocks kept per THREAD cache before overflow to g_class */
 typedef struct { void *head[MC_CLASSES]; int n[MC_CLASSES]; } mcache;
+/* Global per-class overflow free lists (LIFO, O(1) push/pop under malloc_lock).
+ * When a thread's bounded cache (MC_CAP) overflows, blocks go here instead of the
+ * O(n) K&R free_u; a same-class malloc reuses them before carving a new one. This
+ * is what makes a GC mass-free of tens of thousands of one-size objects O(n) not
+ * O(n^2) — the pathology that made LibJS parsing youtube's 1.6 MB base.js (and
+ * every allocation-heavy page) grind for minutes. Blocks stay class-sized so their
+ * header maps back on free; they are reused, never leaked. */
+static void *g_class[MC_CLASSES];
+/* Large-block (> MC_MAX) O(1) segregated free lists, indexed by ceil(log2(size)).
+ * Requests are rounded UP to a power of 2 so a block's header maps back to its
+ * class on free (LIFO push/pop, no K&R free_u scan). The bytecode generator makes
+ * MANY large allocations (BasicBlock instruction vectors, executable arrays); left
+ * on the O(n) K&R malloc_u/free_u path they made compiling a big script (youtube
+ * base.js) O(n^2) — free_u alone was 26% of a profile. ponytail: power-of-2
+ * rounding wastes up to 2x per large block; refine to finer sub-classes only if a
+ * memory profile shows it hurts (the blocks are reused, so churn stays bounded). */
+static void *g_big[64];
 /* Weak: a thread-free program never links pthread.o, and then everything is
  * "main" and uses main_mc. Returns this thread's cache slot, or 0 for main. */
 extern void **cc9_thread_mcache(void) __attribute__((weak));
@@ -211,12 +264,32 @@ void *malloc(size_t n){
 				mc->n[c]--;
 				return p;
 			}
-			/* Miss: take a block OF THE CLASS SIZE so its header maps back. */
-			mlock(); void *r = malloc_u((size_t)(c + 1) << 4); munlock();
-			return r;
+			/* Per-thread miss: reuse a block from the GLOBAL per-class list (O(1)
+			 * under the lock) before falling to the O(n) K&R malloc_u. Those blocks
+			 * are already class-sized, so their header maps back on free. */
+			mlock();
+			p = g_class[c];
+			if(p){ g_class[c] = *(void **)p; munlock(); return p; }
+			Header *h = bump_alloc((size_t)c + 2); /* fresh carve, O(1) bump */
+			if(h){ munlock(); return (void *)(h + 1); }
+			p = malloc_u((size_t)(c + 1) << 4); /* bump OOM: fall back to K&R */
+			munlock();
+			return p;
 		}
 	}
-	mlock(); void *r=malloc_u(n); munlock(); return r; }
+	/* Large path (n > MC_MAX): round up to a power of 2 and serve O(1) from the
+	 * per-class list or the bump region; only fall to K&R malloc_u for huge blocks
+	 * that don't fit a bump chunk. */
+	int k = 64 - __builtin_clzll((unsigned long long)(n - 1)); /* ceil(log2 n), n>MC_MAX>=1 */
+	if(k >= 48){ mlock(); void *r=malloc_u(n); munlock(); return r; } /* absurd: K&R */
+	size_t sz = (size_t)1 << k;
+	mlock();
+	void *gb = g_big[k];
+	if(gb){ g_big[k] = *(void **)gb; munlock(); return gb; }
+	Header *bh = bump_alloc(sz / sizeof(Header) + 1);   /* O(1) fresh carve */
+	if(bh){ munlock(); return (void *)(bh + 1); }
+	void *r = malloc_u(sz);                              /* huge: K&R fallback */
+	munlock(); return r; }
 void free(void *p){
 #ifdef CC9_RECURSE_PROBE
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
@@ -226,16 +299,26 @@ void free(void *p){
 	if(((unsigned long *)p)[-1] != CC9_ALIGN_MAGIC){
 		size_t nu = ((Header *)p - 1)->s.size;
 		if(nu >= 2 && nu <= MC_CLASSES + 1){    /* fits a class: c = nu-2 */
+			int c = (int)nu - 2;
 			mcache *mc = mc_get();
-			if(mc){
-				int c = (int)nu - 2;
-				if(mc->n[c] < MC_CAP){          /* hit: no lock */
-					*(void **)p = mc->head[c];
-					mc->head[c] = p;
-					mc->n[c]++;
-					return;
-				}
+			if(mc && mc->n[c] < MC_CAP){        /* per-thread cache: no lock */
+				*(void **)p = mc->head[c];
+				mc->head[c] = p;
+				mc->n[c]++;
+				return;
 			}
+			/* Cache full (or no thread cache): return to the GLOBAL per-class LIFO
+			 * list in O(1), NOT the O(n) K&R free_u. */
+			mlock(); *(void **)p = g_class[c]; g_class[c] = p; munlock();
+			return;
+		}
+		/* Large power-of-2 block (from the big path above): return O(1) to its
+		 * per-class list instead of the O(n) K&R free_u. */
+		size_t bytes = (nu - 1) * sizeof(Header);
+		if(bytes > MC_MAX && (bytes & (bytes - 1)) == 0){
+			int k = __builtin_ctzll((unsigned long long)bytes);
+			mlock(); *(void **)p = g_big[k]; g_big[k] = p; munlock();
+			return;
 		}
 	}
 	mlock(); free_u(p); munlock(); }
@@ -283,23 +366,31 @@ void *calloc(size_t a,size_t b){
 	if(a && b > (size_t)-1 / a) return 0;            /* multiply-overflow guard */
 	size_t n=a*b; char*p=malloc(n); if(p) for(size_t i=0;i<n;i++)p[i]=0; return p;
 }
+void *memcpy(void *, const void *, size_t);   /* defined below; forward-declared for realloc */
 void *realloc(void*old,size_t n){
 	if(!old) return malloc(n);
 	if(n==0){ free(old); return 0; }
 	/* An aligned_alloc'd pointer carries the sentinel at old[-1] and its real
-	 * malloc base at old[-2]; size/free must use the base, not old-1. */
-	void *base = old; size_t oldsz;
+	 * malloc base at old[-2]; size/free must use the base, not old-1. Rare path,
+	 * kept on the K&R allocator under one lock. */
 	if(((unsigned long*)old)[-1] == CC9_ALIGN_MAGIC){
-		base = *(void**)((char*)old - 16);
+		void *base = *(void**)((char*)old - 16);
 		Header *bp=(Header*)base-1; size_t blk=(bp->s.size-1)*sizeof(Header);
-		oldsz = blk - (size_t)((char*)old - (char*)base);   /* usable bytes from `old` */
-	} else {
-		Header *bp=(Header*)old-1; oldsz=(bp->s.size-1)*sizeof(Header);
+		size_t oldsz = blk - (size_t)((char*)old - (char*)base);
+		mlock();
+		char *np=malloc_u(n);
+		if(np){ size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i]; free_u(base); }
+		munlock();
+		return np;
 	}
-	mlock();
-	char *np=malloc_u(n);
-	if(np){ size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i]; free_u(base); }
-	munlock();
+	/* Common path (plain block): go through the fast malloc/free (bump/g_class/
+	 * g_big), NOT malloc_u/free_u directly. The old code took the O(n) K&R path on
+	 * every call, so each Rust Vec growth (the bytecode generator's BasicBlock and
+	 * executable vectors) was O(n) — the O(n^2) that made compiling youtube's
+	 * base.js never finish. malloc/free lock themselves, so hold no lock here. */
+	Header *bp=(Header*)old-1; size_t oldsz=(bp->s.size-1)*sizeof(Header);
+	void *np=malloc(n);
+	if(np){ size_t c=oldsz<n?oldsz:n; memcpy(np, old, c); free(old); }
 	return np;
 }
 /* abort(): raise SIGABRT first so a user-installed handler runs (POSIX), then

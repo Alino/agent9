@@ -774,10 +774,28 @@ extern void n9_exits(const char *);
 static void cc9_reap_forked(int pid);      /* below: child bookkeeping + reaper */
 static void cc9_reap_child_reset(void);
 int waitpid(int, int *, int);
+
+/* RLIMIT_NPROC over the process axis: live fork()ed children not yet reaped.
+ * cc9 threads are already capped in pthread_create; this is the OTHER way a page
+ * explodes the process table — a fresh Plan 9 process per DedicatedWorker / per
+ * WebContent. Every process is born through this one fork(), so one counter here
+ * bounds the whole tree. Decremented in cc9_reaper when the child's exit waitmsg
+ * arrives. ponytail: ceiling = cc9_get_nproc_limit(); decrement = the reaper. */
+extern long cc9_get_nproc_limit(void);
+static long cc9_live_children = 0;
 int    fork(void) {
+	long lim = cc9_get_nproc_limit();
+	if (lim < 0x7fffffff) {
+		if (__sync_add_and_fetch(&cc9_live_children, 1) > lim) {
+			__sync_fetch_and_sub(&cc9_live_children, 1);
+			errno = 11 /*EAGAIN*/;   /* let the caller's spawn-failure branch fire */
+			return -1;
+		}
+	}
 	int pid = (int)n9_rfork(N9_RFPROC|N9_RFFDG|N9_RFENVG);
 	if (pid > 0) cc9_reap_forked(pid);
 	else if (pid == 0) cc9_reap_child_reset();   /* copied tables describe the parent's kids */
+	else if (lim < 0x7fffffff) __sync_fetch_and_sub(&cc9_live_children, 1);   /* rfork failed */
 	return pid;
 }
 
@@ -1001,6 +1019,7 @@ static void *cc9_reaper(void *arg) {
 		if (n <= 0) continue;                     /* interrupted note etc: retry */
 		w[n] = 0;
 		int st = 0, pid = cc9_wait_decode(w, &st);
+		if (pid > 0) __sync_fetch_and_sub(&cc9_live_children, 1);   /* child exited: free its RLIMIT_NPROC slot */
 		n9_semacquire(&zlock, 1);
 		if (znum < (int)(sizeof ztab / sizeof ztab[0])) { ztab[znum].pid = pid; ztab[znum].status = st; znum++; }
 		rtab[slot].outstanding--;
@@ -1038,7 +1057,13 @@ static void cc9_reap_forked(int childpid) {
 
 static void cc9_reap_child_reset(void) {
 	zlock = 1; znum = 0; reap_sem = 0;
+	cc9_live_children = 0;   /* the child has no children of its own yet */
 	for (int i = 0; i < 4; i++) { rtab[i].running = 0; rtab[i].outstanding = 0; rtab[i].kick = 0; }
+	/* A fork() child is a COW copy, not an rfork(RFMEM) sibling: drop the inherited
+	 * shm pool so it mints its own instead of racing the parent's carving of the same
+	 * global #g memory. (This is the safety half of shm pool-sharing — siblings share
+	 * because they never come through fork(); see cc9_shm_fork_child_reset.) */
+	{ extern void cc9_shm_fork_child_reset(void); cc9_shm_fork_child_reset(); }
 }
 
 static int cc9_reaping(void) {
@@ -1395,18 +1420,23 @@ void (*cc9_signal_install(int sig, void (*h)(int)))(int) {
 	return old;
 }
 
-/* rlimit / rusage: report "unlimited" / zero. */
+/* rlimit / rusage: report "unlimited" / zero, except the two we enforce
+ * (RLIMIT_NPROC over the process/thread axis, RLIMIT_AS over the heap break). */
 extern void cc9_set_nproc_limit(long);
 extern long cc9_get_nproc_limit(void);
+extern void cc9_set_as_limit(long);
+extern long cc9_get_as_limit(void);
 int getrlimit(int r, void *rl) {
 	if (rl) { unsigned long *p = rl;
-		if (r == 6 /*RLIMIT_NPROC*/) { p[0] = p[1] = (unsigned long)cc9_get_nproc_limit(); }
+		if (r == 6 /*RLIMIT_NPROC*/) { long l = cc9_get_nproc_limit(); p[0] = p[1] = l >= 0x7fffffff ? ~0ul /*RLIM_INFINITY*/ : (unsigned long)l; }
+		else if (r == 9 /*RLIMIT_AS*/) { p[0] = p[1] = (unsigned long)cc9_get_as_limit(); }
 		else { p[0] = p[1] = ~0ul; }
 	}
 	return 0;
 }
 int setrlimit(int r, const void *rl) {
 	if (r == 6 /*RLIMIT_NPROC*/ && rl) { const unsigned long *p = rl; cc9_set_nproc_limit((long)p[0]); }
+	else if (r == 9 /*RLIMIT_AS*/ && rl) { const unsigned long *p = rl; cc9_set_as_limit((long)p[0]); }
 	return 0;
 }
 /* getrusage: was `return 0` WITHOUT touching *ru, so the caller read uninitialized

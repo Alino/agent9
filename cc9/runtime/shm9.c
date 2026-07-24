@@ -80,6 +80,7 @@ enum {
 
 static int shm_lock = 1;        /* binary sem guarding all statics below */
 static unsigned long slab_next; /* next VA within our slab (0 = uninitialized) */
+static unsigned long slab_base; /* base of the slab slab_next lives in (set once, with slab_next) */
 static unsigned seq;            /* per-process name counter */
 
 /* per-process attach table: devsegment refuses a second attach of a segment
@@ -247,17 +248,30 @@ static int read_ctl(const char *name, unsigned long *va, unsigned long *len) {
 	return (*va && *len) ? 0 : -1;
 }
 
-/* Fresh VA for a new segment of len bytes, from our pid-keyed slab. */
+/* Fresh VA for a new segment of len bytes, from our pid-keyed slab.
+ *
+ * The slab BASE is cached (slab_base) the first time any thread allocates, and
+ * every later allocation — including from rfork(RFMEM) SIBLING threads, which
+ * share these statics but each have a DIFFERENT getpid() — reuses it. Without
+ * this, siblings recomputed `slab` from their own pid while sharing the one
+ * slab_next cursor, so the bound check compared a cursor in thread A's slab
+ * against thread B's slab end. Under heavy concurrent allocation (a page
+ * decoding many images across sibling threads) that handed out VAs that
+ * overlapped an already-attached segment, and segattach failed "virtual memory
+ * allocation failed" -> cc9_shm_create ENOENT -> the consumer's create_shareable
+ * aborted. One process = one coherent slab, shared by all its threads.
+ * Cross-PROCESS isolation is preserved: a different process's first allocator
+ * has a different pid, hence a different base (the original design intent). */
 static unsigned long va_alloc(unsigned long len) {
-	unsigned long slab = SHM9_BASE + (((unsigned long)getpid() & 0xFFFFul) << 30);
-	if (slab_next == 0) {
+	if (slab_base == 0) {
+		slab_base = SHM9_BASE + (((unsigned long)getpid() & 0xFFFFul) << 30);
 		struct timespec ts;
 		clock_gettime(CLOCK_MONOTONIC, &ts);
 		/* start somewhere in the first quarter of the slab so recycled pids
 		 * rarely mint the VA a dead predecessor's still-attached segment holds */
-		slab_next = slab + (page_round((unsigned long)ts.tv_nsec) % (SHM9_SLAB / 4));
+		slab_next = slab_base + (page_round((unsigned long)ts.tv_nsec) % (SHM9_SLAB / 4));
 	}
-	if (slab_next + len > slab + SHM9_SLAB) {
+	if (slab_next + len > slab_base + SHM9_SLAB) {
 		errno = ENOMEM;          /* slab exhausted — loud, see ponytail above */
 		return 0;
 	}
@@ -304,7 +318,15 @@ fail_rm:
 static int reaped_dead_pools;   /* one crash-cleanup pass per process */
 
 static int pool_ensure(void) {
-	if (pool_name[0] && pool_pid == getpid()) return 0;
+	/* Share the pool across rfork(RFMEM) siblings: a non-empty pool_name means a
+	 * thread of THIS process (this file's statics + the #g memory are shared) already
+	 * minted it, so reuse it — this is what collapses N per-thread pools into one and
+	 * keeps the process under Plan 9's NSEG (~12) per-proc segment cap. A fork() child
+	 * does NOT reach here with an inherited name: fork's child path calls
+	 * cc9_shm_fork_child_reset(), which clears pool_name so the child mints its own.
+	 * (Old gate keyed on pool_pid==getpid(), which forced every sibling to mint its
+	 * own pool — the root of the NSEG exhaustion on heavy pages.) */
+	if (pool_name[0]) return 0;
 	/* First pool in this process: reap any pool whose creator crashed/was
 	 * killed (dead pid, attached nowhere) so a previous run's leaked 256 MiB
 	 * segments don't count against the ~100-entry #g cap. Self-healing — no
@@ -553,6 +575,52 @@ adopted:
 	return (void *)((unsigned long)got + off);
 }
 
+/* Lazy fault-attach — the fix for the cross-sibling #g read fault.
+ *
+ * cc9 threads are rfork(RFMEM) procs: they share one address space but each has
+ * its OWN kernel segment table, and Plan 9 does NOT propagate a #g segattach
+ * across siblings. So a pool buffer that thread A mmap'd (and attached in A's
+ * table) is only a raw pointer to thread B — B never attached the segment, and
+ * reading it faults. maps[] is a static shared across the RFMEM siblings, so it
+ * records the pool B is missing; the note handler hands us the fault addr and we
+ * attach that pool HERE, in the faulting proc, then signal a retry. segattach
+ * ignores its va/len args for a #g segment and maps it at the segment's own
+ * fixed VA (see top-of-file), so the pointer B already holds becomes valid and
+ * the re-executed load reads the right bytes.
+ *
+ * The concrete victim was web fonts: Skia/FreeType (FT_Stream_ReadULong, in
+ * sfnt_init_face) reads a font AnonymousBuffer that convert_to_ttf built and
+ * memcpy'd on a different WebContent thread — youtube's web fonts faulted a
+ * WebContent proc, which cascaded to the whole box.
+ *
+ * Lockless by design: the note handler runs in the faulting proc and must NEVER
+ * block on shm_lock — the proc may have been holding it when it faulted, which
+ * would self-deadlock. A torn maps[] read at worst fails to match (the fault
+ * stays fatal, as before) or names a stale pool (segattach fails, also fatal) —
+ * never worse than the crash it replaces. Returns 1 only on a FRESH successful
+ * attach, so the same addr can't fault-attach twice (a second try hits "segments
+ * overlap" -> 0 -> the process dies); that bounds retries to one per addr. */
+int cc9_shm_fault_attach(unsigned long addr) {
+	for (int i = 0; i < SHM_MAXMAP; i++) {
+		unsigned long va = maps[i].va, len = maps[i].len;
+		if (!maps[i].name[0] || !va || addr < va || addr >= va + len)
+			continue;
+		char name[CC9_SHM_NAMELEN];
+		strncpy(name, maps[i].name, sizeof name);
+		name[sizeof name - 1] = 0;
+		void *got = n9_segattach(0, name, 0, 0);
+		if ((long)got >= 0 && got != 0) {
+			shm_trace("faultatt", name, va, len, (long)got, 0);
+			return 1;   /* freshly attached in this proc -> the retried load succeeds */
+		}
+		char eb[96]; eb[0] = 0;
+		n9_errstr(eb, sizeof eb);   /* clear errstr; "segments overlap" = already here, so a retry won't help */
+		shm_trace("faultatt", name, va, len, (long)got, eb);
+		return 0;   /* couldn't newly attach -> let the fault stay fatal (no retry loop) */
+	}
+	return 0;   /* addr not in any known pool -> a genuine fault, die */
+}
+
 /* shm_lock held. Keep at most SHM_MAXIDLE idle (refs==0) pools attached,
  * detaching the least recently used beyond that.
  *
@@ -672,6 +740,47 @@ void cc9_shm_detach_all(void) {
 		}
 	}
 	n9_semrelease(&shm_lock, 1);
+}
+
+/* Fork-child shm reset — the counterpart that makes pool-sharing safe.
+ *
+ * rfork(RFMEM) SIBLING threads share one pool (see pool_ensure): they share this
+ * file's statics AND the #g pool memory, so one pool serves the whole process and
+ * each proc holds ONE pool segment instead of one-per-thread — which is what keeps
+ * a heavy page's WebContent under Plan 9's NSEG (~12) per-proc segment cap.
+ *
+ * A fork() child is different: it is a COW COPY of our address space, not a sibling.
+ * It inherits pool_name/pool_off/pool_fd but its writes to the (global, shared) #g
+ * pool memory would race the parent's carving of the SAME bytes — both advance their
+ * own copy of pool_off into one physical pool. So the child must NOT keep the pool.
+ * fork() calls this from its child path (cc9_reap_child_reset), BEFORE the child can
+ * allocate shm; it detaches the inherited attachments and wipes all pool/slab/buffer
+ * bookkeeping so the child mints a fresh pool keyed on its own pid. rfork siblings
+ * never come through fork(), so they are untouched and keep sharing. The child is
+ * single-threaded here, so no lock is needed — reset the sem to free in case it was
+ * inherited held, then reset. */
+void cc9_shm_fork_child_reset(void) {
+	shm_lock = 1;
+	for (int i = 0; i < SHM_MAXMAP; i++) {
+		if (maps[i].name[0]) {
+			n9_segdetach((void *)maps[i].va);
+			maps[i].name[0] = 0;
+			maps[i].refs = 0;
+			maps[i].lru = 0;
+		}
+	}
+	if (pool_fd >= 0) n9_close(pool_fd);
+	pool_fd = -1;
+	pool_name[0] = 0;
+	pool_off = 0;
+	pool_pid = 0;
+	pool_gen++;              /* invalidate any inherited buffer's pool generation */
+	slab_base = 0;
+	slab_next = 0;           /* child picks a fresh slab keyed on its own pid */
+	free_n = 0;
+	for (int i = 0; i < SHM_MAXBUF; i++) bufs[i].fd = 0;
+	bufs_live = 0;
+	reaped_dead_pools = 0;
 }
 
 /* ---- sweep: GC segment names whose memory is attached in no process ----
