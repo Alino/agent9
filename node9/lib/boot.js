@@ -193,16 +193,30 @@
   }
   // Node's own rule: .mjs is ESM, .cjs is CJS, anything else follows the nearest
   // package.json "type".
+  var pkgTypeCache = {};                 // dir -> is the nearest package.json "type":"module"
   function isESMFile(file) {
     if (/\.mjs$/.test(file)) return true;
     if (/\.cjs$/.test(file)) return false;
     if (!/\.js$/.test(file)) return false;
-    var dir = P0().dirname(file);
+    var dir = P0().dirname(file), start = dir, seen = [];
     for (;;) {
+      if (pkgTypeCache[dir] !== undefined) break;
+      seen.push(dir);
       var pj = dir + '/package.json';
-      if (fileExists(pj)) { try { return JSON.parse(readText(pj)).type === 'module'; } catch (e) { return false; } }
-      var up = P0().dirname(dir); if (up === dir) return false; dir = up;
+      if (fileExists(pj)) {
+        var isMod = false;
+        try { isMod = JSON.parse(readText(pj)).type === 'module'; } catch (e) { isMod = false; }
+        pkgTypeCache[dir] = isMod;
+        break;
+      }
+      var up = P0().dirname(dir);
+      if (up === dir) { pkgTypeCache[dir] = false; break; }
+      dir = up;
     }
+    var answer = pkgTypeCache[dir];
+    // every directory walked past shares the answer — one stat per directory, once
+    for (var i = 0; i < seen.length; i++) pkgTypeCache[seen[i]] = answer;
+    return pkgTypeCache[start];
   }
   function hashName(s) {
     var h = 5381;
@@ -2660,6 +2674,9 @@
       rs.on('data', function (c) { q.push(toU8(c)); if (q.length > 16 && rs.pause) { try { rs.pause(); } catch (e) {} } settle(); });
       rs.on('end', function () { ended = true; settle(); });
       rs.on('error', function (e) { failed = e; settle(); });
+      // destroy() (an abort mid-body, say) emits 'close' without 'end': without this a
+      // reader waiting on the next chunk would never be woken.
+      rs.on('close', function () { ended = true; settle(); });
       function read() {
         if (q.length) return Promise.resolve({ value: q.shift(), done: false });
         if (failed) { var e = failed; failed = null; ended = true; return Promise.reject(e); }
@@ -2875,6 +2892,16 @@
               return;
             }
             settled = true; unhook();
+            // The promise has resolved, but the transfer has not finished: keep watching
+            // the signal so aborting mid-body tears the socket down instead of leaving it
+            // draining an SSE reply nobody is reading any more.
+            if (signal && signal.addEventListener) {
+              onAbort = function () { try { req.destroy(); } catch (e) {} try { if (res.destroy) res.destroy(); } catch (e) {} };
+              signal.addEventListener('abort', onAbort);
+              res.on('end', unhook);
+              res.on('error', unhook);
+              if (signal.aborted) onAbort();
+            }
             resolve(new Response(res, {
               status: status,
               statusText: res.statusMessage || '',

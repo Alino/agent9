@@ -142,6 +142,19 @@ async function network() {
 	try { await fetch("https://registry.npmjs.org/left-pad", { signal: AbortSignal.abort() }); } catch (err) { threw = true; }
 	ok("pre-aborted signal rejects", threw);
 
+	// abort while the body is still streaming: the transfer must be torn down, and the
+	// next read must settle rather than hang forever on a socket nobody is draining
+	var ctl0 = new AbortController();
+	var res5 = await fetch("https://registry.npmjs.org/left-pad", { signal: ctl0.signal });
+	var rd = res5.body.getReader();
+	await rd.read();
+	ctl0.abort();
+	var settled = await Promise.race([
+		rd.read().then(function () { return "settled"; }, function () { return "settled"; }),
+		new Promise(function (r) { setTimeout(function () { r("hung"); }, 5000); })
+	]);
+	eq("read after mid-body abort settles", settled, "settled");
+
 	// abort mid-flight
 	var ctl = new AbortController();
 	var p = fetch("https://registry.npmjs.org/lodash", { signal: ctl.signal });
