@@ -28,7 +28,14 @@ static int poll(struct pollfd *fds, nfds_t nfds, int timeout){
         if(fds[i].fd > maxfd) maxfd = fds[i].fd;
     }
     ptv = 0;
-    if(timeout >= 0){ tv.tv_sec = timeout/1000; tv.tv_usec = (timeout%1000)*1000; ptv = &tv; }
+    if(timeout >= 0){
+        /* APE's select() multiplexes with helper procs, which it cannot even start within a
+         * zero timeout: select(tv=0) returns 0 without reporting fds that are already
+         * readable. An event loop that polls with 0 (because a timer is due right now)
+         * would therefore never service its sockets. Give it 1ms of real time instead. */
+        if(timeout == 0) timeout = 1;
+        tv.tv_sec = timeout/1000; tv.tv_usec = (timeout%1000)*1000; ptv = &tv;
+    }
     n = select(maxfd+1, &rfds, &wfds, &efds, ptv);
     if(n <= 0) return n;
     ready = 0;

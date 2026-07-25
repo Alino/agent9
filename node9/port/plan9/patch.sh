@@ -285,6 +285,15 @@ perl -i -pe 's/timespec_to_ms\(&st\.st_atim\)/(int64_t)st.st_atime * 1000/' work
 perl -i -pe 's/timespec_to_ms\(&st\.st_mtim\)/(int64_t)st.st_mtime * 1000/' work/quickjs-libc.c
 perl -i -pe 's/timespec_to_ms\(&st\.st_ctim\)/(int64_t)st.st_ctime * 1000/' work/quickjs-libc.c
 
+# quickjs-libc.c: js_os_poll_internal() returns as soon as a timer has expired, WITHOUT
+# looking at any registered fd. A program whose timer callback outlasts its interval (a TUI
+# redrawing at 80ms on an interpreter) therefore never gets its socket handlers called and
+# streamed HTTP responses stall for a minute or more. Drop the early return so the poll
+# below still runs (with a 0 timeout, which poll.h widens to 1ms because APE's select
+# cannot start its helper procs in zero time).
+perl -0777 -i -pe 's/        if \(min_delay == 0\)\n            return 0; \/\/ expired timer\n(        if \(min_delay < 0\))/$1/g' work/quickjs-libc.c
+grep -c 'expired timer' work/quickjs-libc.c | sed 's/^/  expired-timer mentions left (want 1: the comment in js_std_loop_once): /'
+
 # package
 cd work && tar czf ../qjs-patched.tar.gz . && cd ..
 echo "patched tar: $(ls -lh /tmp/node9probe/src/qjs-patched.tar.gz | awk '{print $5}')"

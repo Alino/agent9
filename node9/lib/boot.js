@@ -10,6 +10,11 @@
   function fileExists(p) { return os.stat(p)[1] === 0; }
   function isDir(p) { var r = os.stat(p); return r[1] === 0 && ((r[0].mode & (os.S_IFMT || 0xF000)) === (os.S_IFDIR || 0x4000)); }
   function readText(p) { var f = std.open(p, 'rb'); if (!f) return null; var s = f.readAsString(); f.close(); return s; }
+  // probe channel for instrumenting installed packages in place: NODE9_LOG=1 -> /tmp/n9log
+  globalThis.__n9log = function (s) {
+    if (!std.getenv('NODE9_LOG')) return;
+    try { var f = std.open('/tmp/n9log', 'a'); if (f) { f.puts(Date.now() + ' ' + String(s) + '\n'); f.close(); } } catch (e) {}
+  };
   // shared network trace, same switch as the http client's: NODE9_HTTPTRACE -> /tmp/n9http
   function ntrace(s) {
     if (!std.getenv('NODE9_HTTPTRACE')) return;
@@ -788,9 +793,79 @@
     };
     p.hrtime.bigint = function () { return BigInt(Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6)); };
     var EE = require('events');
+
+    /* ---- terminal detection, Plan 9 style ----
+       There is no isatty(2) and no TIOCGWINSZ here. Two shapes count as a terminal:
+       (1) the fd really is /dev/cons (rio window, raw console) — ask /proc/$pid/fd, which
+           lists the path behind every open fd; and
+       (2) a Plan 9 terminal emulator (alacritty9, 9term, win) that hands its child plain
+           PIPES — Plan 9 has no pty — and publishes the window size in /env/LINES and
+           /env/COLS, rewriting them on resize. That published pair is the tty signal, and
+           it is also where the size has to come from.
+       NODE9_TTY=1/0 forces the answer either way. */
+    // /env/COLS is a file, so reading it per access would mean hundreds of opens per
+    // rendered frame (a TUI asks for the size constantly). Cache it briefly: a resize the
+    // emulator publishes is still picked up within a frame or two.
+    var sizeCache = {}, SIZE_TTL_MS = 250;
+    function envSize(name) {
+      var now = Date.now(), c = sizeCache[name];
+      if (c && (now - c.at) < SIZE_TTL_MS) return c.v;
+      var s = readText('/env/' + name), v = null;
+      if (s != null) {
+        var n = parseInt(s.replace(/\0/g, '').trim(), 10);
+        if (n > 0 && n < 100000) v = n;
+      }
+      sizeCache[name] = { at: now, v: v };
+      return v;
+    }
+    function selfPid() { var s = readText('/dev/pid'); return s ? s.replace(/\0/g, '').trim() : null; }
+    function fdIsCons(fd) {
+      var pid = selfPid(); if (!pid) return false;
+      var t = readText('/proc/' + pid + '/fd'); if (!t) return false;
+      var lines = t.split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var m = /^\s*(\d+)\s+.*?(\S+)\s*$/.exec(lines[i]);
+        if (m && parseInt(m[1], 10) === fd) return /\/dev\/cons$/.test(m[2]);
+      }
+      return false;
+    }
+    var ttyCache = {};
+    function detectTTY(fd) {
+      if (ttyCache[fd] !== undefined) return ttyCache[fd];
+      var forced = std.getenv('NODE9_TTY');
+      var r;
+      if (forced === '1') r = true;
+      else if (forced === '0') r = false;
+      else r = fdIsCons(fd) || (envSize('LINES') !== null && envSize('COLS') !== null);
+      ttyCache[fd] = r;
+      return r;
+    }
+    p.__detectTTY = detectTTY;      // used by the tty builtin
+    p.__fdIsCons = fdIsCons;
+
     var mkStream = function (f, fd) {
       var s = new EE();
-      s.writable = true; s.fd = fd; s.isTTY = false; s.columns = 80; s.rows = 24;
+      s.writable = true; s.fd = fd;
+      s.isTTY = detectTTY(fd);
+      // Read the size per access: the emulator rewrites /env/COLS on every resize, and
+      // the C environ copy taken at startup would never see it.
+      Object.defineProperty(s, 'columns', { configurable: true, get: function () { return envSize('COLS') || 80; } });
+      Object.defineProperty(s, 'rows', { configurable: true, get: function () { return envSize('LINES') || 24; } });
+      s.getWindowSize = function () { return [s.columns, s.rows]; };
+      // No SIGWINCH on Plan 9 either — poll the size files, but only once something is
+      // actually listening for 'resize'.
+      var sizePoll = null, lastCols = s.columns, lastRows = s.rows;
+      function startSizePoll() {
+        if (sizePoll || !s.isTTY) return;
+        sizePoll = globalThis.setInterval(function () {
+          var c = s.columns, r = s.rows;
+          if (c !== lastCols || r !== lastRows) { lastCols = c; lastRows = r; s.emit('resize'); }
+        }, 500);
+      }
+      s.on = function (ev, fn) { if (ev === 'resize') startSizePoll(); return EE.prototype.on.call(s, ev, fn); };
+      s.addListener = s.on;
+      s.once = function (ev, fn) { if (ev === 'resize') startSizePoll(); return EE.prototype.once.call(s, ev, fn); };
+      s.__stopSizePoll = function () { if (sizePoll) { globalThis.clearInterval(sizePoll); sizePoll = null; } };
       s.write = function (chunk, enc, cb) {
         if (typeof enc === 'function') { cb = enc; enc = null; }
         try {
@@ -819,7 +894,7 @@
       var stream = require('stream'), Buffer = require('buffer').Buffer;
       var s = new stream.Readable();
       var rbuf = null, readerOn = false, done = false;
-      s.fd = 0; s.isTTY = false;
+      s.fd = 0; s.isTTY = detectTTY(0);
       function stop() { if (readerOn) { try { os.setReadHandler(0, null); } catch (e) {} readerOn = false; } }
       s._read = function () {
         if (readerOn || done) return;
@@ -838,10 +913,13 @@
           }
         });
       };
-      // Plan 9 puts the terminal in raw mode by writing to /dev/consctl, and the control
-      // file must stay open for the setting to hold.
-      var ctl = -1;
+      // Raw mode means writing "rawon" to /dev/consctl, and the control file must stay
+      // open for the setting to hold. Only do that when stdin really is /dev/cons: under a
+      // terminal emulator stdin is a pipe that is already raw, and poking consctl there
+      // would flip the mode on the machine's own console instead.
+      var ctl = -1, onCons = fdIsCons(0);
       s.setRawMode = function (on) {
+        if (!onCons) { s.isRaw = !!on; return s; }   // a pipe delivers raw bytes already
         try {
           if (on) { if (ctl < 0) ctl = os.open('/dev/consctl', os.O_WRONLY); if (ctl >= 0) os.write(ctl, new TextEncoder().encode('rawon').buffer, 0, 5); }
           else if (ctl >= 0) { os.write(ctl, new TextEncoder().encode('rawoff').buffer, 0, 6); os.close(ctl); ctl = -1; }
@@ -1524,7 +1602,15 @@
           for (var i = 0; i < n; i++) b[i] = src[i];
           self.bytesRead += n;
           var ok = self.push(b);
-          if (ok === false) { os.setReadHandler(self._fd, null); self._readerOn = false; }
+          if (ok === false) {
+            // Backpressure: stop reading for now. A flowing socket (one with 'data'
+            // listeners, e.g. the HTTP parser) has nobody to call _read() again, so the
+            // reader has to re-arm itself — otherwise one burst above the high-water mark
+            // parks the connection until something unrelated pokes it. That stalled every
+            // streamed HTTP response that arrived while the process was busy.
+            os.setReadHandler(self._fd, null); self._readerOn = false;
+            if (self._rs && self._rs.flowing) globalThis.setTimeout(function () { self._installReader(); }, 0);
+          }
         } else if (n === 0) {
           os.setReadHandler(self._fd, null); self._readerOn = false;
           self.push(null);
@@ -1994,9 +2080,20 @@
 
   /* ---------------- tty / string_decoder / zlib / crypto (stubs/minimal) ---------------- */
   define('tty', function (m, exports) {
-    exports.isatty = function (fd) { return false; };
-    function ReadStream() { require('events').call(this); } require('util').inherits(ReadStream, require('events'));
-    function WriteStream() { require('events').call(this); this.columns = 80; this.rows = 24; } require('util').inherits(WriteStream, require('events'));
+    // same rule as process.stdout.isTTY: /dev/cons, or an emulator publishing the size
+    exports.isatty = function (fd) { var p = require('process'); return p.__detectTTY ? p.__detectTTY(fd) : false; };
+    function ReadStream(fd) { require('events').call(this); this.fd = fd; this.isTTY = exports.isatty(fd); this.isRaw = false; }
+    require('util').inherits(ReadStream, require('events'));
+    ReadStream.prototype.setRawMode = function (on) { return require('process').stdin.setRawMode(on); };
+    function WriteStream(fd) {
+      require('events').call(this);
+      this.fd = fd; this.isTTY = exports.isatty(fd);
+      var out = require('process').stdout;
+      Object.defineProperty(this, 'columns', { configurable: true, get: function () { return out.columns; } });
+      Object.defineProperty(this, 'rows', { configurable: true, get: function () { return out.rows; } });
+    }
+    require('util').inherits(WriteStream, require('events'));
+    WriteStream.prototype.getWindowSize = function () { return [this.columns, this.rows]; };
     exports.ReadStream = ReadStream; exports.WriteStream = WriteStream;
   });
   define('string_decoder', function (m, exports) {
