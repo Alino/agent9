@@ -27,7 +27,7 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 # ReleaseSmall only; no f16/f80/f128 soft-float or @cImport in target programs.
 zig9	-	.	tarball https://github.com/Alino/agent9/releases/download/zig9-v0.14.1/zig9-amd64.tar.gz	-	0.14.1
 python9	-	.	tarball https://github.com/Alino/agent9/releases/download/python9-v0.2.0/python9-amd64.tar.gz	-	0.2.0
-node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node9-v0.1.0/node9-amd64.tar.gz	-	0.1.0
+node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node9-v0.2.0/node9-amd64.tar.gz	-	0.2.0
 # cc9: on-box C++ toolchain (cc -> clang -> ld.lld -> elf2aout). Self-contained.
 cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9-v0.1.0/cc9-amd64.tar.gz	-	0.1.0
 # pi9: prebuilt tarball has amd64/bin/pi9, rc/bin/new-pi9, sys/lib/tls/ca.pem.
