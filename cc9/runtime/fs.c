@@ -383,12 +383,23 @@ int access(const char *path, int mode){
 	if((mode & 4) && !(st.st_mode & 0444)){ errno = EACCES; return -1; }
 	return 0;
 }
-/* Plan 9 has no ttys; the terminal (alacritty9/vts/9term) talks to us over
- * pipes. Heuristic: fds 0-2 count as a tty when $TERM is set — that's exactly
- * the environment a terminal emulator provides, and it's what lets nvim's TUI
- * start. Redirections inside such a session still look like ttys (ceiling). */
+/* Plan 9 has no ttys; a terminal emulator (alacritty9/vts/9term) talks to us
+ * over PIPES, so there $TERM is the only marker we get — that's exactly the
+ * environment such an emulator provides, and it's what lets nvim's TUI start.
+ * (Redirections inside such a session still look like ttys — the ceiling.)
+ *
+ * But a bare console session has no $TERM and doesn't need the heuristic: its
+ * fd 0 really IS /dev/cons, which we can just ask the kernel about. Without
+ * that arm, `drawterm -G` (and the physical console) called the real console
+ * not-a-terminal, so nvim's TUI refused to start and the editor hung forever
+ * with zero output. Same exact-path test stdio.c:139 already uses. */
 extern char *getenv(const char *);
-int isatty(int fd){ return fd >= 0 && fd <= 2 && getenv("TERM") != 0; }
+extern int strcmp(const char *, const char *);
+static int fd_is_cons(int fd){
+	char p[128];
+	return n9_fd2path(fd, p, sizeof p) >= 0 && strcmp(p, "/dev/cons") == 0;
+}
+int isatty(int fd){ return fd >= 0 && fd <= 2 && (getenv("TERM") != 0 || fd_is_cons(fd)); }
 
 /* ioctl: the winsize pair is real (backed by the /env/LINES + /env/COLS files
  * alacritty9 publishes and updates live); everything else is ENOTTY. */

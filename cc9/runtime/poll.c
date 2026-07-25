@@ -539,14 +539,36 @@ int cc9_poll_cloexec(int fd){
  * (post-fork children have no threads; pre-exec state is discarded anyway). */
 void cc9_poll_close_cloexec(void){
 	if(!tab_inited) return;
+	/* Private reader dups are NOT closed here — cc9_poll_child_reset() already
+	 * did it, at fork, and closing them at exec time is actively wrong: by now
+	 * the child's file actions (libuv's spawn shuffle, posix_spawn's dup2) have
+	 * run, and a dup2 lands on the LOWEST free number — which is exactly the
+	 * number a private dup just vacated. Closing "our" recorded rfd here then
+	 * closes the child's freshly-installed stdio instead. That is what broke
+	 * nvim: the TUI client spawned its --embed server, cc9 closed the server's
+	 * RPC pipe on the way through execve, the server read EOF and exited, and
+	 * the client tore the UI down having painted nothing but its init sequence. */
 	for(int i = 0; i < PFD_MAX; i++){
-		/* private reader dups are internal bookkeeping and must never survive
-		 * exec — close every one regardless of the app fd's CLOEXEC flag */
-		if(tab[i].rfd >= 0 && tab[i].rfd != tab[i].fd){ n9_close(tab[i].rfd); tab[i].rfd = -1; }
 		if(tab[i].fd >= 0 && (tab[i].flags & O_CLOEXEC)){
 			n9_close(tab[i].fd);
 			tab[i].fd = -1;
 		}
+	}
+}
+
+/* Called in the fork CHILD, before any file actions run. The child inherited a
+ * copy of the table plus real open dups, but none of the reader/writer threads
+ * that own them (fork copies one thread). So: close the inherited dups while
+ * their numbers still mean what the table says, and clear the thread flags —
+ * a slot left claiming reader=1 has nobody filling its ring, so the first read
+ * would block forever. */
+void cc9_poll_child_reset(void){
+	if(!tab_inited) return;
+	for(int i = 0; i < PFD_MAX; i++){
+		if(tab[i].rfd >= 0 && tab[i].rfd != tab[i].fd) n9_close(tab[i].rfd);
+		tab[i].rfd = -1;
+		tab[i].reader = 0;
+		tab[i].writer = 0;
 	}
 }
 
