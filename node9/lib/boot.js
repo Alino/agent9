@@ -1688,9 +1688,9 @@
                body. A body that really is short now surfaces as a parser error. */
             try { os.setReadHandler(self._fd, null); } catch (e) {}
             self._readerOn = false;
-            self._drainTls();
+            self._drainTls();            /* may itself end or destroy the stream */
             self._sockClosed = true;
-            self.push(null);
+            if (!self._rs.ended && !self._rs.destroyed) self.push(null);
           }
           return;
         }
@@ -1928,8 +1928,9 @@
         ntrace('TLS handshake done tfd=' + tfd);
         if (tfd < 0) { try { os.close(c.fd); } catch (e) {} try { os.close(c.ctl); } catch (e) {} sock.emit('error', new Error('tls: handshake failed with ' + host)); return; }
         if (sock._sockClosed) {                  /* aborted during the handshake */
-          try { nat.tlsClose(tfd); } catch (e) {}
-          try { os.close(c.fd); } catch (e) {} try { os.close(c.ctl); } catch (e) {}
+          if (nat.tlsHandles) { try { nat.tlsClose(tfd); } catch (e) {} }   /* closes c.fd itself */
+          else { try { os.close(tfd); } catch (e) {} try { os.close(c.fd); } catch (e) {} }
+          try { os.close(c.ctl); } catch (e) {}
           return;
         }
         if (nat.tlsHandles) {
@@ -2081,6 +2082,15 @@
         if (inflater) { var parts = inflater.push(bytes); for (var i = 0; i < parts.length; i++) im.push(parts[i]); }
         else { var b = Buffer.alloc(bytes.length); b.set(bytes); im.push(b); }
       }
+      /* Same teardown as finish(), minus the clean end: the body is bad, so the reader
+         gets an error — but the connection still has to be closed, or its fds and its
+         armed read handler outlive the request. */
+      function fail(err) {
+        if (finished) return; finished = true;
+        if (inflater) inflater.destroy();
+        if (im) im.destroy(err);
+        if (req.socket) { try { req.socket.destroy(); } catch (e) {} }
+      }
       function finish() {
         if (finished) return; finished = true;
         if (inflater) inflater.destroy();
@@ -2138,8 +2148,7 @@
               pending = pending.slice(nl + 2);
               if (!(sz >= 0)) {   /* NaN: desynced stream. Reporting it as the last
                                      chunk silently truncated the body instead. */
-                finished = true;
-                if (im) im.destroy(new Error('Parse Error: invalid chunk size "' + sizeLine + '"'));
+                fail(new Error('Parse Error: invalid chunk size "' + sizeLine + '"'));
                 return;
               }
               if (!sz) { // last chunk; consume optional trailers up to CRLFCRLF or CRLF
@@ -2171,8 +2180,7 @@
           /* Node reports a connection that dies mid-body as an error; ending the stream
              quietly hands the caller a short body it cannot tell from a complete one. */
           if (!finished && (framing === 'chunked' || (framing === 'length' && remaining > 0))) {
-            finished = true;
-            if (im) im.destroy(new Error('aborted: connection closed before the body completed'));
+            fail(new Error('aborted: connection closed before the body completed'));
             return;
           }
           finish();
