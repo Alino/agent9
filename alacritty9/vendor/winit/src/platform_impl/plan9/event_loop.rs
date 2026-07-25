@@ -135,7 +135,15 @@ impl<T: 'static> EventLoop<T> {
                 loop {
                     match stdin.read_exact(&mut buf) {
                         Ok(()) => {
-                            if reader_sender.send(Message::Record(Record::parse(&buf))).is_err() {
+                            let record = Record::parse(&buf);
+                            // Apply the size AS SOON AS IT IS READ, not when the loop
+                            // gets around to dispatching it: the terminal is sized and
+                            // the child spawned before the first dispatch, so waiting
+                            // for dispatch handed both the placeholder size.
+                            if record.typ == protocol::EV_RESIZE {
+                                super::set_window_size(record.a, record.b);
+                            }
+                            if reader_sender.send(Message::Record(record)).is_err() {
                                 break;
                             }
                         },
@@ -155,6 +163,11 @@ impl<T: 'static> EventLoop<T> {
                 }
             })
             .map_err(|error| EventLoopError::Os(os_error!(OsError::new(error))))?;
+
+        // The presenter's opening resize must land before the terminal is sized and
+        // the child is spawned — otherwise both get the placeholder size (see
+        // wait_for_initial_size).
+        super::wait_for_initial_size();
 
         Ok(Self {
             receiver,

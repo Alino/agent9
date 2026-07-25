@@ -22,6 +22,9 @@ pub(crate) mod protocol;
 // ponytail: exactly one window per process (gl9win2 owns it), so its last
 // known size lives in a global; MonitorHandle/WindowId stay plain unit types.
 static WINDOW_SIZE: AtomicU64 = AtomicU64::new((1024 << 32) | 768);
+/// Set once a real resize record has been seen, so startup can wait for the true
+/// size instead of handing out the placeholder above.
+pub(crate) static SIZE_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) fn window_size() -> PhysicalSize<u32> {
     let packed = WINDOW_SIZE.load(Ordering::Relaxed);
@@ -30,6 +33,26 @@ pub(crate) fn window_size() -> PhysicalSize<u32> {
 
 pub(crate) fn set_window_size(w: u32, h: u32) {
     WINDOW_SIZE.store(((w as u64) << 32) | h as u64, Ordering::Relaxed);
+    SIZE_SEEN.store(true, Ordering::Release);
+}
+
+/// Block briefly for the presenter's opening resize record.
+///
+/// gl9win2 guarantees one resize with the real window size before any other
+/// record, but it arrives on the reader thread — and the terminal is built, and
+/// the CHILD SPAWNED, before that lands. The child was therefore told the
+/// placeholder size (1024x768 -> 113x45 cells) while the grid was really 88x28:
+/// every full-width line it wrote wrapped, so its redraws landed a row off and
+/// the screen filled with duplicated lines whose tails were missing. Waiting here
+/// costs nothing when the record is already in flight, and falls back to the
+/// placeholder if a presenter sends none.
+pub(crate) fn wait_for_initial_size() {
+    for _ in 0..100 {
+        if SIZE_SEEN.load(Ordering::Acquire) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
 }
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq, Hash)]
