@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::io::{self, Read};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use polling::{Event, PollMode, Poller};
@@ -31,16 +31,41 @@ struct Shared {
     buf: Mutex<VecDeque<u8>>,
     poller: Mutex<Option<Arc<Poller>>>,
     eof: AtomicBool,
-    /// Raw mode, keyed on what the child announces (see RAW_ON): the alternate
-    /// screen, bracketed paste, or a Kitty keyboard push. There is no
-    /// pty/termios to ask for raw mode on Plan 9, so these announcements are
-    /// the request; while set, the line discipline is bypassed entirely (no
-    /// echo, no line buffer, no ICRNL/ONLCR, escape sequences and ^C pass
+    /// Raw mode: the OR of the independent signals below. There is no
+    /// pty/termios to ask for raw mode on Plan 9, so a child's announcements
+    /// are the request; while set, the line discipline is bypassed entirely
+    /// (no echo, no line buffer, no ICRNL/ONLCR, escape sequences and ^C pass
     /// through).
     raw: AtomicBool,
+    /// The signals, tracked SEPARATELY. They are independent: nvim is on the
+    /// alternate screen AND uses bracketed paste, and it turns paste off around
+    /// its own operations. Treating any single "off" as "leave raw mode" put a
+    /// full-screen app back on the cooked line discipline mid-session, which
+    /// echoed its keystrokes into the grid and swallowed its escape sequences —
+    /// duplicated lines with their tails missing.
+    alt_screen: AtomicBool,
+    bracketed_paste: AtomicBool,
+    /// Kitty keyboard is a STACK: push enters, pop leaves, and apps nest them.
+    kitty_depth: AtomicUsize,
 }
 
 impl Shared {
+    /// Recompute raw from the signals. Raw ends only when every one is off.
+    fn refresh_raw(&self) {
+        let raw = self.alt_screen.load(Ordering::Acquire)
+            || self.bracketed_paste.load(Ordering::Acquire)
+            || self.kitty_depth.load(Ordering::Acquire) > 0;
+        self.raw.store(raw, Ordering::Release);
+        if std::env::var_os("ALACRITTY9_RAWDEBUG").is_some() {
+            eprintln!(
+                "[a9] raw={raw} (alt={} paste={} kitty={})",
+                self.alt_screen.load(Ordering::Acquire),
+                self.bracketed_paste.load(Ordering::Acquire),
+                self.kitty_depth.load(Ordering::Acquire),
+            );
+        }
+    }
+
     fn wake_read(&self) {
         if let Some(poller) = self.poller.lock().unwrap().as_ref() {
             poller.shim_set_ready_read(PTY_READ_WRITE_TOKEN);
@@ -63,10 +88,12 @@ impl Shared {
 /// conclusive — a program only asks for either when it is reading keys itself
 /// — and without them such an app gets whole cooked LINES, so its Enter never
 /// arrives as a keypress at all.
-const RAW_ON: [&[u8]; 3] = [b"\x1b[?1049h", b"\x1b[?47h", b"\x1b[?2004h"];
-const RAW_OFF: [&[u8]; 3] = [b"\x1b[?1049l", b"\x1b[?47l", b"\x1b[?2004l"];
-/// Kitty keyboard protocol: push (CSI > flags u) enters raw, pop (CSI < u)
-/// leaves. The flags vary, so this is matched by shape rather than literally.
+const ALT_ON: [&[u8]; 2] = [b"\x1b[?1049h", b"\x1b[?47h"];
+const ALT_OFF: [&[u8]; 2] = [b"\x1b[?1049l", b"\x1b[?47l"];
+const PASTE_ON: &[u8] = b"\x1b[?2004h";
+const PASTE_OFF: &[u8] = b"\x1b[?2004l";
+/// Kitty keyboard protocol: push (CSI > flags u), pop (CSI < u). The flags
+/// vary, so the push is matched by shape rather than literally.
 const KITTY_POP: &[u8] = b"\x1b[<u";
 
 fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signal_eof: bool) {
@@ -105,16 +132,29 @@ fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signa
                                     _ => false,
                                 }
                             };
-                            if RAW_ON.iter().any(|p| ends_with(p)) || kitty_push {
-                                if std::env::var_os("ALACRITTY9_RAWDEBUG").is_some() {
-                                    eprintln!("[a9] raw ON (kitty_push={kitty_push})");
-                                }
-                                shared.raw.store(true, Ordering::Release);
-                            } else if RAW_OFF.iter().any(|p| ends_with(p)) || ends_with(KITTY_POP) {
-                                if std::env::var_os("ALACRITTY9_RAWDEBUG").is_some() {
-                                    eprintln!("[a9] raw OFF");
-                                }
-                                shared.raw.store(false, Ordering::Release);
+                            // Each signal moves only its own flag; raw is their OR.
+                            let mut changed = true;
+                            if ALT_ON.iter().any(|p| ends_with(p)) {
+                                shared.alt_screen.store(true, Ordering::Release);
+                            } else if ALT_OFF.iter().any(|p| ends_with(p)) {
+                                shared.alt_screen.store(false, Ordering::Release);
+                            } else if ends_with(PASTE_ON) {
+                                shared.bracketed_paste.store(true, Ordering::Release);
+                            } else if ends_with(PASTE_OFF) {
+                                shared.bracketed_paste.store(false, Ordering::Release);
+                            } else if kitty_push {
+                                shared.kitty_depth.fetch_add(1, Ordering::AcqRel);
+                            } else if ends_with(KITTY_POP) {
+                                let _ = shared.kitty_depth.fetch_update(
+                                    Ordering::AcqRel,
+                                    Ordering::Acquire,
+                                    |d| Some(d.saturating_sub(1)),
+                                );
+                            } else {
+                                changed = false;
+                            }
+                            if changed {
+                                shared.refresh_raw();
                             }
 
                             // ONLCR: children on a pipe emit bare \n; a pty
@@ -376,6 +416,9 @@ pub fn new(config: &Options, window_size: WindowSize, _window_id: u64) -> io::Re
         poller: Mutex::new(None),
         eof: AtomicBool::new(false),
         raw: AtomicBool::new(false),
+        alt_screen: AtomicBool::new(false),
+        bracketed_paste: AtomicBool::new(false),
+        kitty_depth: AtomicUsize::new(0),
     });
 
     // One blocking reader thread per output pipe — the platform's substitute
