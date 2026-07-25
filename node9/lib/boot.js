@@ -10,6 +10,16 @@
   function fileExists(p) { return os.stat(p)[1] === 0; }
   function isDir(p) { var r = os.stat(p); return r[1] === 0 && ((r[0].mode & (os.S_IFMT || 0xF000)) === (os.S_IFDIR || 0x4000)); }
   function readText(p) { var f = std.open(p, 'rb'); if (!f) return null; var s = f.readAsString(); f.close(); return s; }
+  // Module resolution reads the same package.json files over and over (once per import of
+  // any subpath), and each read is a 9P round trip. Parse each one once.
+  var pkgJsonCache = {};
+  function readPkgJson(path) {
+    if (Object.prototype.hasOwnProperty.call(pkgJsonCache, path)) return pkgJsonCache[path];
+    var j = null;
+    if (fileExists(path)) { try { j = JSON.parse(readText(path)); } catch (e) { j = null; } }
+    pkgJsonCache[path] = j;
+    return j;
+  }
   // probe channel for instrumenting installed packages in place: NODE9_LOG=1 -> /tmp/n9log
   globalThis.__n9log = function (s) {
     if (!std.getenv('NODE9_LOG')) return;
@@ -40,8 +50,9 @@
   }
   function pkgMain(pkgdir) {
     var pj = pkgdir + '/package.json';
-    if (fileExists(pj)) {
-      var j; try { j = JSON.parse(readText(pj)); } catch (e) { j = {}; }
+    var jj = readPkgJson(pj);
+    if (jj) {
+      var j = jj;
       var main = null, e2 = j.exports;
       if (e2) {
         if (typeof e2 === 'string') main = e2;
@@ -152,8 +163,7 @@
     return t ? t.split('*').join(captured) : null;
   }
   function pkgMainESM(pkgdir, sub) {
-    var pj = pkgdir + '/package.json', j = {};
-    if (fileExists(pj)) { try { j = JSON.parse(readText(pj)); } catch (e) { j = {}; } }
+    var pj = pkgdir + '/package.json', j = readPkgJson(pj) || {};
     var target = null, e2 = j.exports;
     if (e2) {
       if (sub) { if (typeof e2 !== 'string') target = exportsSubpath(e2, sub); }
@@ -188,8 +198,8 @@
     var dir = P0().dirname(baseFile);
     for (;;) {
       var pj = dir + '/package.json';
-      if (fileExists(pj)) {
-        var j = {}; try { j = JSON.parse(readText(pj)); } catch (e) {}
+      var j = readPkgJson(pj);
+      if (j) {
         if (j.imports && j.imports[name] !== undefined) { var t = condPick(j.imports[name], ESM_COND); if (t) return P0().resolve(dir, t); }
         return null;
       }
@@ -208,10 +218,9 @@
       if (pkgTypeCache[dir] !== undefined) break;
       seen.push(dir);
       var pj = dir + '/package.json';
-      if (fileExists(pj)) {
-        var isMod = false;
-        try { isMod = JSON.parse(readText(pj)).type === 'module'; } catch (e) { isMod = false; }
-        pkgTypeCache[dir] = isMod;
+      var pjj = readPkgJson(pj);
+      if (pjj) {
+        pkgTypeCache[dir] = pjj.type === 'module';
         break;
       }
       var up = P0().dirname(dir);
@@ -783,7 +792,11 @@
     });
     p.cwd = function () { return os.getcwd()[0] || '/'; };
     p.chdir = function (d) { os.chdir(d); };
-    p.exit = function (code) { std.exit(code || 0); };
+    p.exit = function (code) {
+      // never leave a console in raw mode behind us
+      try { if (p.stdin && p.stdin.__consRestore) p.stdin.__consRestore(); } catch (e) {}
+      std.exit(code || 0);
+    };
     p.nextTick = function (fn) { var a = Array.prototype.slice.call(arguments, 1); Promise.resolve().then(function () { fn.apply(null, a); }); };
     p.hrtime = function (prev) {
       var ns = BigInt(Math.round((typeof performance !== 'undefined' ? performance.now() : Date.now()) * 1e6));
@@ -819,15 +832,24 @@
       return v;
     }
     function selfPid() { var s = readText('/dev/pid'); return s ? s.replace(/\0/g, '').trim() : null; }
-    function fdIsCons(fd) {
-      var pid = selfPid(); if (!pid) return false;
-      var t = readText('/proc/' + pid + '/fd'); if (!t) return false;
+    function fdPath(fd) {
+      var pid = selfPid(); if (!pid) return null;
+      var t = readText('/proc/' + pid + '/fd'); if (!t) return null;
       var lines = t.split('\n');
       for (var i = 0; i < lines.length; i++) {
         var m = /^\s*(\d+)\s+.*?(\S+)\s*$/.exec(lines[i]);
-        if (m && parseInt(m[1], 10) === fd) return /\/dev\/cons$/.test(m[2]);
+        if (m && parseInt(m[1], 10) === fd) return m[2];
       }
-      return false;
+      return null;
+    }
+    // A console arrives under several names depending on who is serving it:
+    // /dev/cons (bound by the kernel or a cpu session), #c/cons (the raw device,
+    // what a drawterm -G console reports), /mnt/wsys/N/cons or /mnt/term/dev/cons
+    // (a rio window). fd2path — which /proc/$pid/fd reports — cannot be spoofed
+    // by a bind, so matching the final element is both safe and enough.
+    function fdIsCons(fd) {
+      var p = fdPath(fd);
+      return !!p && /(^|\/)cons$/.test(p);
     }
     var ttyCache = {};
     function detectTTY(fd) {
@@ -838,6 +860,18 @@
       else if (forced === '0') r = false;
       else r = fdIsCons(fd) || (envSize('LINES') !== null && envSize('COLS') !== null);
       ttyCache[fd] = r;
+      // stderr does not exist yet while process.stdout/stderr are being built, so this
+      // goes to a file: NODE9_TTY_DEBUG=1 -> /tmp/n9tty.
+      if (std.getenv('NODE9_TTY_DEBUG')) {
+        try {
+          var f = std.open('/tmp/n9tty', 'a');
+          if (f) {
+            f.puts('fd ' + fd + ' path=' + fdPath(fd) + ' cons=' + fdIsCons(fd)
+              + ' LINES=' + envSize('LINES') + ' COLS=' + envSize('COLS') + ' -> isTTY=' + r + '\n');
+            f.close();
+          }
+        } catch (e) {}
+      }
       return r;
     }
     p.__detectTTY = detectTTY;      // used by the tty builtin
@@ -849,6 +883,10 @@
       s.isTTY = detectTTY(fd);
       // Read the size per access: the emulator rewrites /env/COLS on every resize, and
       // the C environ copy taken at startup would never see it.
+      // Size comes from /env/COLS and /env/LINES — the convention alacritty9 publishes and
+      // neovim9 reads. A drawterm/rio console publishes no size at all and its input path
+      // swallows a terminal's cursor-position reply (measured), so there is nothing to
+      // query: set LINES/COLS for those, or 80x24 it is.
       Object.defineProperty(s, 'columns', { configurable: true, get: function () { return envSize('COLS') || 80; } });
       Object.defineProperty(s, 'rows', { configurable: true, get: function () { return envSize('LINES') || 24; } });
       s.getWindowSize = function () { return [s.columns, s.rows]; };
@@ -906,6 +944,14 @@
           if (n > 0) {
             var b = Buffer.alloc(n), src = new Uint8Array(rbuf, 0, n);
             for (var i = 0; i < n; i++) b[i] = src[i];
+            // A Plan 9 keyboard sends \n for Return; every terminal app expects the
+            // VT convention (\r) and reads a bare \n as ctrl+j instead — which is why
+            // Enter in a rio window or a drawterm console typed a newline into the
+            // editor rather than submitting. Translate only while we hold the console
+            // in raw mode: cooked reads are lines, and a pipe is somebody else's job.
+            if (s.isRaw && onCons && consEnterCR) {
+              for (var j = 0; j < n; j++) if (b[j] === 0x0a) b[j] = 0x0d;
+            }
             if (s.push(b) === false) stop();
           } else {
             stop(); done = true;
@@ -918,17 +964,45 @@
       // terminal emulator stdin is a pipe that is already raw, and poking consctl there
       // would flip the mode on the machine's own console instead.
       var ctl = -1, onCons = fdIsCons(0);
+      var consEnterCR = std.getenv('NODE9_CONS_ENTER') !== 'lf';   // escape hatch
+      function consctl(cmd) {
+        if (ctl < 0) ctl = os.open('/dev/consctl', os.O_WRONLY);
+        if (ctl < 0) return false;
+        var bytes = new TextEncoder().encode(cmd);
+        return os.write(ctl, bytes.buffer, 0, bytes.length) === bytes.length;
+      }
+      // Closing consctl is what actually restores cooked mode — the setting lives as long
+      // as the file is open. Writing "rawoff" first is belt and braces, and it does fail
+      // sometimes (seen on exit, when the console is already being torn down); the close
+      // still restores, so a failed write must not leave the terminal raw.
+      function consRestore() {
+        var ok = false;
+        try { ok = consctl('rawoff'); } catch (e) {}
+        try { if (ctl >= 0) { os.close(ctl); ctl = -1; } } catch (e) {}
+        return ok;
+      }
       s.setRawMode = function (on) {
         if (!onCons) { s.isRaw = !!on; return s; }   // a pipe delivers raw bytes already
+        var ok = false;
         try {
-          if (on) { if (ctl < 0) ctl = os.open('/dev/consctl', os.O_WRONLY); if (ctl >= 0) os.write(ctl, new TextEncoder().encode('rawon').buffer, 0, 5); }
-          else if (ctl >= 0) { os.write(ctl, new TextEncoder().encode('rawoff').buffer, 0, 6); os.close(ctl); ctl = -1; }
+          if (on) ok = consctl('rawon');
+          else ok = consRestore();
         } catch (e) {}
+        if (std.getenv('NODE9_TTY_DEBUG')) {
+          try {
+            var lf = std.open('/tmp/n9tty', 'a');
+            if (lf) { lf.puts('setRawMode(' + on + ') on ' + fdPath(0) + ' consctl=' + (ok ? 'ok' : 'FAILED') + '\n'); lf.close(); }
+          } catch (e) {}
+        }
         s.isRaw = !!on;
         return s;
       };
       s.isRaw = false;
       s.unref = function () { return s; }; s.ref = function () { return s; };
+      // A program that exits (or dies) while the console is raw leaves the shell with no
+      // echo and no line editing, which reads as "the terminal is broken". Give back what
+      // we took, whatever the exit path.
+      s.__consRestore = function () { if (onCons && ctl >= 0) consRestore(); };
       return s;
     })();
     p.exitCode = 0;

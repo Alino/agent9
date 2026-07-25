@@ -150,8 +150,18 @@ in `port/plan9/patch.sh`, so rebuilds keep them):
 - **APE's `select()` reports nothing on a zero timeout** — it cannot start its helper procs in
   zero time — so `poll.h` widens a 0 timeout to 1 ms.
 
-`NODE9_POLLTRACE=1` dumps every poll call (fd set in, revents out) to `/tmp/n9poll` if the
-loop ever needs this kind of debugging again.
+On a real console (`/dev/cons` — a rio window, a drawterm session, the physical console)
+three more things matter, all handled: the fd is recognised by its final path element, so
+`#c/cons` and `/mnt/wsys/N/cons` count too; **Return arrives as `\n`** from a Plan 9 keyboard
+and is translated to `\r` while raw mode is held, because every terminal app reads a bare
+`\n` as ctrl+j (that is why Enter used to insert a newline instead of submitting —
+`NODE9_CONS_ENTER=lf` opts out); and raw mode is given back on exit, including via
+`process.exit`, since a console left raw leaves the shell with no echo. Terminal SIZE has no
+source on a console — set `LINES`/`COLS`.
+
+`NODE9_POLLTRACE=1` dumps every poll call (fd set in, revents out) to `/tmp/n9poll`, and
+`NODE9_TTY_DEBUG=1` writes the tty decisions (fd paths, cons-ness, raw-mode transitions) to
+`/tmp/n9tty`.
 
 ### stdin, console, watchers
 `process.stdin` is a real `Readable` over fd 0 driven by the event loop (`examples/stdin-test.js`);

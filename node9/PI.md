@@ -56,6 +56,15 @@ chmod +x /amd64/bin/pi
 installs from the same registry tarballs npm would use; integrity is bounded by the
 manifest's URLs (add SRI checking there if you need it).
 
+## Startup takes about 8 seconds
+
+`pi --version` measures ~7.8s wall / 4.8s CPU on cirno, against 0.12s for bare `qjs`: that
+is node9 reading and compiling pi's module graph — a few MB of JavaScript — on every run.
+Reading pi's whole tree (33 MB) costs ~104s of CPU through node9's `fs` path, so the cost is
+the read+parse itself, not the disk. Caching parsed `package.json` files (done) did not move
+it. The real fix is a compiled-module cache (QuickJS `JS_WriteObject`/`JS_ReadObject` keyed
+on path+mtime); until then the wait is expected, not a hang.
+
 ## Pointing it at a local model
 
 Any OpenAI-compatible server works — declare it in `~/.pi/agent/models.json` on the box
@@ -102,11 +111,30 @@ follow-up and the model still has the conversation), tool calls render (`read
 ~/pitools/secret.txt`), and a reply lands **1–3 s** after you hit enter against the local
 model.
 
+### Where to run it
+
+| Terminal | Works | Notes |
+|---|---|---|
+| **alacritty9** (inside rio) | yes | best experience: size is published and tracked on resize |
+| **drawterm -G** (console) | yes | set `LINES`/`COLS` yourself: `LINES=40 COLS=120 pi` |
+| bare **rio window** | no | rio's cons is not an ANSI terminal — it does not act on cursor
+moves, so a redraw appears as duplicated lines. Run alacritty9 (or `vt`) inside it. |
+
 It needs the terminal to say how big it is. Under **alacritty9** that is automatic: Plan 9
 has no pty, so it runs its child on plain pipes and publishes the window size in
-`/env/LINES` and `/env/COLS`, which is exactly what node9's TTY detection keys off (see
-DOCUMENTATION.md). Anywhere else, export those two variables (`NODE9_TTY=1` forces
-terminal-ness regardless).
+`/env/LINES` and `/env/COLS`, which is what node9's TTY detection keys off (see
+DOCUMENTATION.md). A console session publishes no size at all — and there is nothing to
+query, because drawterm's input path swallows a terminal's cursor-position reply (measured:
+the query reaches the far terminal, the answer never comes back) — so set the two variables,
+exactly as neovim9 does. Without them you get 80x24, which is why pi's box looks narrow in a
+larger window. `NODE9_TTY=1/0` forces terminal-ness either way, and `NODE9_TTY_DEBUG=1`
+writes what was detected to `/tmp/n9tty`.
+
+**Keys on a console:** Enter works — a Plan 9 keyboard sends `\n` for Return and every
+terminal app expects `\r`, so node9 translates it while it holds the console in raw mode.
+`ctrl+d` exits pi; `ctrl+c` *clears the input* (that is pi's own binding, see its footer) and
+does not quit. To kill a wedged pi from another window: `kill pi` (or
+`echo kill >/proc/<pid>/note`).
 
 Getting here took three event-loop fixes in the engine (all in `port/plan9/patch.sh`, so a
 rebuild keeps them). The decisive one is an upstream quickjs-libc bug:
