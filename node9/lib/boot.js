@@ -983,7 +983,14 @@
             if (s.isRaw && onCons && consEnterCR) {
               for (var j = 0; j < n; j++) if (b[j] === 0x0a) b[j] = 0x0d;
             }
-            if (s.push(b) === false) stop();
+            /* Backpressure used to DISARM the reader, leaving it to _read() to come
+               back — and when the consumer stopped pulling (pi does, while it streams
+               a reply), nothing ever did: keystrokes piled up unread in the pipe and
+               the session looked frozen. A keyboard is a trickle; keep reading and let
+               the buffer hold it, but re-arm on a timer if something did stop us. */
+            if (s.push(b) === false && !readerOn) {
+              globalThis.setTimeout(function () { s._read(); }, 0);
+            }
           } else if (n === -EINTR) {
             /* A note (timer, resize, ^C elsewhere) interrupts a blocked read on Plan 9.
                Treating that as a fatal error killed the keyboard for the rest of the
