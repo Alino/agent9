@@ -102,7 +102,8 @@ and the pac9 package.
 ## Known limits
 
 tcp/udp are ENOSYS (no BSD sockets yet — LSP runs over stdio);
-`v:servername`/`--listen` need `uv_pipe_bind` (unported); `ffi.C`/`ffi.load`
+`v:servername`/`--listen` need `uv_pipe_bind` (unported, so `--listen` is
+logged and ignored rather than fatal); `ffi.C`/`ffi.load`
 can't resolve symbols in a static a.out; treesitter languages are the six
 compiled in. On a bare console `ctrl-J` is not distinguishable from Enter (the
 console emits one byte for both, so console input maps NL onto `<CR>`), and
