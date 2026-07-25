@@ -16,7 +16,8 @@ thread-exit semantics — all of it now shared by every cc9 program.
 
     pac9 install neovim9
 
-then, from an alacritty9 window (or any terminal that sets `$TERM`):
+then, from an alacritty9 window, a bare console (`drawterm -G`, the physical
+console), or any terminal that sets `$TERM`:
 
     nvim
 
@@ -77,7 +78,7 @@ What cc9 grew for this port (`cc9/runtime/`, reusable by anything):
       build-deps.sh       unibilium/utf8proc/tree-sitter/lpeg/luv + parsers
       build-nvim.py       the harvest bridge: host reference build →
                           `ninja -t inputs` object list → recompile with cc9
-      patches/            luajit / libuv / nvim-plan9.patch (9 files)
+      patches/            luajit / libuv / nvim-plan9.patch (11 files)
       qmp.py              dev-loop: type/screenshot the qemu VM over HMP
     test/               gate tests (ljgate.lua, pollgate.c, uvgate.c,
                         lsp-server.lua + lsp-client.lua)
@@ -103,4 +104,7 @@ and the pac9 package.
 tcp/udp are ENOSYS (no BSD sockets yet — LSP runs over stdio);
 `v:servername`/`--listen` need `uv_pipe_bind` (unported); `ffi.C`/`ffi.load`
 can't resolve symbols in a static a.out; treesitter languages are the six
-compiled in.
+compiled in. On a bare console `ctrl-J` is not distinguishable from Enter (the
+console emits one byte for both, so console input maps NL onto `<CR>`), and
+nothing publishes `/env/LINES`/`COLS` there, so the size falls back to 24x80 —
+export them yourself if the window is bigger.

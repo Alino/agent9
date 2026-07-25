@@ -1,6 +1,36 @@
 neovim9 — Neovim 0.12.4 for 9front (cc9). Changelog.
 (`pac9 changelog neovim9` shows this; newest first.)
 
+0.3.0 — 2026-07-25
+  Runs on a bare console. Until now nvim needed a terminal emulator that sets
+  $TERM (alacritty9); over `drawterm -G`, the physical console, or any plain
+  console session it hung with a blinking cursor and never drew anything. Three
+  fixes, two of them in the cc9 runtime underneath:
+
+    - A real console is now recognised as a terminal. cc9 decided tty-ness from
+      $TERM alone, which a console session does not set, so the TUI refused to
+      start. It now also asks the kernel for the fd's path (/dev/cons).
+    - Enter works. A Plan 9 console delivers NL where a terminal emulator sends
+      CR, and nothing in between converts it, so every <CR> mapping went unfired
+      — in netrw, pressing Enter on a file did nothing. Console input now
+      translates NL to CR. (Ctrl-J is the cost, and was never distinguishable
+      from Enter on a console anyway.)
+    - Fixed a cc9 regression that made freshly built binaries paint nothing at
+      all, in every terminal: on the exec path cc9 closed a private reader dup
+      by fd NUMBER, after the child's spawn shuffle had already reused that
+      number, so the TUI client closed its own --embed server's RPC pipe. The
+      server exited, the client tore the UI down having written only its init
+      sequence. Anything built against cc9 since 2026-07-20 was affected.
+
+  Directory browsing got faster. netrw's listing rations the one stat per entry
+  that only buys the '*' executable marker: it is ~95% of the cost of a listing
+  on 9front (every stat is a 9P round trip), so above 500 entries the marker is
+  traded for the seconds (`g:netrw_fastlist_statmax` tunes it). Wildcard
+  expansion no longer stats each candidate twice.
+
+  Same editor (upstream 0.12.4: LuaJIT interpreter, libuv, 7 treesitter parsers,
+  jobs / :terminal / LSP).
+
 0.2.0 — 2026-07-17
   First versioned release. Rebuilt against a correctness pass on the cc9 C
   runtime underneath it — stubs that used to return success while doing nothing,

@@ -1,18 +1,36 @@
 diff --git a/runtime/lua/netrw_fastlist.lua b/runtime/lua/netrw_fastlist.lua
 new file mode 100644
-index 0000000..55b7c17
+index 0000000..255daa7
 --- /dev/null
 +++ b/runtime/lua/netrw_fastlist.lua
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,79 @@
 +-- netrw_fastlist — one-pass local directory listing for netrw.
 +-- nvim-plan9: netrw's s:NetrwLocalListingList classifies every entry with
 +-- ~4 stat-class vimscript calls plus ~30 interpreted lines — ~8ms/file on a
 +-- slow CPU (2.5s for a 300-file directory). This does the same work in one
-+-- lua pass (~0.3ms/file). Only the default shapes go through here (thin and
-+-- wide listings, sort-by-name); netrw falls back to its own loop otherwise.
++-- lua pass. Only the default shapes go through here (thin and wide listings,
++-- sort-by-name); netrw falls back to its own loop otherwise.
 +local M = {}
 +
 +local band = bit.band
++
++-- What one uv.fs_lstat costs, and why it is rationed.
++--
++-- On 9front every stat is a 9P round trip to the file server: measured 133us
++-- on cirno, against 6.7us to pull an entry out of a directory read that
++-- already carries it. Scanning 8000 entries takes 54ms; stat'ing each one as
++-- well takes 1117ms — the stat is ~95% of the listing, and it buys exactly
++-- one thing, the '*' executable marker.
++--
++-- So: mark executables only while the directory is small enough for nobody to
++-- feel it (500 entries ~= 66ms worst case), and above that trade the marker
++-- for the seconds. g:netrw_fastlist_statmax tunes the line; set it huge to
++-- always mark, 0 to never.
++--
++-- A missing type is different — without it the entry cannot be classified at
++-- all, so that stat is not optional. On Plan 9 it never happens (cc9's readdir
++-- reports DT_DIR/DT_REG for every entry from the Dir it already read).
++local DEFAULT_STATMAX = 500
 +
 +function M.list(dirname)
 +  local uv = vim.uv
@@ -24,15 +42,24 @@ index 0000000..55b7c17
 +  if not fs then
 +    return out
 +  end
++
++  local names, types = {}, {}
 +  while true do
 +    local name, t = uv.fs_scandir_next(fs)
 +    if not name then
 +      break
 +    end
++    names[#names + 1] = name
++    types[#names] = t
++  end
++
++  local statmax = vim.g.netrw_fastlist_statmax or DEFAULT_STATMAX
++  local mark_exe = #names <= statmax
++
++  for i = 1, #names do
++    local name, t = names[i], types[i]
 +    local st
-+    if t == nil or t == 'file' then
-+      -- need the mode for the executable '*' marker (and the type at all
-+      -- when scandir doesn't provide one)
++    if t == nil or (mark_exe and t == 'file') then
 +      st = uv.fs_lstat(dirname .. sep .. name)
 +      if st then
 +        t = st.type
@@ -257,6 +284,67 @@ index c981b40..4efdbae 100644
    execvp(prog, proc->argv);
    ELOG("execvp(%s) failed: %s", prog, strerror(errno));
  
+diff --git a/src/nvim/path.c b/src/nvim/path.c
+index 7ab3e6d..a97fa16 100644
+--- a/src/nvim/path.c
++++ b/src/nvim/path.c
+@@ -805,9 +805,13 @@ static size_t do_path_expand(garray_T *gap, const char *path, size_t wildoff, in
+             backslash_halve(buf + len + 1);
+           }
+           // add existing file or symbolic link
+-          if ((flags & EW_ALLLINKS)
+-              ? os_fileinfo_link(buf, &file_info)
+-              : os_path_exists(buf)) {
++          // nvim-plan9: addfile() repeats this exact existence check itself,
++          // except when EW_NOTFOUND is set (then it adds regardless). So only
++          // stat here in that case — see the cost note in addfile().
++          if (!(flags & EW_NOTFOUND)
++              || ((flags & EW_ALLLINKS)
++                  ? os_fileinfo_link(buf, &file_info)
++                  : os_path_exists(buf))) {
+             addfile(gap, buf, flags);
+           }
+         }
+@@ -1530,13 +1534,25 @@ void addfile(garray_T *gap, char *f, int flags)
+ {
+   bool isdir;
+   FileInfo file_info;
++  bool have_info = false;
+ 
+   // if the file/dir/link doesn't exist, may not add it
+-  if (!(flags & EW_NOTFOUND)
+-      && ((flags & EW_ALLLINKS)
+-          ? !os_fileinfo_link(f, &file_info)
+-          : !os_path_exists(f))) {
+-    return;
++  if (flags & EW_ALLLINKS) {
++    // os_fileinfo_link() does not follow symlinks, so it cannot answer the
++    // isdir test below (a symlink to a directory must count as a directory).
++    if (!(flags & EW_NOTFOUND) && !os_fileinfo_link(f, &file_info)) {
++      return;
++    }
++  } else {
++    // nvim-plan9: one stat answers both "does it exist" and "is it a
++    // directory"; upstream calls os_path_exists() and then os_isdir(), which
++    // is two. On Plan 9 a stat is a 9P round trip (~75us measured on cirno)
++    // and this runs once per directory entry, so wildcard expansion in a
++    // large directory paid for thousands of avoidable ones.
++    have_info = os_fileinfo(f, &file_info);
++    if (!(flags & EW_NOTFOUND) && !have_info) {
++      return;
++    }
+   }
+ 
+ #ifdef FNAME_ILLEGAL
+@@ -1546,7 +1562,7 @@ void addfile(garray_T *gap, char *f, int flags)
+   }
+ #endif
+ 
+-  isdir = os_isdir(f);
++  isdir = have_info ? S_ISDIR(file_info.stat.st_mode) : os_isdir(f);
+   if ((isdir && !(flags & EW_DIR)) || (!isdir && !(flags & EW_FILE))) {
+     return;
+   }
 diff --git a/src/nvim/terminal.c b/src/nvim/terminal.c
 index 004a002..0d6a19c 100644
 --- a/src/nvim/terminal.c
@@ -309,6 +397,60 @@ index 004a002..0d6a19c 100644
  }
  
  static bool is_filter_char(int c)
+diff --git a/src/nvim/tui/input.c b/src/nvim/tui/input.c
+index 121bcb3..ddf0983 100644
+--- a/src/nvim/tui/input.c
++++ b/src/nvim/tui/input.c
+@@ -869,10 +869,49 @@ static size_t handle_raw_buffer(TermInput *input, bool force, const char *data,
+   return (size_t)(ptr - data);
+ }
+ 
++#ifdef __plan9__
++// A Plan 9 console delivers NL for the Enter key where a terminal emulator sends
++// CR, and there is no line discipline in between to convert it. Every <CR>
++// mapping therefore goes unfired: under `drawterm -G`, pressing Enter on a file
++// in netrw did nothing at all.
++//
++// Rewriting NL->CR costs Ctrl-J, which is not a real loss: the console produces
++// the identical byte for Enter and Ctrl-J, so Ctrl-J was never distinguishable
++// here (exactly as Ctrl-M is not distinguishable from Enter on a Unix tty).
++// Scoped to an actual console by asking the kernel for the fd's path — under
++// alacritty9 stdin is a pipe and CR already arrives correctly, so input there is
++// passed through untouched.
++extern long n9_fd2path(int, char *, int);
++
++static bool tinput_is_plan9_console(int fd)
++{
++  static int cached = -1;
++  if (cached < 0) {
++    char path[128];
++    cached = (n9_fd2path(fd, path, sizeof(path)) >= 0
++              && (strcmp(path, "/dev/cons") == 0 || strcmp(path, "#c/cons") == 0)) ? 1 : 0;
++  }
++  return cached == 1;
++}
++#endif
++
+ static size_t tinput_read_cb(RStream *stream, const char *buf, size_t count_, void *data, bool eof)
+ {
+   TermInput *input = data;
+ 
++#ifdef __plan9__
++  if (tinput_is_plan9_console(input->in_fd)) {
++    // in place in our own read buffer; re-running over an incomplete sequence
++    // left for the next read is harmless (already-converted bytes are CR)
++    char *p = (char *)buf;
++    for (size_t i = 0; i < count_; i++) {
++      if (p[i] == '\n') {
++        p[i] = '\r';
++      }
++    }
++  }
++#endif
++
+   size_t consumed = handle_raw_buffer(input, false, buf, count_);
+   tinput_flush(input);
+ 
 diff --git a/src/nvim/tui/terminfo.c b/src/nvim/tui/terminfo.c
 index 493454d..3e9f41d 100644
 --- a/src/nvim/tui/terminfo.c
