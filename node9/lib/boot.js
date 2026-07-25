@@ -782,7 +782,7 @@
     p.platform = 'plan9';
     p.arch = 'x64';
     p.version = 'v20.18.1';
-    p.versions = { node: '20.18.1', v8: '11.3.244', quickjs: 'ng', node9: '0.1' };
+    p.versions = { node: '20.18.1', v8: '11.3.244', quickjs: 'ng', node9: '0.2' };
     p.release = { name: 'node', sourceUrl: '', headersUrl: '' };
     p.pid = (function () { try { return os.getpid ? os.getpid() : 0; } catch (e) { return 0; } })();
     p.env = new Proxy({}, {
@@ -3714,4 +3714,23 @@
   if (!__proc.loadEnvFile) __proc.loadEnvFile = function () {};
   if (!__proc.title) __proc.title = 'node9';
   if (!__proc.kill) __proc.kill = function () { return true; };
+
+  /* node's own argv flags. The CLI hands us whatever came after the program name and
+     then tries to run argv[1] as a FILE, so "-e" has to be handled here, before that:
+     npm lifecycle scripts and configure-style checks call `node -e` and `node -v`. */
+  (function () {
+    var a = globalThis.scriptArgs;
+    if (!a || !a.length) return;
+    var f = a[0];
+    if (f === '-v' || f === '--version') { console.log(__proc.version); std.exit(0); }
+    if (f === '-e' || f === '--eval' || f === '-p' || f === '--print') {
+      var code = a[1];
+      if (code == null) { console.error('node9: ' + f + ' needs an argument'); std.exit(1); }
+      __proc.argv = ['node'].concat(a.slice(2));
+      var v;
+      try { v = (0, eval)(code); } catch (e) { console.error(e && e.stack || String(e)); std.exit(1); }
+      if (f === '-p' || f === '--print') console.log(v === undefined ? 'undefined' : String(v));
+      std.exit(0);
+    }
+  })();
 })();

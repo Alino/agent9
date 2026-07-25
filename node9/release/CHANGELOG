@@ -35,6 +35,19 @@ node9 — Node-compatible JavaScript runtime for 9front (QuickJS-ng). Changelog.
       $LINES/$COLS (what alacritty9 publishes), Return is translated to CR while
       the console is in raw mode, and cooked mode is restored on exit. Enough for
       pi's full-screen TUI under alacritty9 or `drawterm -G`.
+    - A real `child_process`: pipes, captured stdout/stderr, exit codes, stdin input,
+      cwd/env, streamed output for spawn(). It used to run the command and capture
+      nothing, so a tool waiting on a child's output waited forever — that is what
+      hung pi's shell tool. Reaping was fixed underneath it too: a child's exit was
+      collected by a thread reading /proc/<pid>/wait, which on 9front delivers one
+      message to a foreign reader and then stops, so every child after the first was
+      never reaped.
+    - The shell that gets reported is one that can be driven. 9front's $SHELL is rc,
+      which does not speak `sh -c` or `$?`; node9 now points os.userInfo().shell,
+      $SHELL and a bare "sh"/"bash" at APE's Bourne shell. pi's shell tool works.
+    - `node -v`, `node -e` and `node -p` work. The CLI treated argv[1] as a file
+      unconditionally, so every `node -e` (npm lifecycle scripts, configure-style
+      checks) failed with "No such file or directory".
     - Web platform coverage for real npm packages: fetch/Headers/Response/
       ReadableStream/FormData/AbortSignal, a builtin `undici` shim, the full
       console family, Intl (Segmenter/Collator/NumberFormat/DateTimeFormat),
