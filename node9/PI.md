@@ -120,9 +120,21 @@ Each of these is now in `lib/boot.js` and covered by a test in `examples/`:
   fds, so `stdout`/`stderr` come back empty. A shell-tool turn currently exits 0 with no
   output. Fixing it needs a real `child_process` (rfork + exec + pipes) and an `rc`-shaped
   shell tool — the next milestone, and why `src/pi9` has `run_rc` instead.
-- **The interactive TUI.** pi selects print mode when stdin/stdout are not a TTY, which is
-  what happens here. `process.stdin.setRawMode` exists (it writes `/dev/consctl`), but the
-  TUI also needs `isTTY`, terminal size, and key decoding wired up.
+- **The interactive TUI — comes up, but a reply takes ~80s to appear.** node9 now reports a
+  real TTY and publishes the terminal size (see DOCUMENTATION.md), so `pi` with no `-p`
+  renders its full interface — status bar, footer, editor, spinner — and accepts keystrokes.
+  A turn also runs to completion: the provider streams, the assistant message renders, the
+  component lands in the chat container.
+  What is still wrong: the response socket is not serviced for ~80 seconds after the server
+  has already delivered everything. Measured, so the remaining search space is small: a
+  logging proxy in front of the model server shows the request written and the full SSE
+  answered and closed in **0.6s**; the in-process probe shows the read handler armed
+  immediately and the first `readable` event on that fd arriving **80s later**, after which
+  the whole turn finishes in 20ms. Print mode over the identical path is unaffected, and a
+  standalone script with the same fetch, a stdin handler, heavy stdout writes and an
+  always-overdue timer stays fast — so it is specific to what pi's TUI does to the loop.
+  Two real loop bugs were found and fixed along the way (timers starving the fd poll, and
+  APE `select()` reporting nothing on a zero timeout); neither was the last one.
 - **OAuth login flows** that need a local HTTPS redirect server (`https.createServer`
   throws) or JWT service-account signing (no asymmetric crypto). API-key auth works.
 - **Image/clipboard paths** that use the WebAssembly photon codec.
