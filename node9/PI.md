@@ -59,11 +59,26 @@ manifest's URLs (add SRI checking there if you need it).
 ## Startup takes about 8 seconds
 
 `pi --version` measures ~7.8s wall / 4.8s CPU on cirno, against 0.12s for bare `qjs`: that
-is node9 reading and compiling pi's module graph — a few MB of JavaScript — on every run.
-Reading pi's whole tree (33 MB) costs ~104s of CPU through node9's `fs` path, so the cost is
-the read+parse itself, not the disk. Caching parsed `package.json` files (done) did not move
-it. The real fix is a compiled-module cache (QuickJS `JS_WriteObject`/`JS_ReadObject` keyed
-on path+mtime); until then the wait is expected, not a hang.
+is node9 compiling pi's module graph — 1084 modules — on every run. It is a wait, not a hang.
+
+**A compiled-module cache was built and rejected on measurements** (`JS_WriteObject` at
+compile time, `JS_ReadObject` on later runs, entries validated against the source's size and
+mtime, in `n9_module_loader`). Two independent reasons:
+
+- **It was slower.** Caching all 1084 modules took startup from 7.6s to 10.5s. Decoding
+  bytecode is only marginally cheaper than parsing source in this engine, and the per-module
+  overhead (stat the source, stat and read the entry) more than eats the difference. Raw I/O
+  is not the problem: reading the whole 8 MB cache with `cat` costs 0.19s.
+- **The reader faults on large modules.** With a 32 KB threshold (cache only the files where
+  decoding could pay) the second run died in `JS_ReadObject`:
+  `suicide: sys: trap: fault read addr=0x31600000004`. That address shape is the kencc
+  pointer-math family this port has hit before (see `port/plan9/NOTES.md`) — a 32-bit index
+  scaled into a pointer — here inside the bytecode reader's table walk.
+
+So the cost stands until someone fixes the reader (a disassembly hunt like the arg-hoist bug),
+and even then the payoff looks small unless the per-module overhead goes away too — one
+bundled snapshot per entry point rather than 1084 files. Caching parsed `package.json` files
+(kept) did not measurably help either.
 
 ## Pointing it at a local model
 
