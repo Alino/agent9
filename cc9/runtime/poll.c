@@ -580,6 +580,36 @@ static long now_ms(void){
 	return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+/* Drain every write ring before the process dies (called from the exit
+ * epilogue, BEFORE cc9_kill_threads).
+ *
+ * exit() does not close fds, so nothing else flushes these: the bytes a caller
+ * was already told were written sit in the ring, and killing the drain threads
+ * throws them away. That is how nvim lost its terminal-restore sequence on the
+ * way out — the alternate screen was never left, so the editor's screen stayed
+ * on the console, painted over the next shell prompt, and the terminal was left
+ * in a state the user had to type through.
+ *
+ * Bounded by a whole-process budget: a peer that stopped reading must not be
+ * able to hang exit (that is the same ceiling cc9_poll_onclose documents, but
+ * shared across every fd rather than per-fd). */
+void cc9_poll_flush_all(void){
+	if(!tab_inited) return;
+	long deadline = now_ms() + 1000;
+	for(;;){
+		int pending = 0;
+		for(int i = 0; i < PFD_MAX; i++){
+			cc9_pfd *p = &tab[i];
+			if(p->fd < 0 || !p->writer || p->werr) continue;
+			if(wring_avail(p) == 0) continue;
+			pending = 1;
+			n9_semrelease(&p->wdata, 1);      /* kick the drainer */
+			n9_tsemacquire(&p->wdrain, 50);   /* wait one drain pass */
+		}
+		if(!pending || now_ms() >= deadline) return;
+	}
+}
+
 int poll(struct pollfd *fds, nfds_t nfds, int timeout){
 	long deadline = timeout > 0 ? now_ms() + timeout : 0;
 	for(;;){

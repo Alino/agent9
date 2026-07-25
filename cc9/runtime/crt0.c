@@ -507,6 +507,11 @@ cc9_exit_common(const char *status)
 	 * not reparent orphans, so a thread that outlives main (or is mid-teardown)
 	 * would leak as a stuck proc and can post a note that kills the parent shell.
 	 * Weak: a thread-free program links a no-op. */
+	/* Flush first: the drain threads about to be killed are the only thing that
+	 * moves ring-buffered writes to the fd, and exit() never closes fds. Killing
+	 * them first silently drops output the caller was told had been written. */
+	{ extern void cc9_poll_flush_all(void) __attribute__((weak)); if (cc9_poll_flush_all) cc9_poll_flush_all(); }
+	if (extrace) { extern long n9_pwrite(int, const void *, long, long long); n9_pwrite(2, "flush done\n", 11, -1); }
 	{ extern void cc9_kill_threads(void) __attribute__((weak)); if (cc9_kill_threads) cc9_kill_threads(); }
 	if (extrace) { extern long n9_pwrite(int, const void *, long, long long); n9_pwrite(2, "kill done\n", 10, -1); }
 	n9_exits(status);
