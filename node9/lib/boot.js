@@ -887,8 +887,24 @@
       // neovim9 reads. A drawterm/rio console publishes no size at all and its input path
       // swallows a terminal's cursor-position reply (measured), so there is nothing to
       // query: set LINES/COLS for those, or 80x24 it is.
-      Object.defineProperty(s, 'columns', { configurable: true, get: function () { return envSize('COLS') || 80; } });
-      Object.defineProperty(s, 'rows', { configurable: true, get: function () { return envSize('LINES') || 24; } });
+      /* $A9_SIZE_FILE, when the terminal provides one, is the LIVE size: this
+         platform's fork() copies the environment group, so /env/COLS is frozen at
+         exec and a resize never reaches us through it. Fall back to /env (what a
+         plain console session publishes) and then to 80x24. */
+      function liveSize(which) {
+        var f = std.getenv('A9_SIZE_FILE');
+        if (!f) return null;
+        try {
+          var fh = std.open(f, 'r');
+          if (!fh) return null;
+          var txt = fh.readAsString(64); fh.close();
+          var p2 = String(txt).trim().split(/\s+/);
+          var v = which === 'COLS' ? parseInt(p2[0], 10) : parseInt(p2[1], 10);
+          return v > 0 ? v : null;
+        } catch (e) { return null; }
+      }
+      Object.defineProperty(s, 'columns', { configurable: true, get: function () { return liveSize('COLS') || envSize('COLS') || 80; } });
+      Object.defineProperty(s, 'rows', { configurable: true, get: function () { return liveSize('LINES') || envSize('LINES') || 24; } });
       s.getWindowSize = function () { return [s.columns, s.rows]; };
       /* Node's internal tty handle. Libraries that want the size without going
          through the public getters reach for stream._handle.getWindowSize(arr)
@@ -3771,6 +3787,35 @@
   if (!__proc.loadEnvFile) __proc.loadEnvFile = function () {};
   if (!__proc.title) __proc.title = 'node9';
   if (!__proc.kill) __proc.kill = function () { return true; };
+
+  /* SIGWINCH. Plan 9 has no signals, so a program that learns about resizes the
+     usual Node way — process.on('SIGWINCH') — never hears about one, keeps laying
+     out for the old width, and its redraws drift: a streaming TUI repeats each row
+     with a few more words on it. The size itself is live in /env (the emulator
+     rewrites LINES/COLS), so poll it while somebody is listening and emit the
+     signal they expect. Polling starts only when a listener registers. */
+  (function () {
+    var winchPoll = null, lastC = null, lastR = null;
+    function sizeNow() {
+      var out = __proc.stdout;
+      return out ? [out.columns, out.rows] : [null, null];
+    }
+    function startWinch() {
+      if (winchPoll) return;
+      var n = sizeNow(); lastC = n[0]; lastR = n[1];
+      winchPoll = globalThis.setInterval(function () {
+        var s2 = sizeNow();
+        if (s2[0] !== lastC || s2[1] !== lastR) {
+          lastC = s2[0]; lastR = s2[1];
+          __proc.emit('SIGWINCH');
+        }
+      }, 250);
+    }
+    var on = __proc.on, once = __proc.once;
+    __proc.on = function (ev, fn) { if (ev === 'SIGWINCH') startWinch(); return on.call(this, ev, fn); };
+    __proc.addListener = __proc.on;
+    if (once) __proc.once = function (ev, fn) { if (ev === 'SIGWINCH') startWinch(); return once.call(this, ev, fn); };
+  })();
 
   /* node's own argv flags. The CLI hands us whatever came after the program name and
      then tries to run argv[1] as a FILE, so "-e" has to be handled here, before that:

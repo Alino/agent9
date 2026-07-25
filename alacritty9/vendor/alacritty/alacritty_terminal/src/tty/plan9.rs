@@ -377,7 +377,19 @@ impl io::Write for LineDiscipline {
 /// TIOCSWINSZ, but the child shares our env GROUP (no RFENVG at spawn), so
 /// /env/LINES and /env/COLS are live files it can re-read — pi9's bubbletea
 /// polls them the way it polls the vts size file.
+/// Name of the environment variable holding the live-size file's path.
+pub const SIZE_FILE_VAR: &str = "A9_SIZE_FILE";
+
 fn publish_size(window_size: WindowSize) {
+    // /env alone is NOT a live channel to the child: fork() on this platform uses
+    // RFENVG, so the child gets a COPY of the environment group at exec and never
+    // sees a later set_var. (Everything worked until the window was resized, and
+    // then a TUI kept laying out for the old width — a streaming redraw repeats
+    // each row with a few more words on it.) The file below IS shared: its path
+    // goes to the child in the environment, and it is rewritten on every resize.
+    if let Some(path) = std::env::var_os(SIZE_FILE_VAR) {
+        let _ = std::fs::write(path, format!("{} {}\n", window_size.num_cols, window_size.num_lines));
+    }
     // Single-threaded env access isn't a real concern on Plan 9 (env vars
     // are per-group /env files), and both callers run on the same thread.
     unsafe {
@@ -387,6 +399,11 @@ fn publish_size(window_size: WindowSize) {
 }
 
 pub fn new(config: &Options, window_size: WindowSize, _window_id: u64) -> io::Result<Pty> {
+    // Point the child at a size file it can re-read (see publish_size). One per
+    // terminal process; the child inherits the path through its env copy.
+    unsafe {
+        std::env::set_var(SIZE_FILE_VAR, format!("/tmp/.a9size.{}", std::process::id()));
+    }
     publish_size(window_size);
     let (program, args) = match &config.shell {
         Some(shell) => (shell.program.as_str(), shell.args.as_slice()),
