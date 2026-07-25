@@ -61,9 +61,10 @@ gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9-v0.2.1/gl9
 alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacritty9-v0.2.0/alacritty9-amd64.tar.gz	-	0.2.0
 # neovim9 — real upstream Neovim 0.12.4 on 9front: static a.out (LuaJIT
 # interpreter + libuv + 7 treesitter parsers) + the runtime tree at nvim's
-# compiled-in /usr/local/share/nvim. TUI needs a terminal — run inside
-# alacritty9 (or any TERM-setting host). jobs/:terminal/LSP all work.
-neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9-v0.2.0/neovim9-amd64.tar.gz	-	0.2.0
+# compiled-in /usr/local/share/nvim. Runs inside alacritty9, on a bare console
+# (drawterm -G, the physical console), or any TERM-setting host.
+# jobs/:terminal/LSP all work.
+neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9-v0.3.0/neovim9-amd64.tar.gz	-	0.3.0
 # gpu9 — the Intel Gen8 (Broadwell) GPU driver, entirely in userspace. Builds
 # on-box from a few small kencc files, so no tarball and no version column (the
 # registry's rule: a version needs an immutable release URL, and a git clone
