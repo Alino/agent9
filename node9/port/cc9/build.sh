@@ -62,6 +62,15 @@ grep -q 'if (poll(pfds, nfds, min_delay) < 0)' "$SRC/quickjs-libc.c" || { echo "
 # measured short, pi padded past the terminal width, its lines wrapped, and its
 # cursor-up redraw landed a row off — duplicated lines with their tails missing.
 perl -0777 -i -pe 's/(        case .p.:\n        case .P.:\n)            if \(s->is_unicode\) \{/$1            if \(s->is_unicode || s->unicode_sets\) \{/' "$SRC/libregexp.c"
+# ...and /v IMPLIES /u. This engine keeps the two mutually exclusive ("invariant:
+# is_unicode ^ unicode_sets"), so every unicode-semantics check was false under /v and
+# the matcher walked UTF-16 code UNITS: \p{Surrogate} then matched half of an
+# astral character. pi-tui strips leading non-printing characters with a class
+# containing \p{Surrogate}, so an emoji measured 0 columns instead of 2 and every
+# streaming redraw drifted two columns right. Per spec v does everything u does.
+perl -0777 -i -pe 's/    s->is_unicode = \(\(re_flags & LRE_FLAG_UNICODE\) != 0\);/    s->is_unicode = ((re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0);/' "$SRC/libregexp.c"
+perl -0777 -i -pe 's/    s->is_unicode = \(re_flags & LRE_FLAG_UNICODE\) != 0;/    s->is_unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;/' "$SRC/libregexp.c"
+grep -c 'LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS' "$SRC/libregexp.c" | grep -qx 2 || { echo "v-implies-u fix did not apply"; exit 1; }
 grep -q 'if (s->is_unicode || s->unicode_sets) {' "$SRC/libregexp.c" || { echo "unicode-property fix did not apply"; exit 1; }
 # ...and /v also allows PROPERTIES OF STRINGS (\p{RGI_Emoji} and friends), which this
 # engine has no tables for. Parsing them as an error would now break module loading

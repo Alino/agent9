@@ -309,6 +309,12 @@ grep -c 'if (poll(pfds, nfds, min_delay) < 0)' work/quickjs-libc.c | sed 's/^/  
 # measurement built on that regex (pi-tui's) under-counts every styled string.
 perl -0777 -i -pe 's/(        case .p.:\n        case .P.:\n)            if \(s->is_unicode\) \{/$1            if \(s->is_unicode || s->unicode_sets\) \{/' work/libregexp.c
 grep -c 'if (s->is_unicode || s->unicode_sets) {' work/libregexp.c | sed 's/^/  unicode-property-in-v fix applied (want 1): /'
+# ...and /v IMPLIES /u. Keeping them mutually exclusive left the matcher walking UTF-16
+# code UNITS under /v, so \p{Surrogate} matched half an astral character and an emoji
+# measured 0 columns in a TUI's width function.
+perl -0777 -i -pe 's/    s->is_unicode = \(\(re_flags & LRE_FLAG_UNICODE\) != 0\);/    s->is_unicode = ((re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0);/' work/libregexp.c
+perl -0777 -i -pe 's/    s->is_unicode = \(re_flags & LRE_FLAG_UNICODE\) != 0;/    s->is_unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;/' work/libregexp.c
+grep -c 'LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS' work/libregexp.c | sed 's/^/  v-implies-u fix applied (want 2): /'
 # ...and /v also allows properties of STRINGS, which this engine has no tables for.
 # Erroring breaks module load for code that only feature-tests one, so they match nothing.
 python3 - work/libregexp.c <<'PYEOF'

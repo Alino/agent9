@@ -131,6 +131,15 @@ ok("properties of strings do not throw in /v", (function () {
 	try { return /^\p{RGI_Emoji}$/v.test("x") === false; } catch (e) { return false; }
 })());
 
+// The /v flag IMPLIES /u. The engine kept them mutually exclusive, so under /v the
+// matcher walked UTF-16 code UNITS and \p{Surrogate} matched half of an astral
+// character: a TUI stripping "leading non-printing" characters measured an emoji as
+// zero columns and its streaming redraws drifted two columns right per emoji.
+eq("/v walks code points, not UTF-16 units",
+   "\u{1F60A}".replace(/^[\p{Surrogate}]+/v, ""), "\u{1F60A}");
+eq("/v dot matches one astral char", ("\u{1F60A}".match(/./v) || [""])[0], "\u{1F60A}");
+eq("/u still walks code points", "\u{1F60A}".replace(/^[\p{Surrogate}]+/u, ""), "\u{1F60A}");
+
 // readline cursor control writes real escape sequences (it used to be a no-op, so a
 // TUI's cursor moves silently vanished).
 var rl = require("readline");
