@@ -117,8 +117,7 @@ model.
 |---|---|---|
 | **alacritty9** (inside rio) | yes | best experience: size is published and tracked on resize |
 | **drawterm -G** (console) | yes | set `LINES`/`COLS` yourself: `LINES=40 COLS=120 pi` |
-| bare **rio window** | no | rio's cons is not an ANSI terminal — it does not act on cursor
-moves, so a redraw appears as duplicated lines. Run alacritty9 (or `vt`) inside it. |
+| bare **rio window** | no | rio's cons is not an ANSI terminal: it does not act on cursor moves, so a redraw appears as duplicated lines. Run alacritty9 (or `vt`) inside it. |
 
 It needs the terminal to say how big it is. Under **alacritty9** that is automatic: Plan 9
 has no pty, so it runs its child on plain pipes and publishes the window size in
