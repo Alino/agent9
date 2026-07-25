@@ -1024,7 +1024,18 @@
     exports.totalmem = function () { return 0; };
     exports.freemem = function () { return 0; };
     exports.uptime = function () { return 0; };
-    exports.userInfo = function () { return { username: std.getenv('user') || 'glenda', uid: -1, gid: -1, homedir: exports.homedir(), shell: '/bin/rc' }; };
+    /* Consumers do not just report the shell, they DRIVE it: `sh -c`, or a persistent
+       session fed `cmd; echo MARK$?`. rc speaks neither, so pi's shell tool spawned it
+       and then waited forever for output that never came. APE's Bourne shell is a real
+       POSIX one and is part of a stock 9front, so prefer it and fall back to rc. */
+    var _shell = null;
+    exports.shell = function () {
+      if (_shell) return _shell;
+      var st = os.stat('/bin/ape/sh');
+      _shell = (st && st[1] === 0) ? '/bin/ape/sh' : '/bin/rc';
+      return _shell;
+    };
+    exports.userInfo = function () { return { username: std.getenv('user') || 'glenda', uid: -1, gid: -1, homedir: exports.homedir(), shell: exports.shell() }; };
     exports.loadavg = function () { return [0, 0, 0]; };
     exports.networkInterfaces = function () { return {}; };
     exports.availableParallelism = function () { return 1; };
@@ -2728,24 +2739,241 @@
   });
 
   /* ---------------- child_process (over os.exec; sync-first) ---------------- */
+  /* ---------------- child_process (rfork + exec over pipes) ---------------- */
   define('child_process', function (m, exports) {
     var EventEmitter = require('events');
-    function toArgv(cmd, args) { return [cmd].concat(args || []); }
+    var stream = require('stream');
+    var Buffer = require('buffer').Buffer;
+
+    /* 9front has no /bin/sh or bash, but it does have APE's Bourne shell. Tools ask
+       for "sh -c ..." by name (pi's shell tool does), and without this they exec
+       nothing and report 127. Absolute paths are left alone. */
+    function resolveCmd(cmd) {
+      if (cmd === 'sh' || cmd === 'bash' || cmd === '/bin/sh' || cmd === '/bin/bash') return require('os').shell();
+      return cmd;
+    }
+    function toArgv(cmd, args) { return [resolveCmd(cmd)].concat(args || []); }
+    function cptrace(s) { if (std.getenv('NODE9_CP_TRACE')) { try { var f = std.open('/tmp/n9cp', 'a'); if (f) { f.puts(s + '\n'); f.close(); } } catch (e) {} } }
+    /* Node's exit code out of a wait status (WIFEXITED ? WEXITSTATUS : signal). */
+    function exitOf(st) { return (st & 0x7f) === 0 ? ((st >> 8) & 0xff) : null; }
+    function signalOf(st) { return (st & 0x7f) === 0 ? null : ('SIG' + (st & 0x7f)); }
+    /* 'pipe' unless told otherwise; 'inherit'/'ignore' both mean "don't capture" */
+    function stdioOf(opts, i) {
+      var s = opts.stdio;
+      if (typeof s === 'string') return s;
+      if (Array.isArray(s)) return s[i] == null ? 'pipe' : s[i];
+      return 'pipe';
+    }
+    function wantsPipe(v) { return v === 'pipe' || v === undefined || v === null; }
+    function decode(buf, enc) {
+      if (!enc || enc === 'buffer') return buf;
+      return buf.toString(enc === true ? 'utf8' : enc);
+    }
+    function bytesOf(v) { return v == null ? null : (v instanceof Uint8Array ? v : Buffer.from(String(v))); }
+
+    /* Start the child with the requested pipes. Returns the pid plus our ends of
+       them; the child's ends are already closed here. */
+    function launch(argv, opts, cap) {
+      var ex = { block: false, usePath: true }, mine = {}, theirs = [];
+      if (opts.cwd) ex.cwd = opts.cwd;
+      if (opts.env) {
+        var e = []; for (var k in opts.env) e.push(k + '=' + opts.env[k]); ex.env = e;
+      }
+      if (cap.stdin) { var pi = os.pipe(); ex.stdin = pi[0]; mine.stdin = pi[1]; theirs.push(pi[0]); }
+      if (cap.stdout) { var po = os.pipe(); ex.stdout = po[1]; mine.stdout = po[0]; theirs.push(po[1]); }
+      if (cap.stderr) { var pe = os.pipe(); ex.stderr = pe[1]; mine.stderr = pe[0]; theirs.push(pe[1]); }
+      var pid = os.exec(argv, ex);
+      for (var i = 0; i < theirs.length; i++) { try { os.close(theirs[i]); } catch (e) {} }
+      return { pid: pid, fds: mine };
+    }
+
     exports.spawnSync = function (cmd, args, opts) {
+      if (args && !Array.isArray(args)) { opts = args; args = []; }
       opts = opts || {};
       var argv = toArgv(cmd, args);
-      var status = -1;
-      try { status = os.exec(argv, { block: true, cwd: opts.cwd }); } catch (e) { return { error: e, status: null, signal: null, pid: 0, stdout: null, stderr: null, output: [null, null, null] }; }
-      return { status: status, signal: null, pid: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0), output: [null, Buffer.alloc(0), Buffer.alloc(0)] };
+      cptrace('spawnSync ' + JSON.stringify(argv) + ' opts=' + JSON.stringify({ shell: opts.shell, stdio: opts.stdio, cwd: opts.cwd, timeout: opts.timeout }));
+      var cap = { stdin: opts.input != null, stdout: wantsPipe(stdioOf(opts, 1)), stderr: wantsPipe(stdioOf(opts, 2)) };
+      var child;
+      try { child = launch(argv, opts, cap); } catch (e) {
+        return { error: e, status: null, signal: null, pid: 0, stdout: null, stderr: null, output: [null, null, null] };
+      }
+      /* Feed stdin first (the child is already running and draining it), then read
+         stdout to EOF, then stderr.
+         ponytail: a child that writes more than a pipe buffer (256 KB on Plan 9) to
+         stderr while we are still draining stdout would block. Real interleaving
+         needs the event loop, which a *Sync call cannot use — spawn() has it. */
+      if (child.fds.stdin != null) {
+        var inb = bytesOf(opts.input);
+        try {
+          for (var off = 0; off < inb.length; ) {
+            var w = os.write(child.fds.stdin, inb.buffer, inb.byteOffset + off, inb.length - off);
+            if (w <= 0) break;
+            off += w;
+          }
+        } catch (e) {}
+        try { os.close(child.fds.stdin); } catch (e) {}
+      }
+      var so = child.fds.stdout != null ? drain(child.fds.stdout) : null;
+      var se = child.fds.stderr != null ? drain(child.fds.stderr) : null;
+      var st = 0;
+      try { st = os.waitpid(child.pid, 0)[1]; } catch (e) {}
+      var enc = opts.encoding;
+      var out = so == null ? null : decode(so, enc), err = se == null ? null : decode(se, enc);
+      return { pid: child.pid, status: exitOf(st), signal: signalOf(st), stdout: out, stderr: err,
+               output: [null, out, err], error: undefined };
     };
+
+    function drain(fd) {
+      var parts = [], b = new Uint8Array(65536);
+      for (;;) {
+        var n;
+        try { n = os.read(fd, b.buffer, 0, 65536); } catch (e) { break; }
+        if (n <= 0) break;
+        var c = Buffer.alloc(n); for (var i = 0; i < n; i++) c[i] = b[i];
+        parts.push(c);
+      }
+      try { os.close(fd); } catch (e) {}
+      return parts.length ? Buffer.concat(parts) : Buffer.alloc(0);
+    }
+
+    /* A pipe read end as a Readable, driven by the event loop like a socket. */
+    function pipeReadable(fd, onEnd) {
+      var r = new stream.Readable(), buf = new ArrayBuffer(65536), armed = false;
+      r._read = function () {
+        if (armed || fd < 0) return;
+        armed = true;
+        os.setReadHandler(fd, function () {
+          var n;
+          try { n = os.read(fd, buf, 0, 65536); } catch (e) { n = -1; }
+          if (n > 0) {
+            var c = Buffer.alloc(n), src = new Uint8Array(buf, 0, n);
+            for (var i = 0; i < n; i++) c[i] = src[i];
+            r.push(c);
+            return;
+          }
+          try { os.setReadHandler(fd, null); } catch (e) {}
+          try { os.close(fd); } catch (e) {}
+          armed = false; fd = -1;
+          r.push(null);
+          onEnd();
+        });
+      };
+      r.resume = function () { stream.Readable.prototype.resume.call(this); r._read(); return this; };
+      r._read();
+      return r;
+    }
+
     exports.spawn = function (cmd, args, opts) {
-      var ee = new EventEmitter(); ee.stdout = new EventEmitter(); ee.stderr = new EventEmitter(); ee.stdin = { write: function () {}, end: function () {} };
-      process.nextTick(function () { var r = exports.spawnSync(cmd, args, opts); ee.emit('exit', r.status || 0, null); ee.emit('close', r.status || 0, null); });
+      if (args && !Array.isArray(args)) { opts = args; args = []; }
+      opts = opts || {};
+      var argv = toArgv(cmd, args);
+      cptrace('spawn ' + JSON.stringify(argv) + ' opts=' + JSON.stringify({ shell: opts.shell, stdio: opts.stdio, cwd: opts.cwd, timeout: opts.timeout }));
+      var cap = { stdin: wantsPipe(stdioOf(opts, 0)), stdout: wantsPipe(stdioOf(opts, 1)), stderr: wantsPipe(stdioOf(opts, 2)) };
+      var ee = new EventEmitter();
+      ee.stdout = null; ee.stderr = null; ee.stdin = null;
+      ee.killed = false; ee.exitCode = null; ee.signalCode = null;
+
+      var child;
+      try { child = launch(argv, opts, cap); } catch (e) {
+        process.nextTick(function () { ee.emit('error', e); });
+        return ee;
+      }
+      ee.pid = child.pid;
+
+      var open = 0, exited = false, code = null, sig = null;
+      function settle() {
+        if (open > 0 || !exited) return;
+        ee.emit('close', code, sig);
+      }
+      if (child.fds.stdout != null) { open++; ee.stdout = pipeReadable(child.fds.stdout, function () { open--; settle(); }); }
+      if (child.fds.stderr != null) { open++; ee.stderr = pipeReadable(child.fds.stderr, function () { open--; settle(); }); }
+      if (child.fds.stdin != null) {
+        var wfd = child.fds.stdin;
+        ee.stdin = new stream.Writable();
+        ee.stdin._write = function (chunk, enc, cb) {
+          var b = (chunk instanceof Uint8Array) ? chunk : Buffer.from(chunk);
+          try {
+            for (var off = 0; off < b.length; ) {
+              var w = os.write(wfd, b.buffer, b.byteOffset + off, b.length - off);
+              if (w <= 0) { cb(new Error('write to child failed')); return; }
+              off += w;
+            }
+          } catch (e) { cb(e); return; }
+          cb();
+        };
+        ee.stdin.on('finish', function () { try { os.close(wfd); } catch (e) {} });
+        ee.stdin.destroy = function () { try { os.close(wfd); } catch (e) {} return this; };
+      }
+
+      /* Plan 9 has no SIGCHLD, so poll for the exit. 20 ms is below human notice and
+         costs nothing next to spawning a process. */
+      var t = globalThis.setInterval(function () {
+        var w;
+        try { w = os.waitpid(child.pid, os.WNOHANG); } catch (e) { w = [child.pid, 0]; }
+        if (!w || w[0] !== child.pid) return;
+        globalThis.clearInterval(t);
+        exited = true; code = exitOf(w[1]); sig = signalOf(w[1]);
+        cptrace('exit pid=' + child.pid + ' code=' + code + ' sig=' + sig);
+        ee.exitCode = code; ee.signalCode = sig;
+        ee.emit('exit', code, sig);
+        settle();
+      }, 20);
+
+      ee.kill = function (s) {
+        ee.killed = true;
+        try { var f = std.open('/proc/' + child.pid + '/note', 'w'); if (f) { f.puts(s === 'SIGKILL' ? 'kill' : 'interrupt'); f.close(); } } catch (e) {}
+        return true;
+      };
+      ee.ref = function () { return ee; }; ee.unref = function () { return ee; };
+      ee.disconnect = function () {};
       return ee;
     };
-    exports.execSync = function (cmd, opts) { var r = exports.spawnSync('/bin/rc', ['-c', cmd], opts); if (r.status !== 0) { var e = new Error('Command failed: ' + cmd); e.status = r.status; throw e; } return Buffer.alloc(0); };
-    exports.exec = function (cmd, opts, cb) { if (typeof opts === 'function') { cb = opts; opts = {}; } process.nextTick(function () { try { exports.execSync(cmd, opts); if (cb) cb(null, '', ''); } catch (e) { if (cb) cb(e, '', ''); } }); return exports.spawn('/bin/rc', ['-c', cmd], opts); };
-    exports.execFile = function (file, args, opts, cb) { if (typeof args === 'function') { cb = args; args = []; opts = {}; } else if (typeof opts === 'function') { cb = opts; opts = {}; } process.nextTick(function () { var r = exports.spawnSync(file, args, opts); if (cb) cb(r.status === 0 ? null : new Error('exit ' + r.status), '', ''); }); return exports.spawn(file, args, opts); };
+
+    exports.execSync = function (cmd, opts) {
+      opts = opts || {};
+      var r = exports.spawnSync(require('os').shell(), ['-c', cmd], opts);
+      if (r.error) throw r.error;
+      if (r.status !== 0) {
+        var e = new Error('Command failed: ' + cmd + (r.stderr ? '\n' + r.stderr : ''));
+        e.status = r.status; e.signal = r.signal; e.stdout = r.stdout; e.stderr = r.stderr;
+        throw e;
+      }
+      return r.stdout == null ? Buffer.alloc(0) : r.stdout;
+    };
+    exports.execFileSync = function (file, args, opts) {
+      if (args && !Array.isArray(args)) { opts = args; args = []; }
+      var r = exports.spawnSync(file, args, opts || {});
+      if (r.error) throw r.error;
+      if (r.status !== 0) { var e = new Error(file + ' exited ' + r.status); e.status = r.status; e.stdout = r.stdout; e.stderr = r.stderr; throw e; }
+      return r.stdout == null ? Buffer.alloc(0) : r.stdout;
+    };
+
+    /* exec/execFile: collect both streams, then call back like Node does. */
+    function collect(ch, opts, cb) {
+      opts = opts || {};
+      var out = [], err = [];
+      if (ch.stdout) ch.stdout.on('data', function (c) { out.push(c); });
+      if (ch.stderr) ch.stderr.on('data', function (c) { err.push(c); });
+      ch.on('error', function (e) { if (cb) { cb(e, '', ''); cb = null; } });
+      ch.on('close', function (code) {
+        if (!cb) return;
+        var o = decode(out.length ? Buffer.concat(out) : Buffer.alloc(0), opts.encoding || 'utf8');
+        var e = decode(err.length ? Buffer.concat(err) : Buffer.alloc(0), opts.encoding || 'utf8');
+        if (code === 0) cb(null, o, e);
+        else { var er = new Error('Command failed'); er.code = code; cb(er, o, e); }
+        cb = null;
+      });
+      return ch;
+    }
+    exports.exec = function (cmd, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = {}; }
+      return collect(exports.spawn(require('os').shell(), ['-c', cmd], opts || {}), opts, cb);
+    };
+    exports.execFile = function (file, args, opts, cb) {
+      if (typeof args === 'function') { cb = args; args = []; opts = {}; }
+      else if (typeof opts === 'function') { cb = opts; opts = {}; }
+      return collect(exports.spawn(file, args || [], opts || {}), opts, cb);
+    };
     exports.fork = function () { throw new Error('child_process.fork not supported on node9'); };
   });
 
@@ -3465,6 +3693,10 @@
   if (!__proc.env) __proc.env = {};
   if (!__proc.env.HOME) __proc.env.HOME = (std.getenv && std.getenv('home')) || '/usr/glenda';
   if (!__proc.env.PATH) __proc.env.PATH = (std.getenv && std.getenv('path')) || '/bin:/amd64/bin';
+  /* A tool that wants "the shell" wants to drive it with sh syntax. 9front's own
+     $SHELL is rc, which cannot be driven that way, so point it at the POSIX one —
+     children inherit it through /env. */
+  if (!__proc.env.SHELL || __proc.env.SHELL === '/bin/rc') __proc.env.SHELL = require('os').shell();
   if (!__proc.env.PREFIX) __proc.env.PREFIX = '/amd64';
   if (!__proc.hrtime) {
     __proc.hrtime = function (prev) { var ns = Math.round(Date.now() * 1e6); if (prev) { var d = ns - (prev[0] * 1e9 + prev[1]); return [Math.floor(d / 1e9), d % 1e9]; } return [Math.floor(ns / 1e9), ns % 1e9]; };

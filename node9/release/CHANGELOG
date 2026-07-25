@@ -1,0 +1,46 @@
+node9 — Node-compatible JavaScript runtime for 9front (QuickJS-ng). Changelog.
+(`pac9 changelog node9` shows this; newest first.)
+
+0.2.0 — 2026-07-25
+  The engine is now built with cc9/clang instead of kencc, TLS certificates are
+  verified, and the real `pi` coding agent runs on it — TUI included.
+
+    - New engine build (port/cc9). kencc cannot do computed-goto dispatch, so
+      the bytecode loop ran on a `switch`; clang's build is 3.3x faster on the
+      interpreter and 2.8x on JS compute in the full runtime. Startup gains
+      less (a `pi --version` goes 7.7s -> 6.5s, a full turn 9.0s -> 7.7s):
+      module resolution, I/O and parsing dominate there, not interpretation.
+    - TLS certificates are VERIFIED. The engine now links OpenSSL and checks the
+      chain plus the hostname against /amd64/lib/node9/ca.pem (shipped here).
+      The previous build used Plan 9's libsec and verified nothing.
+      NODE9_CA_FILE overrides the bundle; NODE9_TLS_INSECURE disables checking.
+    - Fixed silent truncation of large reads. cc9's poll layer keyed its read
+      ring on a live reader thread, but that thread exits the moment the kernel
+      gives it EOF — often with the tail of the transfer still in the ring, which
+      then got dropped: a 220 KB HTTP body arrived as 4 KB.
+    - Fixed three socket bugs. Ending a request wrote "hangup" to the TCP ctl fd
+      as a half-close — Plan 9 has no half-close, so it tore down the connection
+      the response was still arriving on. Destroying a TLS socket cleared its fd
+      before disarming the read handler, so an aborted fetch left the event loop
+      polling a closed fd forever. And a response that ended mid-body (bad chunk
+      size, or a close before the last chunk) was reported as a complete body
+      instead of an error, which hid all of the above as short reads.
+    - Every ready fd is dispatched. quickjs-libc's poll loop overwrote its fd
+      count with poll()'s ready count and then scanned only that many leading
+      entries, so a ready socket at a later index waited for an unrelated fd to
+      go ready too: streamed replies stalled for 80s at a time. Two smaller
+      event-loop fixes came with it (an expired timer returned before polling at
+      all; an entry module with top-level await advanced one microtask per timer).
+    - Real terminal support: a TTY is reported honestly, terminal size comes from
+      $LINES/$COLS (what alacritty9 publishes), Return is translated to CR while
+      the console is in raw mode, and cooked mode is restored on exit. Enough for
+      pi's full-screen TUI under alacritty9 or `drawterm -G`.
+    - Web platform coverage for real npm packages: fetch/Headers/Response/
+      ReadableStream/FormData/AbortSignal, a builtin `undici` shim, the full
+      console family, Intl (Segmenter/Collator/NumberFormat/DateTimeFormat),
+      a real process.stdin, fs.watch/watchFile, and Node's ESM/CJS interop rules
+      including wildcard "exports" subpaths.
+
+0.1.0 — 2026-07-01
+  First release: QuickJS-ng with a Node-compatible standard library, and real
+  npm 10.9.8 running on 9front.
