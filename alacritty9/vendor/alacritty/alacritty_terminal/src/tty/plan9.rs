@@ -31,11 +31,12 @@ struct Shared {
     buf: Mutex<VecDeque<u8>>,
     poller: Mutex<Option<Arc<Poller>>>,
     eof: AtomicBool,
-    /// Raw mode, keyed on the child entering/leaving the alternate screen
-    /// (ESC[?1049h/l, ESC[?47h/l). There is no pty/termios to ask for raw
-    /// mode on Plan 9, but every full-screen TUI announces itself this way;
-    /// while set, the line discipline is bypassed entirely (no echo, no
-    /// line buffer, no ICRNL/ONLCR, escape sequences and ^C pass through).
+    /// Raw mode, keyed on what the child announces (see RAW_ON): the alternate
+    /// screen, bracketed paste, or a Kitty keyboard push. There is no
+    /// pty/termios to ask for raw mode on Plan 9, so these announcements are
+    /// the request; while set, the line discipline is bypassed entirely (no
+    /// echo, no line buffer, no ICRNL/ONLCR, escape sequences and ^C pass
+    /// through).
     raw: AtomicBool,
 }
 
@@ -53,10 +54,20 @@ impl Shared {
     }
 }
 
-/// Alt-screen enter/leave sequences that toggle raw mode. Matched with a
-/// rolling tail so a sequence split across two reads is still seen.
-const RAW_ON: [&[u8]; 2] = [b"\x1b[?1049h", b"\x1b[?47h"];
-const RAW_OFF: [&[u8]; 2] = [b"\x1b[?1049l", b"\x1b[?47l"];
+/// Sequences that toggle raw mode, matched with a rolling tail so one split
+/// across two reads is still seen.
+///
+/// The alternate screen is the classic signal (vi, nvim, less), but it is not
+/// the only one: an app can drive the keyboard while rendering inline, and pi
+/// does exactly that. Bracketed paste and the Kitty keyboard push are just as
+/// conclusive — a program only asks for either when it is reading keys itself
+/// — and without them such an app gets whole cooked LINES, so its Enter never
+/// arrives as a keypress at all.
+const RAW_ON: [&[u8]; 3] = [b"\x1b[?1049h", b"\x1b[?47h", b"\x1b[?2004h"];
+const RAW_OFF: [&[u8]; 3] = [b"\x1b[?1049l", b"\x1b[?47l", b"\x1b[?2004l"];
+/// Kitty keyboard protocol: push (CSI > flags u) enters raw, pop (CSI < u)
+/// leaves. The flags vary, so this is matched by shape rather than literally.
+const KITTY_POP: &[u8] = b"\x1b[<u";
 
 fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signal_eof: bool) {
     std::thread::Builder::new()
@@ -80,9 +91,29 @@ fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signa
                                 tail.len() >= pat.len()
                                     && tail.iter().rev().zip(pat.iter().rev()).all(|(a, b)| a == b)
                             };
-                            if RAW_ON.iter().any(|p| ends_with(p)) {
+                            // Kitty keyboard push: ESC [ > <digits> u
+                            let kitty_push = byte == b'u' && {
+                                let t: Vec<u8> = tail.iter().copied().collect();
+                                match t.iter().rposition(|&b| b == b'\x1b') {
+                                    Some(esc) if t.len() - esc >= 4 => {
+                                        t[esc + 1] == b'['
+                                            && t[esc + 2] == b'>'
+                                            && t[esc + 3..t.len() - 1]
+                                                .iter()
+                                                .all(|b| b.is_ascii_digit() || *b == b';')
+                                    },
+                                    _ => false,
+                                }
+                            };
+                            if RAW_ON.iter().any(|p| ends_with(p)) || kitty_push {
+                                if std::env::var_os("ALACRITTY9_RAWDEBUG").is_some() {
+                                    eprintln!("[a9] raw ON (kitty_push={kitty_push})");
+                                }
                                 shared.raw.store(true, Ordering::Release);
-                            } else if RAW_OFF.iter().any(|p| ends_with(p)) {
+                            } else if RAW_OFF.iter().any(|p| ends_with(p)) || ends_with(KITTY_POP) {
+                                if std::env::var_os("ALACRITTY9_RAWDEBUG").is_some() {
+                                    eprintln!("[a9] raw OFF");
+                                }
                                 shared.raw.store(false, Ordering::Release);
                             }
 
@@ -123,9 +154,11 @@ pub struct Pty {
 /// backspace erase, Enter (\r) -> \n (ICRNL), ^C -> "interrupt" note to the
 /// child's note group.
 ///
-/// ponytail: no raw-mode switch — a piped child can't request one (that
-/// needs /dev/consctl, which only real cons/9term namespaces have), so
-/// full-screen apps are out of scope; rc/sam -d/cat-class programs work.
+/// Cooked is only half the story: when the child announces that it drives the
+/// keyboard itself (alt screen, bracketed paste, or a Kitty keyboard push —
+/// see RAW_ON) this is bypassed entirely and every byte passes through, which
+/// is what a piped child gets instead of the /dev/consctl switch it cannot
+/// reach. ALACRITTY9_RAWDEBUG=1 logs the toggles and the mode of each write.
 /// Escape-sequence swallow state for cooked mode (see `write`).
 #[derive(Clone, Copy, PartialEq)]
 enum EscSwallow {
@@ -178,6 +211,15 @@ impl LineDiscipline {
 impl io::Write for LineDiscipline {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         use std::io::Write as _;
+
+        if std::env::var_os("ALACRITTY9_RAWDEBUG").is_some() {
+            eprintln!(
+                "[a9] write raw={} len={} first={:?}",
+                self.shared.raw.load(Ordering::Acquire),
+                data.len(),
+                data.first()
+            );
+        }
 
         // Raw mode (child is on the alternate screen): the child owns the
         // byte stream — keystrokes, escape sequences, mouse reports, ^C all

@@ -67,10 +67,22 @@ specials ≥0xF000 and 0x80) from 'c' as down+up pairs. Mouse: /dev/mouse 'm'
 lines (buttons 1/2/4, scroll 8/16 on transition), 'r' = resize → getwindow
 under a qlock shared with the frame blitter.
 
-## Raw mode + TUIs (pi9 works)
-A piped child can't request /dev/consctl rawon, so raw mode is keyed on the
-alt-screen toggle instead: when the child's output contains ESC[?1049h (or
-?47h) the line discipline gets out of the way entirely — no echo, no line
+## Raw mode + TUIs (pi9 and pi work)
+A piped child can't request /dev/consctl rawon, so raw mode is keyed on what
+the child announces in its OUTPUT instead. The alt screen is one such signal;
+so are **bracketed paste (ESC[?2004h) and a Kitty keyboard push (ESC[>flags u)**,
+which is what upstream **pi** sends — it drives the keyboard while rendering
+INLINE and never touches the alt screen. Before those were added, pi got whole
+cooked LINES: its Enter arrived as a bare \n at the end of a line rather than as
+a keypress, so the prompt just sat in the editor and nothing was ever submitted
+(and arrow keys never arrived at all, being dropped as escape sequences).
+`test/headless/src/bin/rawmode.rs` is the gate: it drives a child through the
+real tty layer with no display, waits for the app to announce itself, types text
++ Enter, and greps the grid for the answer. `ALACRITTY9_RAWDEBUG=1` logs each
+toggle and the mode of every write — the failure mode looks identical from the
+outside whether the trigger never fired or the app had not started yet.
+
+When any of those fire the line discipline gets out of the way entirely — no echo, no line
 buffer, no ICRNL/ONLCR, escape sequences / mouse reports / ^C pass through
 verbatim — and ESC[?1049l restores canonical mode. Terminal SIZE for piped
 TUIs travels over the shared /env group (no RFENVG at spawn): tty/plan9.rs
