@@ -107,6 +107,16 @@ fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signa
                 match pipe.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
+                        // ALACRITTY9_RAWLOG=<path>: every byte the child wrote, for
+                        // replaying a session through another emulator.
+                        if let Some(path) = std::env::var_os("ALACRITTY9_RAWLOG") {
+                            use std::io::Write as _;
+                            if let Ok(mut f) =
+                                std::fs::OpenOptions::new().create(true).append(true).open(path)
+                            {
+                                let _ = f.write_all(&chunk[..n]);
+                            }
+                        }
                         let mut buf = shared.buf.lock().unwrap();
                         for &byte in &chunk[..n] {
                             // Track alt-screen toggles for raw mode.

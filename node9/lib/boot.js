@@ -890,6 +890,20 @@
       Object.defineProperty(s, 'columns', { configurable: true, get: function () { return envSize('COLS') || 80; } });
       Object.defineProperty(s, 'rows', { configurable: true, get: function () { return envSize('LINES') || 24; } });
       s.getWindowSize = function () { return [s.columns, s.rows]; };
+      /* Node's internal tty handle. Libraries that want the size without going
+         through the public getters reach for stream._handle.getWindowSize(arr)
+         (that is what tty.WriteStream does internally), and a stream without one
+         reads as "size unknown" — the caller then lays out at its own default
+         width, which on a narrower terminal wraps and corrupts its redraw. */
+      s._handle = {
+        fd: fd,
+        getWindowSize: function (arr) {
+          if (arr) { arr[0] = s.columns; arr[1] = s.rows; }
+          return 0;
+        },
+        setBlocking: function () {},
+        setRawMode: function () { return 0; },
+      };
       // No SIGWINCH on Plan 9 either — poll the size files, but only once something is
       // actually listening for 'resize'.
       var sizePoll = null, lastCols = s.columns, lastRows = s.rows;
@@ -3011,7 +3025,43 @@
     Interface.prototype.on = EventEmitter.prototype.on;
     exports.Interface = Interface;
     exports.createInterface = function () { return new Interface(); };
-    exports.clearLine = function () {}; exports.cursorTo = function () {}; exports.moveCursor = function () {};
+    /* Cursor control. These were no-ops, which silently swallowed every cursor
+       move a TUI made through readline (Node's documented way to position a
+       stream) — the app believed it had moved and drew its next block wherever
+       the cursor happened to be. They are plain ANSI sequences; write them. */
+    function csi(stream, seq) {
+      if (!stream || typeof stream.write !== 'function') return false;
+      stream.write('\x1b[' + seq);
+      return true;
+    }
+    exports.cursorTo = function (stream, x, y, cb) {
+      if (typeof y === 'function') { cb = y; y = undefined; }
+      var ok = typeof x === 'number'
+        && (typeof y === 'number' ? csi(stream, (y + 1) + ';' + (x + 1) + 'H') : csi(stream, (x + 1) + 'G'));
+      if (typeof cb === 'function') process.nextTick(cb);
+      return ok;
+    };
+    exports.moveCursor = function (stream, dx, dy, cb) {
+      var ok = !!stream;
+      if (ok) {
+        if (dx < 0) csi(stream, (-dx) + 'D'); else if (dx > 0) csi(stream, dx + 'C');
+        if (dy < 0) csi(stream, (-dy) + 'A'); else if (dy > 0) csi(stream, dy + 'B');
+      }
+      if (typeof cb === 'function') process.nextTick(cb);
+      return ok;
+    };
+    exports.clearLine = function (stream, dir, cb) {
+      /* -1 = to the left of the cursor, 1 = to the right, 0 = the whole line */
+      var ok = csi(stream, dir < 0 ? '1K' : dir > 0 ? '0K' : '2K');
+      if (typeof cb === 'function') process.nextTick(cb);
+      return ok;
+    };
+    exports.clearScreenDown = function (stream, cb) {
+      var ok = csi(stream, '0J');
+      if (typeof cb === 'function') process.nextTick(cb);
+      return ok;
+    };
+    exports.emitKeypressEvents = function () {};
   });
   define('vm', function (m, exports) {
     exports.runInThisContext = function (code) { return (0, eval)(code); };

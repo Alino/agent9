@@ -54,6 +54,50 @@ perl -0777 -i -pe 's/        if \(min_delay == 0\)\n            return 0; \/\/ e
 # scan bound — poll() does not compact the array, so a ready fd at a later index is skipped
 perl -0777 -i -pe 's/    nfds = poll\(pfds, nfds, min_delay\);\n    if \(nfds < 0\) \{/    if \(poll\(pfds, nfds, min_delay\) < 0\) \{/' "$SRC/quickjs-libc.c"
 grep -q 'if (poll(pfds, nfds, min_delay) < 0)' "$SRC/quickjs-libc.c" || { echo "poll-dispatch fix did not apply"; exit 1; }
+# libregexp.c: \p{...} is only parsed in /u mode, so with the ES2024 /v flag the
+# escape falls through to the literal path and the PROPERTY NAME becomes a set of
+# literal characters. /^[\p{Control}\p{Mark}...]+/v then matched 'a' (from
+# "Default_Ignorable_Code_Point") and missed the code points it is supposed to
+# match. pi-tui measures text with exactly that regex, so every styled line
+# measured short, pi padded past the terminal width, its lines wrapped, and its
+# cursor-up redraw landed a row off — duplicated lines with their tails missing.
+perl -0777 -i -pe 's/(        case .p.:\n        case .P.:\n)            if \(s->is_unicode\) \{/$1            if \(s->is_unicode || s->unicode_sets\) \{/' "$SRC/libregexp.c"
+grep -q 'if (s->is_unicode || s->unicode_sets) {' "$SRC/libregexp.c" || { echo "unicode-property fix did not apply"; exit 1; }
+# ...and /v also allows PROPERTIES OF STRINGS (\p{RGI_Emoji} and friends), which this
+# engine has no tables for. Parsing them as an error would now break module loading
+# for code that only feature-tests them (pi-tui builds one at import time), so in /v
+# they resolve to the empty set: they match nothing, which is what the old
+# fall-through did anyway, while real character properties are now correct.
+python3 - "$SRC/libregexp.c" <<'PYEOF_INNER'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = """    } else {
+    unknown_property_name:
+        return re_parse_error(s, "unknown unicode property name");
+    }"""
+new = """    } else {
+    unknown_property_name:
+        /* properties of strings (\\p{RGI_Emoji} and friends) are /v-only and this
+           engine has no tables for them. Erroring would break module loading for
+           code that merely feature-tests one (pi-tui builds such a regex at import
+           time), so they resolve to the empty set: they match nothing, exactly as
+           the old literal fall-through did, while real character properties work. */
+        if (s->unicode_sets && (!strcmp(name, "RGI_Emoji") ||
+                                !strcmp(name, "Basic_Emoji") ||
+                                !strcmp(name, "Emoji_Keycap_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_Modifier_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_Flag_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_Tag_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_ZWJ_Sequence"))) {
+            cr_init(cr, s->opaque, lre_realloc);
+        } else {
+            return re_parse_error(s, "unknown unicode property name");
+        }
+    }"""
+assert old in s, "unknown_property_name block not found"
+open(p, "w").write(s.replace(old, new, 1))
+PYEOF_INNER
+grep -q 'properties of strings' "$SRC/libregexp.c" || { echo "string-property fallback did not apply"; exit 1; }
 grep -c 'expired timer' "$SRC/quickjs-libc.c" | grep -qx 1 || { echo "expired-timer fix did not apply"; exit 1; }
 QJS_SRC="$SRC"
 

@@ -614,7 +614,8 @@ impl Display {
             (Surface::Egl(surface), PossiblyCurrentContext::Egl(context))
                 if (matches!(self.raw_window_handle, RawWindowHandle::Wayland(_))
                     || cfg!(target_os = "plan9"))
-                    && !self.damage_tracker.debug =>
+                    && !self.damage_tracker.debug
+                    && std::env::var_os("ALACRITTY9_FULLFRAME").is_none() =>
             {
                 let damage = self.damage_tracker.shape_frame_damage(self.size_info.into());
                 surface.swap_buffers_with_damage(context, &damage)
@@ -857,7 +858,11 @@ impl Display {
         // buffer, which must keep matching the screen — the present only
         // ships the damage rects). Full damage (or debug) = normal path.
         #[cfg(target_os = "plan9")]
-        let plan9_damage = if self.damage_tracker.debug {
+        /* ALACRITTY9_FULLFRAME=1 turns the damage-rect optimisation off (render and
+           present whole frames). Slower, but it is the difference between "the
+           renderer is wrong" and "the damage bookkeeping is wrong" when a screen
+           shows stale fragments, so it stays. */
+        let plan9_damage = if self.damage_tracker.debug || std::env::var_os("ALACRITTY9_FULLFRAME").is_some() {
             None
         } else {
             let width = self.size_info.width() as i32;

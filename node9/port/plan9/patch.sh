@@ -302,6 +302,45 @@ grep -c 'expired timer' work/quickjs-libc.c | sed 's/^/  expired-timer mentions 
 perl -0777 -i -pe 's/    nfds = poll\(pfds, nfds, min_delay\);\n    if \(nfds < 0\) \{/    if \(poll\(pfds, nfds, min_delay\) < 0\) \{/' work/quickjs-libc.c
 grep -c 'if (poll(pfds, nfds, min_delay) < 0)' work/quickjs-libc.c | sed 's/^/  poll-dispatch fix applied (want 1): /'
 
+# libregexp.c: \p{...} was only parsed in /u mode, so with the ES2024 /v flag the escape
+# fell through to the literal path and the PROPERTY NAME became a set of literal
+# characters — /^[\p{Control}\p{Mark}...]+/v matched 'a' (from
+# "Default_Ignorable_Code_Point") and missed the code points it should match. Text
+# measurement built on that regex (pi-tui's) under-counts every styled string.
+perl -0777 -i -pe 's/(        case .p.:\n        case .P.:\n)            if \(s->is_unicode\) \{/$1            if \(s->is_unicode || s->unicode_sets\) \{/' work/libregexp.c
+grep -c 'if (s->is_unicode || s->unicode_sets) {' work/libregexp.c | sed 's/^/  unicode-property-in-v fix applied (want 1): /'
+# ...and /v also allows properties of STRINGS, which this engine has no tables for.
+# Erroring breaks module load for code that only feature-tests one, so they match nothing.
+python3 - work/libregexp.c <<'PYEOF'
+import sys
+p = sys.argv[1]; s = open(p).read()
+old = '''    } else {
+    unknown_property_name:
+        return re_parse_error(s, "unknown unicode property name");
+    }'''
+new = '''    } else {
+    unknown_property_name:
+        /* properties of strings (\\p{RGI_Emoji} and friends) are /v-only and this
+           engine has no tables for them: match nothing rather than fail to compile. */
+        if (s->unicode_sets && (!strcmp(name, "RGI_Emoji") ||
+                                !strcmp(name, "Basic_Emoji") ||
+                                !strcmp(name, "Emoji_Keycap_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_Modifier_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_Flag_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_Tag_Sequence") ||
+                                !strcmp(name, "RGI_Emoji_ZWJ_Sequence"))) {
+            cr_init(cr, s->opaque, lre_realloc);
+        } else {
+            return re_parse_error(s, "unknown unicode property name");
+        }
+    }'''
+if old in s:
+    open(p, "w").write(s.replace(old, new, 1))
+    print("  string-property fallback applied")
+else:
+    print("  WARNING: unknown_property_name block not found")
+PYEOF
+
 # package
 cd work && tar czf ../qjs-patched.tar.gz . && cd ..
 echo "patched tar: $(ls -lh /tmp/node9probe/src/qjs-patched.tar.gz | awk '{print $5}')"

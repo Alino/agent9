@@ -116,6 +116,30 @@ ok("process.stdin.setEncoding exists", typeof process.stdin.setEncoding === "fun
 ok("process.stdin.setRawMode exists", typeof process.stdin.setRawMode === "function");
 eq("process.stdin.fd", process.stdin.fd, 0);
 
+// RegExp: \p{...} inside an ES2024 /v (unicodeSets) class. The engine only parsed
+// unicode properties in /u mode, so under /v the escape fell through to the literal
+// path and the PROPERTY NAME became a set of literal characters — the class matched
+// 'a' (from "Default_Ignorable_Code_Point") and missed what it should match. Every
+// TUI that measures text this way (pi-tui does) then under-counted styled strings,
+// padded lines past the terminal width, and its redraws landed a row off.
+var vclass = /^[\p{Default_Ignorable_Code_Point}\p{Control}\p{Format}\p{Mark}\p{Surrogate}]+/v;
+eq("/v class keeps a printable letter", "a".replace(vclass, ""), "a");
+eq("/v class strips a zero-width char", "\u200b".replace(vclass, ""), "");
+eq("/v class keeps a space", " ".replace(vclass, ""), " ");
+eq("/u class still works", "\u200b".replace(/^[\p{Default_Ignorable_Code_Point}]+/u, ""), "");
+ok("properties of strings do not throw in /v", (function () {
+	try { return /^\p{RGI_Emoji}$/v.test("x") === false; } catch (e) { return false; }
+})());
+
+// readline cursor control writes real escape sequences (it used to be a no-op, so a
+// TUI's cursor moves silently vanished).
+var rl = require("readline");
+var captured = "";
+var fakeStream = { write: function (s) { captured += s; } };
+rl.cursorTo(fakeStream, 4, 2); rl.moveCursor(fakeStream, -2, 1); rl.clearLine(fakeStream, 0);
+eq("readline.cursorTo/moveCursor/clearLine emit ANSI", captured,
+   "\u001b[3;5H" + "\u001b[2D" + "\u001b[1B" + "\u001b[2K");
+
 watchTests().then(function () {
 	console.log(pass + " passed, " + fail + " failed");
 	if (fail) throw new Error(fail + " checks failed");
