@@ -86,7 +86,8 @@ fn main() {
             notifier.0.send(Msg::Input(bytes.into())).expect("send keys");
             std::thread::sleep(Duration::from_millis(400));
         }
-        std::thread::sleep(Duration::from_secs(2));
+        let after: u64 = std::env::var("TUIDUMP_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        std::thread::sleep(Duration::from_secs(after));
         println!("=== grid after typing ===\n{}", grid_text(&term.lock()));
     }
 }
