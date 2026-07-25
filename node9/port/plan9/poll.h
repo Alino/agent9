@@ -12,6 +12,40 @@ typedef unsigned long nfds_t;
 #define POLLERR 8
 #define POLLHUP 16
 #define POLLNVAL 32
+/* NODE9_POLLTRACE=1 -> /tmp/n9poll: one line per call, "<ms> to=<timeout> in=<fd:ev,..>
+   n=<select ret> out=<fd:revents,..>". Only for debugging the event loop. */
+static void n9_polltrace(struct pollfd *fds, nfds_t nfds, int timeout, int n, int after){
+    static int checked = 0, on = 0;
+    FILE *f;
+    nfds_t i;
+    struct timeval now;
+    if(!checked){ checked = 1; on = getenv("NODE9_POLLTRACE") != 0; }
+    if(!on) return;
+    f = fopen("/tmp/n9poll", "a");
+    if(!f) return;
+    gettimeofday(&now, 0);
+    fprintf(f, "%ld.%03ld %s to=%d n=%d fds=", (long)now.tv_sec, (long)(now.tv_usec/1000),
+            after ? "post" : "pre", timeout, n);
+    for(i = 0; i < nfds; i++)
+        fprintf(f, "%d:%d/%d,", fds[i].fd, fds[i].events, after ? fds[i].revents : 0);
+    fprintf(f, "\n");
+    fclose(f);
+}
+
+/* Same switch: log what the event loop decided BEFORE it gets as far as poll(). */
+static void n9_looptrace(const char *what, int a, int b){
+    static int checked = 0, on = 0;
+    FILE *f;
+    struct timeval now;
+    if(!checked){ checked = 1; on = getenv("NODE9_POLLTRACE") != 0; }
+    if(!on) return;
+    f = fopen("/tmp/n9poll", "a");
+    if(!f) return;
+    gettimeofday(&now, 0);
+    fprintf(f, "%ld.%03ld LOOP %s a=%d b=%d\n", (long)now.tv_sec, (long)(now.tv_usec/1000), what, a, b);
+    fclose(f);
+}
+
 static int poll(struct pollfd *fds, nfds_t nfds, int timeout){
     fd_set rfds, wfds, efds;
     struct timeval tv, *ptv;
@@ -36,8 +70,9 @@ static int poll(struct pollfd *fds, nfds_t nfds, int timeout){
         if(timeout == 0) timeout = 1;
         tv.tv_sec = timeout/1000; tv.tv_usec = (timeout%1000)*1000; ptv = &tv;
     }
+    n9_polltrace(fds, nfds, timeout, -1, 0);
     n = select(maxfd+1, &rfds, &wfds, &efds, ptv);
-    if(n <= 0) return n;
+    if(n <= 0){ n9_polltrace(fds, nfds, timeout, n, 1); return n; }
     ready = 0;
     for(i = 0; i < nfds; i++){
         short re = 0;
@@ -49,6 +84,7 @@ static int poll(struct pollfd *fds, nfds_t nfds, int timeout){
         fds[i].revents = re;
         if(re) ready++;
     }
+    n9_polltrace(fds, nfds, timeout, n, 1);
     return ready;
 }
 #endif

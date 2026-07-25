@@ -94,6 +94,30 @@ streamed SSE deltas, multi-sentence generations, and **tool calls** — pi's `re
 returned a token written to the box a second earlier, and its `write` tool created a file
 on hjfs with the exact requested contents.
 
+## Interactive mode
+
+`pi` with no `-p` runs its full TUI on 9front: status bar, footer, editor, spinner, streamed
+assistant output, tool-execution blocks, token/context stats. Multi-turn works (ask a
+follow-up and the model still has the conversation), tool calls render (`read
+~/pitools/secret.txt`), and a reply lands **1–3 s** after you hit enter against the local
+model.
+
+It needs the terminal to say how big it is. Under **alacritty9** that is automatic: Plan 9
+has no pty, so it runs its child on plain pipes and publishes the window size in
+`/env/LINES` and `/env/COLS`, which is exactly what node9's TTY detection keys off (see
+DOCUMENTATION.md). Anywhere else, export those two variables (`NODE9_TTY=1` forces
+terminal-ness regardless).
+
+Getting here took three event-loop fixes in the engine (all in `port/plan9/patch.sh`, so a
+rebuild keeps them). The decisive one is an upstream quickjs-libc bug:
+`js_os_poll_internal()` overwrites its `nfds` with `poll()`'s return value — the *number* of
+ready fds — and then scans only that many leading entries of the array. `poll()` does not
+compact the array, so a ready fd at a later index is never dispatched. With stdin registered
+first and the response socket third, every streamed reply sat unread until stdin happened to
+go ready too: measured **80 s** of stall for a response the server had delivered in 0.6 s.
+The other two: an expired timer used to return before any fd was polled at all, and APE's
+`select()` reports nothing on a zero timeout (poll.h widens it to 1 ms).
+
 ## What pi needed from node9
 
 Each of these is now in `lib/boot.js` and covered by a test in `examples/`:
@@ -120,21 +144,7 @@ Each of these is now in `lib/boot.js` and covered by a test in `examples/`:
   fds, so `stdout`/`stderr` come back empty. A shell-tool turn currently exits 0 with no
   output. Fixing it needs a real `child_process` (rfork + exec + pipes) and an `rc`-shaped
   shell tool — the next milestone, and why `src/pi9` has `run_rc` instead.
-- **The interactive TUI — comes up, but a reply takes ~80s to appear.** node9 now reports a
-  real TTY and publishes the terminal size (see DOCUMENTATION.md), so `pi` with no `-p`
-  renders its full interface — status bar, footer, editor, spinner — and accepts keystrokes.
-  A turn also runs to completion: the provider streams, the assistant message renders, the
-  component lands in the chat container.
-  What is still wrong: the response socket is not serviced for ~80 seconds after the server
-  has already delivered everything. Measured, so the remaining search space is small: a
-  logging proxy in front of the model server shows the request written and the full SSE
-  answered and closed in **0.6s**; the in-process probe shows the read handler armed
-  immediately and the first `readable` event on that fd arriving **80s later**, after which
-  the whole turn finishes in 20ms. Print mode over the identical path is unaffected, and a
-  standalone script with the same fetch, a stdin handler, heavy stdout writes and an
-  always-overdue timer stays fast — so it is specific to what pi's TUI does to the loop.
-  Two real loop bugs were found and fixed along the way (timers starving the fd poll, and
-  APE `select()` reporting nothing on a zero timeout); neither was the last one.
+- **~~The interactive TUI~~ — works now.** See "Interactive mode" above.
 - **OAuth login flows** that need a local HTTPS redirect server (`https.createServer`
   throws) or JWT service-account signing (no asymmetric crypto). API-key auth works.
 - **Image/clipboard paths** that use the WebAssembly photon codec.

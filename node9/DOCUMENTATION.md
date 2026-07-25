@@ -130,6 +130,29 @@ Wildcard `"exports"` subpaths (`"./providers/*"`) resolve, `.json` imports with
 `os` means `node:os` (the engine's own module is reachable as `qjs:os`). Covered by
 `examples/esm-interop-test.mjs`.
 
+### Terminals and the event loop
+There is no `isatty()` and no `TIOCGWINSZ` on Plan 9, so `isTTY` follows the two shapes that
+exist: the fd really being `/dev/cons` (read back from `/proc/$pid/fd`), or a terminal
+emulator that hands its child plain pipes — Plan 9 has no pty — and publishes the window
+size in `/env/LINES`/`/env/COLS`, which is what alacritty9 does and updates on resize.
+`process.stdout.columns/rows` read those files (cached 250 ms), `resize` is emitted by
+polling them, and `NODE9_TTY=1/0` forces the answer. That is enough for a real TUI: pi's
+interactive interface runs on 9front.
+
+Three event-loop bugs were fixed to make streaming work under a TUI's load (all reproduced
+in `port/plan9/patch.sh`, so rebuilds keep them):
+- **`poll()`'s return value is a count, not an index range.** `js_os_poll_internal()` assigned
+  it back to `nfds` and then scanned only that many leading entries, so a ready fd sitting
+  later in the array was never dispatched — with stdin registered first, streamed sockets
+  starved (measured: an 80 s stall for a response delivered in 0.6 s). Upstream bug.
+- **An expired timer returned before polling any fd**, so a timer callback that outlasts its
+  interval (a TUI redrawing at 80 ms) stopped I/O entirely.
+- **APE's `select()` reports nothing on a zero timeout** — it cannot start its helper procs in
+  zero time — so `poll.h` widens a 0 timeout to 1 ms.
+
+`NODE9_POLLTRACE=1` dumps every poll call (fd set in, revents out) to `/tmp/n9poll` if the
+loop ever needs this kind of debugging again.
+
 ### stdin, console, watchers
 `process.stdin` is a real `Readable` over fd 0 driven by the event loop (`examples/stdin-test.js`);
 it also has `setRawMode`, which writes `rawon`/`rawoff` to `/dev/consctl`. `console` gained
@@ -231,7 +254,7 @@ packages from the registry and runs a real operation on each. **Result: 30 / 30 
   encoding edge case.
 - **HTTP client has no socket timeout** — a hung server would hang the request.
 - **An ES-module entry point that uses top-level `await` advances one microtask per timer
-  deadline** *(fixed in source, pending a `qjs` rebuild)*. quickjs-libc's `js_std_await()`
+  deadline** *(fixed; shipped in the installed engine)*. quickjs-libc's `js_std_await()`
   runs a single pending job per poll and the poll sleeps until the next timer, so a program
   that arms a long timer (say a 5-minute idle timeout) and then awaits I/O at module top
   level appears to hang. `port/plan9/n9_cli.c` no longer awaits the entry module: it hands

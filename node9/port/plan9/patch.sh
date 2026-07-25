@@ -294,6 +294,14 @@ perl -i -pe 's/timespec_to_ms\(&st\.st_ctim\)/(int64_t)st.st_ctime * 1000/' work
 perl -0777 -i -pe 's/        if \(min_delay == 0\)\n            return 0; \/\/ expired timer\n(        if \(min_delay < 0\))/$1/g' work/quickjs-libc.c
 grep -c 'expired timer' work/quickjs-libc.c | sed 's/^/  expired-timer mentions left (want 1: the comment in js_std_loop_once): /'
 
+# quickjs-libc.c: js_os_poll_internal() overwrites nfds with poll()'s return value (the
+# NUMBER of ready fds) and then scans only that many leading array entries. poll() does not
+# compact the array, so a ready fd at a later index is never dispatched: with stdin
+# registered first, streamed sockets starved for as long as stdin stayed quiet. Keep nfds as
+# the watched-fd count and scan the whole array.
+perl -0777 -i -pe 's/    nfds = poll\(pfds, nfds, min_delay\);\n    if \(nfds < 0\) \{/    if \(poll\(pfds, nfds, min_delay\) < 0\) \{/' work/quickjs-libc.c
+grep -c 'if (poll(pfds, nfds, min_delay) < 0)' work/quickjs-libc.c | sed 's/^/  poll-dispatch fix applied (want 1): /'
+
 # package
 cd work && tar czf ../qjs-patched.tar.gz . && cd ..
 echo "patched tar: $(ls -lh /tmp/node9probe/src/qjs-patched.tar.gz | awk '{print $5}')"
