@@ -44,6 +44,59 @@ static void ck(int ok, const char *what)
  * wrap during a grow all show up as a mismatch at a known offset. */
 static unsigned char byte_at(unsigned i) { return (unsigned char)((i * 31u + (i >> 8)) & 0xff); }
 
+/* Second gate: the ring must still be drainable AFTER the reader thread is gone.
+ * The reader exits as soon as the kernel gives it EOF, which routinely happens with
+ * the tail of the transfer still in the ring. read() has to keep taking bytes from
+ * the ring then — routing it back to the kernel returns 0 and silently drops them
+ * (a 220 KiB HTTP body arrived as 4 KiB in node9). Blocking fd on purpose: that is
+ * the socket case, and the non-blocking gate above never exercises it. */
+#define EOFN 8192u
+static void eof_drain_case(void)
+{
+	int fds[2];
+	if (pipe(fds) != 0) { ck(0, "pipe for the eof-drain gate"); return; }
+	int rd = fds[0], wr = fds[1];
+
+	pid_t kid = fork();
+	if (kid < 0) { ck(0, "fork for the eof-drain gate"); return; }
+	if (kid == 0) {
+		close(rd);
+		unsigned char b[512];
+		for (unsigned off = 0; off < EOFN; ) {
+			unsigned n = EOFN - off < sizeof b ? EOFN - off : (unsigned)sizeof b;
+			for (unsigned i = 0; i < n; i++) b[i] = byte_at(off + i);
+			unsigned done = 0;
+			while (done < n) {
+				long w = write(wr, b + done, n - done);
+				if (w <= 0) _exit(1);
+				done += (unsigned)w;
+			}
+			off += n;
+		}
+		close(wr);                       /* EOF right behind the data */
+		_exit(0);
+	}
+	close(wr);
+
+	struct pollfd pfd = { rd, POLLIN, 0 };
+	(void)poll(&pfd, 1, 5000);           /* starts the reader thread, as an event loop would */
+	sleep(2);                            /* it reads everything, hits EOF, and exits */
+
+	unsigned got = 0, bad = 0;
+	unsigned char buf[1024];
+	for (;;) {
+		long r = read(rd, buf, sizeof buf);
+		if (r <= 0) break;
+		for (long i = 0; i < r; i++)
+			if (buf[i] != byte_at(got + (unsigned)i)) bad++;
+		got += (unsigned)r;
+	}
+	close(rd);
+
+	if (got != EOFN) printf("   short after eof: got %u of %u bytes\n", got, EOFN);
+	ck(got == EOFN && bad == 0, "ring still drains after the reader thread hit EOF");
+}
+
 int main(void)
 {
 	int fds[2];
@@ -129,6 +182,8 @@ int main(void)
 
 	ck(got == TOTAL, "whole stream arrives without draining first");
 	ck(bad == 0, "bytes are intact and in order across the grow");
+
+	eof_drain_case();
 
 	printf("pollring_gate %d/%d %s\n", pass, total, pass == total ? "PASS" : "FAIL");
 	return pass == total ? 0 : 1;

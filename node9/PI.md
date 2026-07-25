@@ -69,6 +69,12 @@ built with cc9/clang** instead of kencc (`DIRECT_DISPATCH` needs labels-as-value
 does not have, so the bytecode loop runs on a `switch`). A cc9 re-platform is the change with
 real upside here — see `test/qjsbench/README.md`.
 
+A **cc9/clang build of the runtime** now exists (`port/cc9/`, installs as `qjs-cc9`
+alongside the default kencc `qjs`) and takes `pi --version` from 7.7 s to 6.5 s and a full
+turn from 9.0 s to 7.7 s — real, but nothing like the 3.3x the interpreter benchmark shows,
+which is the measurement above saying the same thing: startup is resolution, I/O and
+parsing, not interpretation. See `port/cc9/README.md`.
+
 **A compiled-module cache was built and rejected on measurements** (`JS_WriteObject` at
 compile time, `JS_ReadObject` on later runs, entries validated against the source's size and
 mtime, in `n9_module_loader`). Two independent reasons:

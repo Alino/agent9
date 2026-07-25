@@ -1624,6 +1624,7 @@
     var EventEmitter = require('events');
     var stream = require('stream');
     var Buffer = require('buffer').Buffer;
+    var nat = globalThis.__n9native;   /* TLS-handle backends read/write through it */
     function nextTick(fn) { process.nextTick(fn); }
     function bytesOf(s) { var b = new Uint8Array(s.length); for (var i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 255; return b; }
     function rdStr(fd, max) { var b = new Uint8Array(max); var n = os.read(fd, b.buffer, 0, max); if (n <= 0) return ''; var s = ''; for (var i = 0; i < n; i++) s += String.fromCharCode(b[i]); return s; }
@@ -1670,6 +1671,29 @@
       if (!self._rbuf) self._rbuf = new ArrayBuffer(65536);
       os.setReadHandler(self._fd, function () {
         var n;
+        if (self._tlsh != null) {
+          // ciphertext arrived: hand it to TLS, then take out whatever plaintext
+          // that produced. No SSL call can block — they only touch memory BIOs.
+          var cn;
+          try { cn = os.read(self._fd, self._rbuf, 0, 65536); } catch (e) { cn = -1; }
+          if (cn > 0) {
+            try { nat.tlsFeed(self._tlsh, new Uint8Array(self._rbuf, 0, cn), cn); } catch (e) {}
+            self._drainTls();
+          } else {
+            /* The wire is done: 0 is the peer's close, and Plan 9 answers -1 ("Hangup")
+               on the read after it — neither is retryable, and the handler only runs on a
+               readable fd, so leaving it armed for either spins the event loop forever.
+               Disarm, then drain: the last records fed into TLS can still hold plaintext
+               nobody has taken out, and ending the stream first loses the tail of the
+               body. A body that really is short now surfaces as a parser error. */
+            try { os.setReadHandler(self._fd, null); } catch (e) {}
+            self._readerOn = false;
+            self._drainTls();
+            self._sockClosed = true;
+            self.push(null);
+          }
+          return;
+        }
         try { n = os.read(self._fd, self._rbuf, 0, 65536); } catch (e) { n = -1; }
         if (n > 0) {
           var b = Buffer.alloc(n), src = new Uint8Array(self._rbuf, 0, n);
@@ -1694,11 +1718,85 @@
         }
       });
     };
-    Socket.prototype._read = function () { this._installReader(); };
+    Socket.prototype._read = function () {
+      this._installReader();
+      /* A TLS socket can have plaintext waiting inside the library with nothing new
+         on the fd, so a poll alone would never fire. */
+      if (this._tlsh != null && !this._sockClosed) this._drainTls();
+    };
+
+    /* whatever TLS wants on the wire (handshake records, acks, our writes) */
+    Socket.prototype._flushTls = function () {
+      var self = this;
+      if (self._tlsh == null || self._fd < 0) return;
+      if (!self._cbuf) self._cbuf = new Uint8Array(16384);
+      for (;;) {
+        var n = 0;
+        try { n = nat.tlsPull(self._tlsh, self._cbuf); } catch (e) { n = 0; }
+        if (n <= 0) return;
+        var off = 0;
+        while (off < n) {
+          var w = os.write(self._fd, self._cbuf.buffer, off, n - off);
+          if (w <= 0) return;
+          off += w;
+        }
+      }
+    };
+
+    Socket.prototype._drainTls = function () {
+      var self = this;
+      if (self._tlsh == null || self._sockClosed) return;
+      if (!self._pbuf) self._pbuf = new Uint8Array(65536);
+      var view = self._pbuf;
+      for (;;) {
+        var n;
+        try { n = nat.tlsRead(self._tlsh, view); } catch (e) { n = -1; }
+        if (n === -2) { self._flushTls(); return; }   /* need more ciphertext */
+        if (n > 0) {
+          var b = Buffer.alloc(n);
+          for (var i = 0; i < n; i++) b[i] = view[i];
+          self.bytesRead += n;
+          if (self.push(b) === false) {        /* backpressure: stop reading for now */
+            if (self._readerOn) { try { os.setReadHandler(self._fd, null); } catch (e) {} self._readerOn = false; }
+            /* Plaintext is still buffered inside TLS with nothing left to arrive on the
+               wire, so re-arming the fd handler alone never gets it out: the poll stays
+               quiet and the response hangs (then truncates when the peer closes).
+               Come back on a timer and drain the library itself. */
+            globalThis.setTimeout(function () {
+              self._installReader();
+              if (self._tlsh != null && !self._sockClosed) self._drainTls();
+            }, 0);
+            return;
+          }
+          continue;                             /* keep going: more may be buffered */
+        }
+        if (n === 0) { self.push(null); return; }
+        self.destroy(new Error('tls read error'));
+        return;
+      }
+    };
 
     Socket.prototype._write = function (chunk, enc, cb) {
       if (this._fd < 0) { cb(new Error('not connected')); return; }
       var buf = (chunk instanceof Uint8Array) ? chunk : Buffer.from(chunk);
+      if (this._tlsh != null) {
+        var w = 0, total = buf.length, guard = 0;
+        while (w < total) {
+          var k;
+          try { k = nat.tlsWrite(this._tlsh, buf.subarray(w)); } catch (e) { k = -1; }
+          if (k === -2) {                         /* wants to read first: pump once */
+            this._flushTls();
+            if (++guard > 1000) { cb(new Error('tls write stalled')); return; }
+            continue;
+          }
+          if (k <= 0) { cb(new Error('tls write error')); return; }
+          w += k;
+        }
+        this.bytesWritten += total;
+        this._flushTls();                         /* put the ciphertext on the wire */
+        cb();
+        return;
+      }
       var ab = buf.buffer, off = buf.byteOffset || 0, len = buf.length, written = 0;
       while (written < len) {
         var n;
@@ -1728,6 +1826,9 @@
       if (connectListener) this.once('connect', connectListener);
       this._connecting = true; this.readyState = 'opening';
       nextTick(function () {
+        /* destroy() between connect() and this tick (an aborted request does exactly that)
+           left the dial to run anyway and adopt an fd nobody would ever close again. */
+        if (self._sockClosed) { self._connecting = false; return; }
         var c = dialTcp('tcp', host, port);
         if (!c) { self._connecting = false; self.emit('error', new Error('connect ECONNREFUSED ' + host + ':' + port)); return; }
         self._adoptFd(c.fd, c.ctl, false);
@@ -1741,8 +1842,19 @@
     Socket.prototype.destroy = function (err) {
       if (this._sockClosed) return this;
       this._sockClosed = true; this.readyState = 'closed';
-      if (this._fd >= 0) { try { os.setReadHandler(this._fd, null); } catch (e) {} try { os.close(this._fd); } catch (e) {} }
-      if (this._rawfd != null && this._rawfd >= 0) { try { os.close(this._rawfd); } catch (e) {} }
+      /* Disarm before anything else. On the TLS-handle path _fd IS the raw socket, and
+         clearing it first left the poll handler registered on an fd that then got closed —
+         the event loop polled it forever and the process never exited. */
+      if (this._fd >= 0) { try { os.setReadHandler(this._fd, null); } catch (e) {} }
+      this._readerOn = false;
+      if (this._tlsh != null) {
+        var rawClosed = this._fd;                 /* tlsClose() closes the raw fd itself */
+        try { nat.tlsClose(this._tlsh); } catch (e) {}
+        this._tlsh = null; this._fd = -1;
+        if (this._rawfd === rawClosed) this._rawfd = -1;
+      }
+      if (this._fd >= 0) { try { os.close(this._fd); } catch (e) {} }
+      if (this._rawfd != null && this._rawfd >= 0) { try { os.setReadHandler(this._rawfd, null); } catch (e) {} try { os.close(this._rawfd); } catch (e) {} }
       if (this._ctl >= 0) { try { os.close(this._ctl); } catch (e) {} }
       if (err) this.emit('error', err);
       this.emit('close', !!err);
@@ -1751,7 +1863,9 @@
     Socket.prototype.end = function (chunk, enc, cb) {
       var self = this;
       stream.Duplex.prototype.end.call(this, chunk, enc, cb);
-      this.once('finish', function () { /* half-close: hang up the conn */ if (self._ctl >= 0) { try { wrStr(self._ctl, 'hangup'); } catch (e) {} } });
+      /* No hangup here. Plan 9's TCP ctl has no shutdown-write: "hangup" tears the whole
+         connection down, so ending the request killed the response that was still arriving
+         (a 22 KB body came back as 4 KB, or the read stalled). Teardown lives in destroy(). */
       return this;
     };
     Socket.prototype.setTimeout = function () { return this; };
@@ -1805,6 +1919,7 @@
       ntrace('TLS connect queued ' + host + ':' + port);
       nextTick(function () {
         ntrace('TLS tick ' + host);
+        if (sock._sockClosed) return;            /* aborted before we got here */
         var c = net._dial('tcp', host, port);
         if (!c) { sock.emit('error', new Error('tls: connect failed ' + host + ':' + port)); return; }
         var tfd;
@@ -1812,9 +1927,23 @@
         try { tfd = nat.tlsClient(c.fd, servername); } catch (e) { tfd = -1; }
         ntrace('TLS handshake done tfd=' + tfd);
         if (tfd < 0) { try { os.close(c.fd); } catch (e) {} try { os.close(c.ctl); } catch (e) {} sock.emit('error', new Error('tls: handshake failed with ' + host)); return; }
-        // keep the raw tcp fd open (libsec's tls device reads/writes through it); use tfd for cleartext
-        sock._rawfd = c.fd;
-        sock._adoptFd(tfd, c.ctl, true);
+        if (sock._sockClosed) {                  /* aborted during the handshake */
+          try { nat.tlsClose(tfd); } catch (e) {}
+          try { os.close(c.fd); } catch (e) {} try { os.close(c.ctl); } catch (e) {}
+          return;
+        }
+        if (nat.tlsHandles) {
+          // OpenSSL backend: tfd is a handle, not an fd. Cleartext moves through
+          // the library; the raw TCP fd is what readability is polled on.
+          sock._tlsh = tfd;
+          sock._rawfd = c.fd;
+          sock._adoptFd(c.fd, c.ctl, true);
+        } else {
+          // libsec backend: keep the raw tcp fd open (its TLS device reads through
+          // it) and use the returned cleartext fd.
+          sock._rawfd = c.fd;
+          sock._adoptFd(tfd, c.ctl, true);
+        }
         sock.authorized = true; // integrity guaranteed downstream by SRI; chain-verify deferred
         sock.encrypted = true;
         sock.emit('connect'); sock.emit('secureConnect'); sock.emit('ready');
@@ -1955,7 +2084,11 @@
       function finish() {
         if (finished) return; finished = true;
         if (inflater) inflater.destroy();
-        if (im) im.push(null);
+        if (im) { im.complete = true; im.push(null); }
+        /* We always send "Connection: close" and pool nothing, so the connection has no
+           further use. Leaving it open leaves its read handler armed, and an armed handler
+           keeps the event loop alive: the process ran its last test and then never exited. */
+        if (req.socket) { try { req.socket.destroy(); } catch (e) {} }
       }
       function startBody(headInfo) {
         im = new stream.Readable(); im._read = function () {};
@@ -2003,6 +2136,12 @@
               var sizeLine = pending.slice(0, nl).toString('latin1').split(';')[0].trim();
               var sz = parseInt(sizeLine, 16);
               pending = pending.slice(nl + 2);
+              if (!(sz >= 0)) {   /* NaN: desynced stream. Reporting it as the last
+                                     chunk silently truncated the body instead. */
+                finished = true;
+                if (im) im.destroy(new Error('Parse Error: invalid chunk size "' + sizeLine + '"'));
+                return;
+              }
               if (!sz) { // last chunk; consume optional trailers up to CRLFCRLF or CRLF
                 var t = findSeq(pending, CRLF, 0);
                 pending = (t >= 0) ? pending.slice(t + 2) : pending;
@@ -2027,7 +2166,17 @@
       }
       return {
         feed: function (chunk) { pending = pending ? Buffer.concat([pending, chunk]) : chunk; process(); },
-        eof: function () { if (framing === 'close' && pending && pending.length) { out(pending); pending = pending.slice(pending.length); } finish(); }
+        eof: function () {
+          if (framing === 'close' && pending && pending.length) { out(pending); pending = pending.slice(pending.length); }
+          /* Node reports a connection that dies mid-body as an error; ending the stream
+             quietly hands the caller a short body it cannot tell from a complete one. */
+          if (!finished && (framing === 'chunked' || (framing === 'length' && remaining > 0))) {
+            finished = true;
+            if (im) im.destroy(new Error('aborted: connection closed before the body completed'));
+            return;
+          }
+          finish();
+        }
       };
     }
 

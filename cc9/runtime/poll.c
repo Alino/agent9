@@ -374,7 +374,16 @@ static cc9_pfd *ensure(int fd, int start_reader){
 
 int cc9_poll_owned(int fd){
 	cc9_pfd *p = lookup(fd);
-	return p && (p->reader || (p->flags & O_NONBLOCK));
+	if(!p) return 0;
+	if(p->reader || (p->flags & O_NONBLOCK)) return 1;
+	/* The reader thread exits as soon as the kernel gives it EOF, which can happen
+	 * with the tail of the transfer still sitting in the ring. Routing read() back to
+	 * the kernel at that point returns 0 and throws those bytes away — a 220 KB HTTP
+	 * body arrived as 4 KB. Keep owning the fd until the ring is drained and the
+	 * eof/err the reader recorded has been reported through cc9_poll_read. No p->lock:
+	 * this runs on every read(), and a stale answer only picks the ring path, which is
+	 * the correct one whenever anything is left to hand back. */
+	return p->head != p->tail || p->eof || p->err;
 }
 
 /* dup(2)/dup2(2): POSIX status flags (O_NONBLOCK) live on the OPEN FILE
@@ -417,7 +426,9 @@ long cc9_poll_pending(int fd){
 long cc9_poll_read(int fd, void *buf, long n){
 	cc9_pfd *p = lookup(fd);
 	if(!p){ errno = EBADF; return -1; }
-	if(!p->reader) ensure(fd, 1);
+	/* Do not restart a reader once the kernel has given us EOF (or an error): the
+	 * ring still has to be drained first, and a fresh reader would only re-read 0. */
+	if(!p->reader && !p->eof && !p->err) ensure(fd, 1);
 	char *d = buf;
 	for(;;){
 		n9_semacquire(&p->lock, 1);

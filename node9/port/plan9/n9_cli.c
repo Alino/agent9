@@ -1,6 +1,8 @@
 /* node9 qjs CLI — uses quickjs-libc's std/os modules.
    `qjs file.js` runs a script/module; bare `qjs` starts a minimal REPL. */
-#include "node9_port.h"
+#ifndef N9_CC9
+#include "node9_port.h"      /* kencc/APE shims; the cc9 runtime needs none of them */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,8 +20,22 @@
    (0x1f80) are the six exception enables, so clearing them disables all
    FP traps. (Verified empirically: setting them made `npm --version` fault
    on precision loss.) */
+#ifdef N9_CC9
+/* Mask every SSE FP exception (bits 7..12 of MXCSR are the mask bits: set = masked).
+ * Plan 9 leaves them unmasked, and JavaScript needs x/0 -> Infinity, 0/0 -> NaN,
+ * precision loss, all without a trap. Reached directly here because getfcr/setfcr
+ * are Plan 9 libc symbols that the cc9 runtime does not carry. */
+static void n9_mask_fp_traps(void)
+{
+    unsigned int csr;
+    __asm__ __volatile__("stmxcsr %0" : "=m"(csr));
+    csr |= 0x1f80u;
+    __asm__ __volatile__("ldmxcsr %0" :: "m"(csr));
+}
+#else
 extern unsigned long getfcr(void);
 extern void setfcr(unsigned long);
+#endif
 
 void n9_native_init(JSContext *ctx);   /* defined in n9_native.c */
 
@@ -126,7 +142,11 @@ static int eval_file(JSContext *ctx, const char *filename) {
 }
 
 int main(int argc, char **argv) {
+#ifdef N9_CC9
+    n9_mask_fp_traps();
+#else
     setfcr(getfcr() & ~0x1f80); /* disable all FP traps: IEEE Inf/NaN, no Plan 9 suicide */
+#endif
     JSRuntime *rt = getenv("NODE9_GUARD") ? JS_NewRuntime2(&n9_gmf, 0) : JS_NewRuntime();
     js_std_init_handlers(rt);
     JS_SetModuleLoaderFunc2(rt, n9_module_normalize, js_module_loader, js_module_check_attributes, NULL);

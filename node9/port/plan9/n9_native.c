@@ -72,6 +72,53 @@ static JSValue js_inflate(JSContext *ctx, JSValueConst t, int argc, JSValueConst
 static JSValue js_inflateDestroy(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
     int h = 0; JS_ToInt32(ctx, &h, argv[0]); n9_inflate_destroy(h); return JS_UNDEFINED;
 }
+#ifdef N9_TLS_HANDLES
+/* Backends without a cleartext fd (OpenSSL) expose read/write on a handle. The
+ * fd-returning backend (Plan 9 libsec) compiles without this block, and boot.js
+ * switches on __n9native.tlsHandles. */
+#include "n9_tls.h"
+static JSValue js_tlsRead(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
+    int h = 0, n; size_t len = 0; unsigned char *buf;
+    JS_ToInt32(ctx, &h, argv[0]);
+    buf = n9_u8(ctx, argv[1], &len);
+    if (!buf) return JS_ThrowTypeError(ctx, "tlsRead: expected typed array");
+    n = n9_tls_read(h, buf, (int)len);
+    return JS_NewInt32(ctx, n);
+}
+static JSValue js_tlsWrite(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
+    int h = 0, n; size_t len = 0; unsigned char *buf;
+    JS_ToInt32(ctx, &h, argv[0]);
+    buf = n9_u8(ctx, argv[1], &len);
+    if (!buf) return JS_ThrowTypeError(ctx, "tlsWrite: expected typed array");
+    n = n9_tls_write(h, buf, (int)len);
+    return JS_NewInt32(ctx, n);
+}
+static JSValue js_tlsFeed(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
+    int h = 0, n = 0; size_t len = 0; unsigned char *buf;
+    JS_ToInt32(ctx, &h, argv[0]);
+    buf = n9_u8(ctx, argv[1], &len);
+    if (!buf) return JS_ThrowTypeError(ctx, "tlsFeed: expected typed array");
+    if (argc > 2) JS_ToInt32(ctx, &n, argv[2]); else n = (int)len;
+    return JS_NewInt32(ctx, n9_tls_feed(h, buf, n));
+}
+static JSValue js_tlsPull(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
+    int h = 0; size_t len = 0; unsigned char *buf;
+    JS_ToInt32(ctx, &h, argv[0]);
+    buf = n9_u8(ctx, argv[1], &len);
+    if (!buf) return JS_ThrowTypeError(ctx, "tlsPull: expected typed array");
+    return JS_NewInt32(ctx, n9_tls_pull(h, buf, (int)len));
+}
+static JSValue js_tlsPending(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
+    int h = 0; JS_ToInt32(ctx, &h, argv[0]); return JS_NewInt32(ctx, n9_tls_pending(h));
+}
+static JSValue js_tlsRawfd(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
+    int h = 0; JS_ToInt32(ctx, &h, argv[0]); return JS_NewInt32(ctx, n9_tls_rawfd(h));
+}
+static JSValue js_tlsClose(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
+    int h = 0; JS_ToInt32(ctx, &h, argv[0]); n9_tls_close(h); return JS_UNDEFINED;
+}
+#endif
+
 static JSValue js_tlsClient(JSContext *ctx, JSValueConst t, int argc, JSValueConst *argv) {
     int fd = 0; const char *sni; JSValue r;
     JS_ToInt32(ctx, &fd, argv[0]);
@@ -85,6 +132,16 @@ void n9_native_init(JSContext *ctx) {
     JSValue g = JS_GetGlobalObject(ctx);
     JSValue o = JS_NewObject(ctx);
 #define FN(name, fn, n) JS_SetPropertyStr(ctx, o, name, JS_NewCFunction(ctx, fn, name, n))
+#ifdef N9_TLS_HANDLES
+    FN("tlsFeed", js_tlsFeed, 3);
+    FN("tlsPull", js_tlsPull, 2);
+    FN("tlsRead", js_tlsRead, 2);
+    FN("tlsWrite", js_tlsWrite, 2);
+    FN("tlsPending", js_tlsPending, 1);
+    FN("tlsRawfd", js_tlsRawfd, 1);
+    FN("tlsClose", js_tlsClose, 1);
+    JS_SetPropertyStr(ctx, o, "tlsHandles", JS_TRUE);
+#endif
     FN("hashCreate", js_hashCreate, 1);
     FN("hashUpdate", js_hashUpdate, 2);
     FN("hashDigest", js_hashDigest, 2);
