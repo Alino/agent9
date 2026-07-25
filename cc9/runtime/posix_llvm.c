@@ -75,6 +75,8 @@ static int is_exec_map(void *p) {
  * The `if (!exec_pool)` init raced the same way (double segattach, clobbered pool).
  * This is rare and cold (SpiderMonkey makes one big reservation), so a plain
  * semaphore is fine — no need for the malloc fast-path dance. */
+extern void cc9_trace(const char *, int, long);
+extern long n9_sleep(long);
 extern void n9_semacquire(int *, int);   /* matches the decl further down this file */
 extern void n9_semrelease(int *, int);
 static int exec_lock = 1;
@@ -953,6 +955,26 @@ static const char *cc9_find(const char *h, const char *n){
 	for(; *h; h++){ const char *a=h,*b=n; while(*b && *a==*b){a++;b++;} if(!*b) return h; }
 	return 0;
 }
+/* Plain numeric exit code in a native child's status string, or -1 if it is not
+ * one. The string reaches us as "<argv0> <pid>: <status>'" (or bare "<status>'"),
+ * so take what follows the last ": " and require it to be all digits. */
+static int cc9_exit_digits(const char *q) {
+	const char *t = q, *p;
+	for (p = q; *p && *p != '\''; p++)
+		if (p[0] == ':' && p[1] == ' ') t = p + 2;
+	if (t == q) { /* no ": " separator: the whole string must be the number */
+		for (p = q; *p && *p != '\''; p++) if (*p < '0' || *p > '9') return -1;
+	}
+	if (*t == 0 || *t == '\'') return -1;
+	int v = 0;
+	for (p = t; *p && *p != '\''; p++) {
+		if (*p < '0' || *p > '9') return -1;
+		v = v * 10 + (*p - '0');
+		if (v > 255) return -1;
+	}
+	return v;
+}
+
 /* decode one waitmsg ("pid utime stime rtime 'status'") -> pid, *s */
 static int cc9_wait_decode(const char *w, int *s) {
 	long wp = 0; const char *p = w; while (*p >= '0' && *p <= '9') wp = wp*10 + (*p++ - '0');
@@ -968,6 +990,13 @@ static int cc9_wait_decode(const char *w, int *s) {
 			int code = 0; while (*m >= '0' && *m <= '9') code = code*10 + (*m++ - '0');
 			*s = ((neg ? -code : code) & 0xff) << 8;             /* WIFEXITED, WEXITSTATUS=code */
 		}
+		/* a NATIVE Plan 9 program exits with a bare status string, and rc and
+		 * friends put the numeric code there ("exit 3" -> "3"), arriving as
+		 * "<argv0> <pid>: 3". Without this every nonzero exit of a native child
+		 * decoded as SIGABRT, so a POSIX caller saw a signal death and no exit
+		 * code at all (node9's child_process reported 6 for every failure). */
+		else if (cc9_exit_digits(q) >= 0)
+			*s = (cc9_exit_digits(q) & 0xff) << 8;
 		/* a CPU trap (__builtin_trap/__builtin_verbose_trap -> "sys: trap:
 		 * invalid opcode") is libc++'s hardening trap path — report as SIGILL
 		 * so death tests map it to DeathCause::Trap, not SIGABRT. */
@@ -978,16 +1007,21 @@ static int cc9_wait_decode(const char *w, int *s) {
 	return (int)wp;
 }
 
-/* ---- async child reaping (libuv needs waitpid(WNOHANG) + SIGCHLD) ----
- * await(2) only works in the proc that forked, and it BLOCKS — useless for
- * WNOHANG and for a reaper pthread (a different proc). But the forking proc's
- * /proc/<pid>/wait FILE is readable by any same-user proc. So: fork() records
- * the child under its forking proc; per forking proc a reaper thread blocks
- * reading that wait file, parses waitmsgs into a zombie table, raise()s
- * SIGCHLD (libuv's handler is a self-pipe write — thread-agnostic). waitpid()
- * only consumes the table. Processes that never fork() keep the legacy
- * direct-await path. ponytail: max 4 forking procs, 32 zombies — nvim forks
- * from one loop thread; bump if a real workload outgrows it. */
+/* ---- child reaping ----
+ * Plan 9 hands a child's exit status to await(2), and await(2) works ONLY in the
+ * proc that forked. cc9 threads are separate procs, so a thread cannot collect a
+ * status for the main one. This used to be worked around by a thread reading the
+ * forking proc's /proc/<pid>/wait file — measured on 9front, that delivers exactly
+ * ONE message to a foreign reader and then blocks forever, so every child after the
+ * first was never reaped: waitpid() answered "still running" for a process that had
+ * already died (node9's child_process hung there, and with it pi's shell tool).
+ *
+ * So statuses are collected where they can be: inside waitpid(), in the forking proc.
+ * WNOHANG needs to know whether an await() would block, and it can: a child's /proc
+ * entry disappears the moment it exits, so a vanished entry means a status is queued.
+ * The thread survives only to raise SIGCHLD for consumers that wait on it (libuv).
+ * ponytail: 64 live children per proc, 32 stashed statuses; both are per-process
+ * fan-out, not totals. */
 extern void n9_semacquire(int *, int);
 extern void n9_semrelease(int *, int);
 extern long n9_tsemacquire(int *, long);
@@ -999,70 +1033,89 @@ extern int pthread_create(cc9_pthread_t *, const void *, void *(*)(void *), void
 extern int pthread_detach(cc9_pthread_t);
 
 static int zlock = 1;
-static struct { int pid; int status; } ztab[128];
+static struct { int pid; int status; } ztab[32];      /* collected, not yet returned */
 static int znum;
-static int reap_sem;                      /* released once per new zombie */
-static struct { int parent; int outstanding; int kick; int running; } rtab[8];
+static struct { int pid; int parent; } kids[64];      /* forked, not yet collected */
+static int nkids;
+static int sigchld_kick;                              /* released when a child is forked */
+static int sigchld_running;
 
-static void *cc9_reaper(void *arg) {
-	int slot = (int)(long)arg;
-	char path[32], w[256];
-	/* "/proc/<pid>/wait" */
-	{ char *d = path; const char *p = "/proc/"; while (*p) *d++ = *p++;
-	  int v = rtab[slot].parent; char num[16]; int n = 0;
+/* build "/proc/<pid>/status" */
+static void cc9_status_path(char *d, int pid)
+{
+	const char *p = "/proc/";
+	while (*p) *d++ = *p++;
+	{ int v = pid; char num[16]; int n = 0;
 	  do { num[n++] = '0' + v % 10; v /= 10; } while (v);
-	  while (n) *d++ = num[--n];
-	  p = "/wait"; while (*p) *d++ = *p++; *d = 0; }
+	  while (n) *d++ = num[--n]; }
+	p = "/status"; while (*p) *d++ = *p++;
+	*d = 0;
+}
+
+/* A child that has exited leaves no /proc entry, so this is also the answer to
+ * "would await() return without blocking?" */
+static int cc9_child_gone(int pid)
+{
+	char path[40];
+	cc9_status_path(path, pid);
+	int fd = (int)n9_open(path, 0 /*OREAD*/);
+	if (fd < 0) return 1;
+	n9_close(fd);
+	return 0;
+}
+
+static void cc9_forget_kid(int pid)
+{
+	for (int i = 0; i < nkids; i++)
+		if (kids[i].pid == pid) { kids[i] = kids[nkids - 1]; nkids--; return; }
+}
+
+/* Any child of this proc already dead? (i.e. await() has something waiting) */
+static int cc9_any_gone(void)
+{
+	int me = getpid();
+	for (int i = 0; i < nkids; i++)
+		if (kids[i].parent == me && cc9_child_gone(kids[i].pid)) return 1;
+	return 0;
+}
+
+static void *cc9_sigchld_thread(void *arg)
+{
+	(void)arg;
 	for (;;) {
-		while (rtab[slot].outstanding == 0)
-			n9_semacquire(&rtab[slot].kick, 1);
-		int fd = (int)n9_open(path, 0 /*OREAD*/);
-		if (fd < 0) { rtab[slot].outstanding = 0; continue; }
-		long n = n9_pread(fd, w, sizeof w - 1, -1);
-		n9_close(fd);
-		if (n <= 0) continue;                     /* interrupted note etc: retry */
-		w[n] = 0;
-		int st = 0, pid = cc9_wait_decode(w, &st);
-		if (pid > 0) __sync_fetch_and_sub(&cc9_live_children, 1);   /* child exited: free its RLIMIT_NPROC slot */
+		while (nkids == 0)
+			n9_semacquire(&sigchld_kick, 1);
+		n9_sleep(20);
+		int hit = 0;
 		n9_semacquire(&zlock, 1);
-		if (znum < (int)(sizeof ztab / sizeof ztab[0])) { ztab[znum].pid = pid; ztab[znum].status = st; znum++; }
-		rtab[slot].outstanding--;
+		for (int i = 0; i < nkids; i++)
+			if (cc9_child_gone(kids[i].pid)) { hit = 1; break; }
 		n9_semrelease(&zlock, 1);
-		n9_semrelease(&reap_sem, 1);
-		raise(17 /*SIGCHLD*/);
+		if (hit) raise(17 /*SIGCHLD*/);
 	}
 	return 0;
 }
 
-static void cc9_reap_forked(int childpid) {
-	(void)childpid;
-	int me = getpid();
+static void cc9_reap_forked(int childpid)
+{
 	n9_semacquire(&zlock, 1);
-	int slot = -1;
-	for (int i = 0; i < 4; i++) if (rtab[i].running && rtab[i].parent == me) { slot = i; break; }
-	if (slot < 0)
-		for (int i = 0; i < 4; i++) if (!rtab[i].running) { slot = i; break; }
-	if (slot >= 0) {
-		if (!rtab[slot].running) {
-			rtab[slot].parent = me; rtab[slot].outstanding = 0; rtab[slot].kick = 0;
-			cc9_pthread_t t;
-			if (pthread_create(&t, 0, cc9_reaper, (void *)(long)slot) == 0) {
-				pthread_detach(t);
-				rtab[slot].running = 1;
-			}
-		}
-		if (rtab[slot].running) {
-			rtab[slot].outstanding++;
-			n9_semrelease(&rtab[slot].kick, 1);
-		}
+	if (nkids < (int)(sizeof kids / sizeof kids[0])) {
+		kids[nkids].pid = childpid;
+		kids[nkids].parent = getpid();
+		nkids++;
+	}
+	if (!sigchld_running) {
+		cc9_pthread_t t;
+		if (pthread_create(&t, 0, cc9_sigchld_thread, 0) == 0) { pthread_detach(t); sigchld_running = 1; }
 	}
 	n9_semrelease(&zlock, 1);
+	n9_semrelease(&sigchld_kick, 1);
 }
 
-static void cc9_reap_child_reset(void) {
-	zlock = 1; znum = 0; reap_sem = 0;
+static void cc9_reap_child_reset(void)
+{
+	zlock = 1; znum = 0; nkids = 0; sigchld_kick = 0; sigchld_running = 0;
 	cc9_live_children = 0;   /* the child has no children of its own yet */
-	for (int i = 0; i < 4; i++) { rtab[i].running = 0; rtab[i].outstanding = 0; rtab[i].kick = 0; }
 	/* A fork() child is a COW copy, not an rfork(RFMEM) sibling: drop the inherited
 	 * shm pool so it mints its own instead of racing the parent's carving of the same
 	 * global #g memory. (This is the safety half of shm pool-sharing — siblings share
@@ -1070,25 +1123,32 @@ static void cc9_reap_child_reset(void) {
 	{ extern void cc9_shm_fork_child_reset(void); cc9_shm_fork_child_reset(); }
 }
 
-static int cc9_reaping(void) {
-	for (int i = 0; i < 4; i++) if (rtab[i].running) return 1;
-	return 0;
+/* One await(): returns the pid it collected (status in *st), or -1 when this proc
+ * has no children left. Blocks if every child is still alive. */
+static int cc9_await_one(int *st)
+{
+	char w[256];
+	long n = n9_await(w, sizeof w - 1);
+	if (n < 0) return -1;
+	w[n] = 0;
+	int s = 0, pid = cc9_wait_decode(w, &s);
+	if (st) *st = s;
+	if (pid > 0) __sync_fetch_and_sub(&cc9_live_children, 1);   /* free its RLIMIT_NPROC slot */
+	return pid;
 }
 
-int    waitpid(int pid, int *s, int o) {
-	if (!cc9_reaping()) {                          /* legacy: never fork()ed */
-		char w[256];
-		for (;;) {
-			long n = n9_await(w, sizeof w - 1);
-			if (n < 0) return -1;
-			w[n] = 0;
-			int st = 0, wp = cc9_wait_decode(w, &st);
-			if (pid > 0 && wp != pid) continue;
-			if (s) *s = st;
-			return wp;
-		}
-	}
+/* gate hook: collected statuses, live children, notifier thread */
+void cc9_wait_stats(int *zn, int *pending, int *running)
+{
+	if (zn) *zn = znum;
+	if (pending) *pending = nkids;
+	if (running) *running = sigchld_running;
+}
+
+int    waitpid(int pid, int *s, int o)
+{
 	for (;;) {
+		/* 1. already collected by an earlier call that wanted a different child */
 		n9_semacquire(&zlock, 1);
 		int found = -1;
 		for (int i = 0; i < znum; i++)
@@ -1098,14 +1158,38 @@ int    waitpid(int pid, int *s, int o) {
 			rp = ztab[found].pid;
 			if (s) *s = ztab[found].status;
 			ztab[found] = ztab[znum - 1]; znum--;
+			cc9_forget_kid(rp);
 		}
-		int pending = 0;
-		for (int i = 0; i < 4; i++) pending += rtab[i].outstanding;
+		int kidsleft = nkids, gone = (o & 1 /*WNOHANG*/) ? cc9_any_gone() : 1;
 		n9_semrelease(&zlock, 1);
 		if (found >= 0) return rp;
-		if (pending == 0) { errno = 10 /*ECHILD*/; return -1; }
-		if (o & 1 /*WNOHANG*/) return 0;
-		n9_tsemacquire(&reap_sem, 200);            /* woken per zombie; re-scan */
+		if (kidsleft == 0) { errno = 10 /*ECHILD*/; return -1; }
+		if (!gone) return 0;                       /* WNOHANG: all children still alive */
+
+		/* 2. collect one. In WNOHANG mode a child is known dead, so this cannot block. */
+		int st = 0;
+		int got = cc9_await_one(&st);
+		if (got < 0) {
+			/* No children as far as await is concerned — this proc did not fork them
+			 * (a thread calling waitpid), or they were already collected. */
+			n9_semacquire(&zlock, 1);
+			int any = nkids;
+			n9_semrelease(&zlock, 1);
+			if (!any || !(o & 1)) { errno = 10 /*ECHILD*/; return -1; }
+			return 0;
+		}
+		if (got == pid || pid <= 0) {
+			if (s) *s = st;
+			n9_semacquire(&zlock, 1);
+			cc9_forget_kid(got);
+			n9_semrelease(&zlock, 1);
+			return got;
+		}
+		n9_semacquire(&zlock, 1);                  /* someone else's: stash and re-scan */
+		if (znum < (int)(sizeof ztab / sizeof ztab[0])) { ztab[znum].pid = got; ztab[znum].status = st; znum++; }
+		cc9_forget_kid(got);
+		n9_semrelease(&zlock, 1);
+		raise(17 /*SIGCHLD*/);
 	}
 }
 int    wait4(int p, int *s, int o, void *r) { (void)r; return waitpid(p, s, o); }
