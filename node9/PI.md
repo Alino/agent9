@@ -58,8 +58,16 @@ manifest's URLs (add SRI checking there if you need it).
 
 ## Startup takes about 8 seconds
 
-`pi --version` measures ~7.8s wall / 4.8s CPU on cirno, against 0.12s for bare `qjs`: that
-is node9 compiling pi's module graph — 1084 modules — on every run. It is a wait, not a hang.
+`pi --version` measures ~7.8s wall / 4.8s CPU on cirno, against 0.12s for bare `qjs`: 1084
+modules resolved, compiled and executed on every run. It is a wait, not a hang.
+
+Where it actually goes, measured with `test/qjsbench`: parsing is cheap (a 232 KB module
+compiles in ~28 ms, so the whole graph is well under a second), which leaves **interpreted
+work** — each module's top-level code plus node9's own JS (the resolver, the `fs` layer). That
+matters because the same benchmark shows the engine's interpreter runs **3.3x faster when
+built with cc9/clang** instead of kencc (`DIRECT_DISPATCH` needs labels-as-values, which kencc
+does not have, so the bytecode loop runs on a `switch`). A cc9 re-platform is the change with
+real upside here — see `test/qjsbench/README.md`.
 
 **A compiled-module cache was built and rejected on measurements** (`JS_WriteObject` at
 compile time, `JS_ReadObject` on later runs, entries validated against the source's size and
@@ -69,16 +77,16 @@ mtime, in `n9_module_loader`). Two independent reasons:
   bytecode is only marginally cheaper than parsing source in this engine, and the per-module
   overhead (stat the source, stat and read the entry) more than eats the difference. Raw I/O
   is not the problem: reading the whole 8 MB cache with `cat` costs 0.19s.
-- **The reader faults on large modules.** With a 32 KB threshold (cache only the files where
-  decoding could pay) the second run died in `JS_ReadObject`:
-  `suicide: sys: trap: fault read addr=0x31600000004`. That address shape is the kencc
-  pointer-math family this port has hit before (see `port/plan9/NOTES.md`) — a 32-bit index
-  scaled into a pointer — here inside the bytecode reader's table walk.
+- **It faulted.** With a 32 KB threshold (cache only files where decoding could pay) the
+  second run died in `JS_ReadObject`: `suicide: sys: trap: fault read addr=0x31600000004`.
+  A later experiment (`test/qjsbench`) round-tripped a 232 KB module's bytecode in memory
+  under *both* toolchains without trouble, so this was the cache's own file path or a race
+  between processes — not a broken reader.
 
-So the cost stands until someone fixes the reader (a disassembly hunt like the arg-hoist bug),
-and even then the payoff looks small unless the per-module overhead goes away too — one
-bundled snapshot per entry point rather than 1084 files. Caching parsed `package.json` files
-(kept) did not measurably help either.
+And measurement has since moved the target: `test/qjsbench` shows the **parser is not the
+bottleneck at all** — pi's whole graph parses in well under a second, while the same benchmark
+puts the *interpreter* 3.3x behind a clang build. Caching compiled code optimises the cheap
+half. Caching parsed `package.json` files (kept) did not measurably help either.
 
 ## Pointing it at a local model
 
