@@ -267,15 +267,28 @@ static void
 kbdproc(void*)
 {
 	char buf[512], *p, *e;
-	int fd, n;
+	int fd, n, kbdfails;
 
+	kbdfails = 0;
 	if((fd = open("/dev/kbd", OREAD)) < 0)
 		threadexitsall("open /dev/kbd");
 
 	for(;;){
 		n = read(fd, buf, sizeof buf - 1);
-		if(n <= 0)
+		if(n <= 0){
+			/* A transient failure here used to end the keyboard for the whole
+			 * session: the window kept drawing frames and taking mouse input,
+			 * but not one further keystroke ever reached the app. Reopen and
+			 * retry; only a persistent failure means the window is really gone. */
+			if(++kbdfails <= 20){
+				close(fd);
+				sleep(100);
+				fd = open("/dev/kbd", OREAD);
+				continue;
+			}
 			break;
+		}
+		kbdfails = 0;
 		buf[n] = 0;
 		/* one read may hold SEVERAL NUL-terminated messages — walk all;
 		 * dropping the tail loses key releases and wedges the mod state */

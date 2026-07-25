@@ -942,6 +942,7 @@
        are. It used to be an EventEmitter that never emitted, so `prog <file` and `... | prog`
        silently saw no input at all — programs that read stdin when it is not a TTY (any
        CLI with a --print/pipe mode) just exited with nothing. */
+    var EINTR = 4;   /* os.read reports errors as -errno */
     p.stdin = (function () {
       var stream = require('stream'), Buffer = require('buffer').Buffer;
       var s = new stream.Readable();
@@ -967,6 +968,10 @@
               for (var j = 0; j < n; j++) if (b[j] === 0x0a) b[j] = 0x0d;
             }
             if (s.push(b) === false) stop();
+          } else if (n === -EINTR) {
+            /* A note (timer, resize, ^C elsewhere) interrupts a blocked read on Plan 9.
+               Treating that as a fatal error killed the keyboard for the rest of the
+               session — typing simply stopped working after a turn. Stay armed. */
           } else {
             stop(); done = true;
             if (n < 0) s.destroy(new Error('stdin read error')); else s.push(null);
@@ -1701,6 +1706,7 @@
           // that produced. No SSL call can block — they only touch memory BIOs.
           var cn;
           try { cn = os.read(self._fd, self._rbuf, 0, 65536); } catch (e) { cn = -1; }
+          if (cn === -4 /* EINTR */) return;   /* a note interrupted the read; not a close */
           if (cn > 0) {
             try { nat.tlsFeed(self._tlsh, new Uint8Array(self._rbuf, 0, cn), cn); } catch (e) {}
             self._drainTls();
@@ -1720,6 +1726,7 @@
           return;
         }
         try { n = os.read(self._fd, self._rbuf, 0, 65536); } catch (e) { n = -1; }
+        if (n === -4 /* EINTR */) return;     /* interrupted, not closed */
         if (n > 0) {
           var b = Buffer.alloc(n), src = new Uint8Array(self._rbuf, 0, n);
           for (var i = 0; i < n; i++) b[i] = src[i];
