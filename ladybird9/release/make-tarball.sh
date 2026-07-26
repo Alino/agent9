@@ -90,7 +90,32 @@ cat > "$STAGE/rc/bin/ladybird" <<'EOF'
 # only when a helper actually faults.
 log=/tmp/ladybird.log
 ICU_DATA=/usr/glenda/ladybird9/share/icu
-exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--certificate' /usr/glenda/ladybird9/share/ca.pem $* >[2]$log
+# Per-process resource caps (cc9 reads these at startup; inherited by every
+# helper). They keep a heavy client-rendered SPA (e.g. youtube.com) from
+# exhausting memory or the process table and faulting gefs -- i.e. from taking
+# the whole box down instead of just failing the page. Tune per box: a bigger
+# box can raise them; export your own value before running to override.
+#   CC9_AS_LIMIT_MB   -- max heap (MiB) per process; malloc returns NULL past it
+#   CC9_NPROC_LIMIT   -- max threads AND forked children per process (EAGAIN past it)
+#
+# 2500, not 1024: youtube.com's WebContent alone peaks ~2.3 GiB. At 1024 the
+# page dies of bad_alloc mid-load and "does not load at all". The limits are
+# soft (the process fails, the box survives), so the higher default only costs
+# memory a heavy page genuinely uses.
+if(~ $#CC9_AS_LIMIT_MB 0) CC9_AS_LIMIT_MB=2500
+if(~ $#CC9_NPROC_LIMIT 0) CC9_NPROC_LIMIT=400
+# Poll-ring growth CEILING (bytes). cc9 emulates readiness with a per-fd ring;
+# without headroom a multi-MB response (youtube ships a 10 MB script bundle)
+# stalls behind Plan 9's fixed 256 KiB pipe buffer and the page never finishes.
+# A ceiling, not an allocation: rings start at 64 KiB and grow only on the few
+# fds that actually carry bulk data.
+if(~ $#CC9_POLL_RING 0) CC9_POLL_RING=8388608
+# Persistent profile: the HTTP disk cache and the JS bytecode cache live there,
+# so revisits stop refetching. SQL (history/cookies) stays off until its
+# multi-process story on 9front is proven safe -- the caches do not need it.
+prof=$home/lib/ladybird-profile
+mkdir -p $prof >[2]/dev/null
+exec /usr/glenda/ladybird9/bin/gl9win2 /usr/glenda/ladybird9/bin/ladybird '--profile-path' $prof '--disable-sql-database' '--certificate' /usr/glenda/ladybird9/share/ca.pem $* >[2]$log
 EOF
 chmod +x "$STAGE/rc/bin/ladybird"
 
