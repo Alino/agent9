@@ -9,3 +9,8 @@ lib/libcc9m.a
 
 # archive backups (ar-patch snapshots)
 lib/libcc9cxx.a.*
+
+# release artifacts: the tarball is a GitHub release asset, and .cache holds the
+# natively built on-box tools carried over from the previous release
+release/*.tar.gz
+release/.cache/

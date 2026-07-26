@@ -1,0 +1,54 @@
+cc9 — the C/C++ toolchain for 9front (clang -> ld.lld -> a.out, on the box). Changelog.
+(`pac9 changelog cc9` shows this; newest first.)
+
+0.2.0 — 2026-07-26
+  The on-box toolchain catches up with three weeks of runtime work. 0.1.0 shipped a
+  runtime archive built before the poll layer, the socket layer and the shared-memory
+  layer existed, so on-box builds could not link a program that called poll(2) or
+  socket(2) at all — the link just failed with "undefined symbol: poll". They link and
+  run now, and every runtime fix below is in the archive.
+
+    - poll(2), sockets and shared memory are IN the shipped archive (poll.o, net9.o,
+      netcompat.o, shm9.o were simply absent from 0.1.0's libcc9cxx.a).
+    - The archive is built optimized. 0.1.0's was accidentally built at -O0 with
+      memcpy/memset as byte-at-a-time loops — the single largest performance item in
+      the whole port, and it was in every binary compiled on the box.
+    - fork() no longer kills the PARENT's threads. A child gets a copy of the worker
+      thread registry whose pids belong to the parent; a child that exits without
+      exec'ing posted "kill" notes to all of them, so a program that spawned a helper
+      lost its own poll/stdin threads while otherwise running fine.
+    - Child reaping happens where Plan 9 allows it: await(2) in the forking proc, not
+      /proc/<pid>/wait from a sibling thread (which delivers exactly one message and
+      then blocks forever). waitpid() also decodes the native exit STRING instead of
+      reporting the same status for every nonzero exit.
+    - The poll ring no longer drops the tail of a transfer. Ring ownership keyed on a
+      live reader thread, but the reader exits the instant the kernel gives it EOF —
+      routinely with bytes still in the ring, which read() then discarded. A 220 KB HTTP
+      body arrived as 4 KB, nondeterministically. Rings also grow on demand instead of
+      pinning every fd at a fixed size, a timed poll() re-scans instead of sleeping
+      through a wake, FIONREAD no longer starts a reader thread (that recursed into a
+      stack overflow), and dup() carries O_NONBLOCK.
+    - malloc/realloc are O(1). realloc bypassed every fast path, so each Vec growth was
+      O(n) and a JS bytecode compile went O(n²).
+    - Shared memory (#g) got a run of fixes: adopt an already-attached segment instead
+      of failing "segments overlap", lazily fault-attach a sibling thread's mapping
+      (RFMEM shares memory, not segment tables — this was a hard crash), reap zombie
+      segments, bound idle pools by LRU, never detach on unmap, and real errnos out of
+      segattach errstrs.
+    - struct tm stays at its 36-byte ABI. Widening it made gmtime_r write 20 bytes past
+      every tm a prebuilt library allocated — which silently broke certificate dates,
+      and with them all HTTPS.
+    - Writing to a closed pipe raises SIGPIPE instead of faulting; buffered writes are
+      flushed before exit kills the drain threads; open(2) honours O_CLOEXEC; a real
+      console counts as a tty and a spawned child keeps its stdio; RLIMIT_AS/RLIMIT_NPROC
+      soft caps let a runaway program hit malloc failure instead of taking the box down;
+      __stack_chk_fail prints the smashing PC.
+    - Headers are refreshed from the tree (67 files, up from 39): sockets, netinet, poll,
+      dirent d_type values, the full errno set, and the rest.
+
+  Kept from 0.1.0 unchanged: the natively built clang, ld.lld, elf2aout, the `cc`
+  driver, its cc1 template, and the libc++ header tree.
+
+0.1.0 — 2026-07-01
+  First release: clang + ld.lld + elf2aout running ON 9front, compiling ordinary C and
+  C++ (exceptions, RTTI, iostreams, threads, regex, filesystem) to native a.out.
