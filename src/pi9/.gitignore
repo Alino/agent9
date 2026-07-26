@@ -6,3 +6,4 @@ pi9
 # Go local cache
 *.test
 *.out
+release/*.tar.gz

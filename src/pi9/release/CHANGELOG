@@ -1,0 +1,23 @@
+pi9 — the pi coding agent, native on 9front (Go + bubbletea). Changelog.
+(`pac9 changelog pi9` shows this; newest first.)
+
+0.1.1 — 2026-07-26
+  Resizing the terminal no longer garbles the transcript.
+
+    - pi9 took its size from /env/LINES and /env/COLS, which is not a live
+      channel on this platform: fork here is rfork(RFPROC|RFFDG|RFENVG), so a
+      child gets a COPY of the environment group at exec and never sees the
+      terminal's later writes. Measured under alacritty9: after resizing the
+      window from 1024x768 to 620x660, the child's /env/COLS still read 113
+      while the terminal's live size file read "68 38".
+      Laying out 113 columns wide inside a 68-column window is what users saw:
+      the window manager clipped every line's tail ("the end of the sentence is
+      missing"), and the cursor-up arithmetic in the streaming redraw — row
+      counts computed for the wrong wrap width — landed on the wrong rows, so
+      rows repeated with a few more words on each.
+    - pi9 now polls $A9_SIZE_FILE, the live size file alacritty9 rewrites on
+      every resize, and falls back to /env for terminals that publish no file.
+      Verified on bare-metal cirno by resizing mid-session with pi9 streaming a
+      reply: 0.1.0 clips every line, 0.1.1 re-wraps to the new width.
+
+0.1.0 — first release: pi9 running natively on 9front.

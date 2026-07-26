@@ -21,8 +21,11 @@ pkg=$1; ver=$2
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 repo=Alino/agent9
-tb="$root/$pkg/release/$pkg-amd64.tar.gz"
-cl="$root/$pkg/release/CHANGELOG"
+# Most packages are top-level directories; a few (pi9) live under src/.
+dir="$root/$pkg"
+[ -d "$dir" ] || dir="$root/src/$pkg"
+tb="$dir/release/$pkg-amd64.tar.gz"
+cl="$dir/release/CHANGELOG"
 reg="$root/pac9/registry"
 tag="$pkg-v$ver"
 
