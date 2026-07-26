@@ -1,6 +1,25 @@
 neovim9 — Neovim 0.12.4 for 9front (cc9). Changelog.
 (`pac9 changelog neovim9` shows this; newest first.)
 
+0.3.2 — 2026-07-26
+  Relinked against the fixed cc9 runtime (see `pac9 changelog cc9` 0.2.1). Two
+  things change, and both are in the runtime rather than in nvim:
+
+    - A job whose exec fails no longer kills nvim's own threads. cc9's fork()
+      handed the child a copy of the worker-thread registry, whose pids belong to
+      NVIM, and a child that exits without exec'ing posted "kill" to all of them.
+      nvim checks executable() first, so the reachable case is a file executable by
+      mode that cannot be exec'd — and after one of those, the next job's output
+      never arrived (jobwait returned -1 with the job invalid). Gate:
+      test/jobgate.lua, run as `nvim --headless --clean -l test/jobgate.lua` —
+      JOBGATE FAIL on 0.3.1, PASS here.
+    - Everything is faster. The runtime shipped by cc9 0.1.0/0.2.0 was compiled at
+      -O0 with byte-at-a-time memcpy/memset; nvim links that runtime, so every
+      allocation, string operation and screen buffer copy paid for it.
+
+  Verified on bare-metal cirno: `:!cat /env/user` inside alacritty9, then typed
+  text still reaching the buffer afterwards.
+
 0.3.1 — 2026-07-25
   Console follow-ups from real use over `drawterm -G`, plus the fix that lets
   the upstream test suite run.

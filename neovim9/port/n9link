@@ -7,7 +7,9 @@ set -euo pipefail
 AGENT9="$(cd "$(dirname "$0")/../.." && pwd)"
 CC9="$AGENT9/cc9"
 LLD="${CC9_LLD:-$(brew --prefix lld)/bin/ld.lld}"
-LIB="$CC9/lib/libcc9cxx.a"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
+# $CC9_RUNTIME links against a specific runtime archive — e.g. one built from a
+# clean checkout for a release, while cc9/lib/libcc9cxx.a holds work in progress.
+LIB="${CC9_RUNTIME:-$CC9/lib/libcc9cxx.a}"; LIBM="$CC9/lib/libcc9m.a"; LDS="$CC9/test/plan9.ld"
 out=""; args=()
 while [ $# -gt 0 ]; do
   case "$1" in
