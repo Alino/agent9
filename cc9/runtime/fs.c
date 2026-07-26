@@ -138,6 +138,18 @@ int open(const char *path, int flags, ...){
 		append_set((int)fd, 1);
 		long long e = 0; n9_seek(&e, (int)fd, 0, 2 /*SEEK_END*/);
 	}
+	/* O_CLOEXEC used to be dropped on the floor here, so an fd opened
+	 * close-on-exec survived into EVERY spawned child. SQLite opens its
+	 * database files this way on purpose, and ladybird's WebContent was
+	 * inheriting the UI process's open History.db/Ladybird.db handles — with
+	 * the lock-free "unix-none" VFS this port uses, that is several processes
+	 * holding writable handles to a database only one of them believes it
+	 * owns. The poll table is the single source of CLOEXEC truth (execve
+	 * consults it), so record it there. */
+	if(flags & O_CLOEXEC){
+		extern void cc9_poll_mark_cloexec(int);
+		cc9_poll_mark_cloexec((int)fd);
+	}
 	return (int)fd;
 }
 int openat(int dfd, const char *path, int flags, ...){ char b[1024]; return open(at_path(dfd,path,b,sizeof b), flags); }

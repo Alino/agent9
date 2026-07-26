@@ -779,6 +779,14 @@ int fcntl(int fd, int cmd, ...){
 	}
 }
 
+/* Mark an fd close-on-exec from outside poll.c (open(2)'s O_CLOEXEC).
+ * The poll table is the single source of CLOEXEC truth — an fd that never
+ * reaches it survives exec no matter what flag the caller passed. */
+void cc9_poll_mark_cloexec(int fd){
+	cc9_pfd *p = ensure(fd, 0);
+	if(p) p->flags |= O_CLOEXEC;
+}
+
 int pipe2(int fds[2], int flags){
 	if(n9_pipe(fds) < 0){ errno = EMFILE; return -1; }
 	if(flags){
