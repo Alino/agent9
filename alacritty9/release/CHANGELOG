@@ -1,6 +1,33 @@
 alacritty9 — Alacritty 0.17.0 for 9front. Changelog.
 (`pac9 changelog alacritty9` shows this; newest first.)
 
+0.2.1 — 2026-07-26
+  Every TUI in an alacritty9 window drew duplicated lines with their tails missing,
+  and keystroke-driven apps could not submit input at all. Both are fixed.
+
+    - The child is told the REAL window size. winit's plan9 backend starts at a
+      placeholder 1024x768 and learns the truth from the presenter's opening resize
+      record — but that was only applied when the event loop DISPATCHED it, after the
+      terminal had been sized and the child spawned. A live window handed its child
+      COLS=113 LINES=45 while the grid was 88x28: every full-width line wrapped, so
+      the app's cursor-up redraws landed a row off. The reader thread now applies a
+      resize the moment it reads one.
+    - A later resize reaches the child too. /env is not a live channel here (fork
+      copies the environment group at exec), so the size is also written to a file
+      whose path the child gets in $A9_SIZE_FILE, rewritten on every resize.
+    - Raw mode is the UNION of the signals that request it — the alternate screen,
+      bracketed paste, and the Kitty keyboard stack (nested pushes counted). Treating
+      any single "off" as "leave raw mode" dropped a full-screen app back onto the
+      cooked line discipline mid-session, which echoed its keystrokes into the grid
+      and swallowed its escape sequences. It also means an app that drives the
+      keyboard while rendering INLINE — pi does — gets its keys at all.
+    - Damage rects are shaped with the right width: the SizeInfo conversion took
+      `columns` from `screen_lines`, so rects were clipped to screen_lines-many
+      columns.
+    - gl9win2's keyboard proc no longer quits on a transient read error. One failure
+      used to end keyboard input for the whole session while the window kept drawing
+      and taking mouse input; it now reopens /dev/kbd and retries.
+
 0.2.0 — 2026-07-17
   First versioned release. Rebuilt against a correctness pass on the cc9 C
   runtime the terminal is built on — stubs that used to report success while

@@ -27,7 +27,7 @@ netsurf	https://github.com/netsurf-plan9/nsport	.	fetch clone http; mk; mk insta
 # ReleaseSmall only; no f16/f80/f128 soft-float or @cImport in target programs.
 zig9	-	.	tarball https://github.com/Alino/agent9/releases/download/zig9-v0.14.1/zig9-amd64.tar.gz	-	0.14.1
 python9	-	.	tarball https://github.com/Alino/agent9/releases/download/python9-v0.2.0/python9-amd64.tar.gz	-	0.2.0
-node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node9-v0.2.0/node9-amd64.tar.gz	-	0.2.0
+node9	-	.	tarball https://github.com/Alino/agent9/releases/download/node9-v0.2.1/node9-amd64.tar.gz	-	0.2.1
 # cc9: on-box C++ toolchain (cc -> clang -> ld.lld -> elf2aout). Self-contained.
 cc9	-	.	tarball https://github.com/Alino/agent9/releases/download/cc9-v0.1.0/cc9-amd64.tar.gz	-	0.1.0
 # pi9: prebuilt tarball has amd64/bin/pi9, rc/bin/new-pi9, sys/lib/tls/ca.pem.
@@ -58,7 +58,7 @@ gl9	-	.	tarball https://github.com/Alino/agent9/releases/download/gl9-v0.2.1/gl9
 # cross-compiled binary (rust9 + Mesa softpipe + OSMesa EGL statically linked,
 # fonts bundled) + gl9win2, the interactive native window host. Self-contained
 # (~5 MB download / ~19 MB installed). Run `alacritty9` from a rio window.
-alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacritty9-v0.2.0/alacritty9-amd64.tar.gz	-	0.2.0
+alacritty9	-	.	tarball https://github.com/Alino/agent9/releases/download/alacritty9-v0.2.1/alacritty9-amd64.tar.gz	-	0.2.1
 # neovim9 — real upstream Neovim 0.12.4 on 9front: static a.out (LuaJIT
 # interpreter + libuv + 7 treesitter parsers) + the runtime tree at nvim's
 # compiled-in /usr/local/share/nvim. Runs inside alacritty9, on a bare console

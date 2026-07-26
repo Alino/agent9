@@ -1,6 +1,35 @@
 node9 — Node-compatible JavaScript runtime for 9front (QuickJS-ng). Changelog.
 (`pac9 changelog node9` shows this; newest first.)
 
+0.2.1 — 2026-07-26
+  Interactive use of the real `pi` agent, fixed properly. Every item here was a
+  session-ending bug found with pi driving the runtime for real.
+
+    - A tool call no longer kills the keyboard. This was the big one, and it was in
+      the cc9 runtime under us: fork() hands the child a copy of the worker-thread
+      registry, whose pids belong to the PARENT, and a child that exits without
+      exec'ing posts "kill" notes to every one of them. pi starts each tool call with
+      spawnSync("which","bash") — 9front has neither — so every tool call killed the
+      poll thread feeding stdin. The window kept drawing and the model kept answering
+      while typing did nothing.
+    - Emoji no longer drift the cursor. The ES2024 /v regex flag did not imply /u, so
+      the matcher walked UTF-16 code UNITS and \p{Surrogate} matched half an astral
+      character: a TUI measuring text lost the emoji entirely (0 columns instead of 2)
+      and each streaming redraw restarted two columns further right.
+    - \p{...} parses under /v at all. It only worked under /u, so the property NAME
+      became a set of literal characters — a width function then measured every styled
+      string short, padded past the terminal width, and its redraws stacked up as rows
+      repeating the one above with a few more words on them.
+    - A real child_process: pipes, captured output, exit codes, stdin input, cwd/env,
+      streamed stdout/stderr, exec/execFile collecting both. "ignore" means /dev/null
+      (it used to INHERIT, handing a child the terminal's keyboard). node -v/-e/-p work.
+    - stdin survives: an interrupted read (EINTR) is no longer fatal, backpressure no
+      longer disarms the reader, and a resize reaches the app — /env is frozen at exec
+      on this platform, so the terminal now also publishes the live size to a file
+      ($A9_SIZE_FILE) and process.on('SIGWINCH') fires off it.
+    - readline.cursorTo/moveCursor/clearLine/clearScreenDown emit real escape
+      sequences instead of doing nothing.
+
 0.2.0 — 2026-07-25
   The engine is now built with cc9/clang instead of kencc, TLS certificates are
   verified, and the real `pi` coding agent runs on it — TUI included.
