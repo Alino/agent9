@@ -49,7 +49,7 @@ index 90dd9f2931..7f1da65d6c 100644
      // https://immersive-web.github.io/webxr/#navigator-xr-attribute
      [SecureContext, SameObject] readonly attribute XRSystem xr;
 diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
-index 2fcaff298a..c0940318bc 100644
+index 2fcaff298a..1810eec1f4 100644
 --- a/Libraries/LibWebView/Application.cpp
 +++ b/Libraries/LibWebView/Application.cpp
 @@ -32,6 +32,8 @@
@@ -61,7 +61,7 @@ index 2fcaff298a..c0940318bc 100644
  #include <LibWebView/CookieJar.h>
  #include <LibWebView/HSTSStore.h>
  #include <LibWebView/HeadlessWebView.h>
-@@ -1088,6 +1090,33 @@ ErrorOr<void> Application::launch_services()
+@@ -1088,6 +1090,45 @@ ErrorOr<void> Application::launch_services()
          m_storage_jar = StorageJar::create();
      }
  
@@ -89,6 +89,18 @@ index 2fcaff298a..c0940318bc 100644
 +        };
 +        seed("SOCS"sv, "CAISNQgDEitib3FfaWRlbnRpdHlodHRwc2Vzc2lvbmlkX3YxGgJlbiACGgYIgLC_pgY"sv);
 +        seed("CONSENT"sv, "YES+cb.20240101-00-p0.en+FX+000"sv);
++
++        // set_cookie() drops a cookie it dislikes without a word — a leading dot in
++        // the domain silently cost several full runs. Read it straight back and say
++        // so, otherwise the only symptom is youtube's consent wall and no way to
++        // tell our bug from theirs.
++        if (auto url = URL::Parser::basic_parse("https://www.youtube.com/"sv); url.has_value()) {
++            auto header = m_cookie_jar->get_cookie(*url, HTTP::Cookie::Source::Http);
++            if (header.contains("SOCS"sv) && header.contains("CONSENT"sv))
++                warnln("LB9_YT_CONSENT: seeded, Cookie header = {}", header);
++            else
++                warnln("LB9_YT_CONSENT: SEED REJECTED, Cookie header = '{}'", header);
++        }
 +    }
 +#endif
 +
