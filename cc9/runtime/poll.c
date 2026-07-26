@@ -152,6 +152,9 @@ void cc9_trace(const char *op, int fd, long n){
 	if(trace_fd == -2){
 		char *pfx = getenv("CC9_POLL_TRACE");
 		if(!pfx) { trace_fd = -1; return; }
+		/* CC9_POLL_TRACE=2 -> stderr, which a terminal captures with the child's
+		 * output; the per-pid file needs a writable /tmp and has been unreliable. */
+		if(pfx[0] == '2' && pfx[1] == 0) { trace_fd = 2; goto have_fd; }
 		char path[128]; int k = 0;
 		while(pfx[k] && k < 100){ path[k] = pfx[k]; k++; }
 		path[k++] = '.';
@@ -159,6 +162,7 @@ void cc9_trace(const char *op, int fd, long n){
 		for(int d = 100000; d; d /= 10) path[k++] = '0' + pid / d % 10;
 		path[k] = 0;
 		trace_fd = (int)n9_create(path, 1 /*OWRITE*/, 0666);
+	have_fd: ;
 	}
 	if(trace_fd < 0) return;
 	char b[80]; int k = 0;
@@ -670,10 +674,17 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout){
 		} else {
 			long left = deadline - now_ms();       /* stale tokens re-loop; keep the true deadline */
 			if(left <= 0) return 0;
+			/* Cap each nap at POLL_RESCAN_MS like the infinite path does. Waiting the
+			 * caller's FULL timeout here meant a missed edge wake went unnoticed for as
+			 * long as the caller's next timer — minutes, for an app with a long idle
+			 * timer — and the fd looked dead the whole time even though its ring had
+			 * data. Re-scanning costs one wakeup every 200ms while waiting. */
+			long nap = left < POLL_RESCAN_MS ? left : POLL_RESCAN_MS;
 			__sync_fetch_and_add(&poll_waiters, 1);
-			long got = n9_tsemacquire(&poll_sem, left);
+			long got = n9_tsemacquire(&poll_sem, nap);
 			__sync_fetch_and_sub(&poll_waiters, 1);
-			if(got != 1) return 0;                 /* timed out */
+			if(got != 1 && nap >= left) return 0;  /* the real deadline passed */
+			if(got != 1) continue;                 /* nap expired: re-scan the fds */
 		}
 	}
 }

@@ -964,15 +964,50 @@
       var s = new stream.Readable();
       var rbuf = null, readerOn = false, done = false;
       s.fd = 0; s.isTTY = detectTTY(0);
-      function stop() { if (readerOn) { try { os.setReadHandler(0, null); } catch (e) {} readerOn = false; } }
+      function stop() {
+        if (std.getenv('NODE9_STDIN_TRACE')) {
+          try { var lf = std.open('/tmp/n9stdin', 'a'); if (lf) { lf.puts('STOP (was armed=' + readerOn + ')\n'); lf.close(); } } catch (e) {}
+        }
+        if (readerOn) { try { os.setReadHandler(0, null); } catch (e) {} readerOn = false; }
+      }
+      /* Watchdog: re-arm the handler if stdin goes quiet while somebody is waiting.
+         The platform's poll layer keeps a reader thread per fd, and a fork/exec in the
+         process can leave that thread not waking us again — bytes then sit in the pipe
+         unread and the program looks frozen at the keyboard while everything else runs.
+         Re-registering the handler makes the poll layer re-establish the fd. Costs one
+         timer tick a second, and only while stdin has a listener. */
+      var lastData = 0, watchdog = null;
+      function startWatchdog() {
+        if (watchdog || !s.isTTY) return;
+        watchdog = globalThis.setInterval(function () {
+          if (done || !s.listenerCount || s.listenerCount('data') === 0) return;
+          if (Date.now() - lastData < 1000) return;
+          if (!readerOn) { s._read(); return; }
+          try { os.setReadHandler(0, null); } catch (e) {}
+          readerOn = false;
+          s._read();                       /* re-establish: fresh handler, fresh reader */
+        }, 1000);
+      }
       s._read = function () {
         if (readerOn || done) return;
         readerOn = true;
+        startWatchdog();
         if (!rbuf) rbuf = new ArrayBuffer(65536);
         os.setReadHandler(0, function () {
           var n;
           try { n = os.read(0, rbuf, 0, 65536); } catch (e) { n = -1; }
+          if (std.getenv('NODE9_STDIN_TRACE')) {
+            try {
+              var lf = std.open('/tmp/n9stdin', 'a');
+              if (lf) {
+                lf.puts('read n=' + n + ' listeners=' + (s.listenerCount ? s.listenerCount('data') : '?') +
+                        ' flowing=' + s._rs.flowing + ' buffered=' + s._rs.length + '\n');
+                lf.close();
+              }
+            } catch (e) {}
+          }
           if (n > 0) {
+            lastData = Date.now();
             var b = Buffer.alloc(n), src = new Uint8Array(rbuf, 0, n);
             for (var i = 0; i < n; i++) b[i] = src[i];
             // A Plan 9 keyboard sends \n for Return; every terminal app expects the
@@ -2817,6 +2852,13 @@
 
     /* Start the child with the requested pipes. Returns the pid plus our ends of
        them; the child's ends are already closed here. */
+    /* Node's "ignore" means /dev/null, NOT inherit. Leaving it inherited handed the
+       child our stdin — which for a terminal app is the KEYBOARD: pi spawns its shell
+       tool with stdio ["ignore",…], and that child then consumed the keystrokes typed
+       after the tool ran, so the session looked frozen at the prompt. */
+    function devNull(mode) {
+      try { return os.open('/dev/null', mode); } catch (e) { return -1; }
+    }
     function launch(argv, opts, cap) {
       var ex = { block: false, usePath: true }, mine = {}, theirs = [];
       if (opts.cwd) ex.cwd = opts.cwd;
@@ -2824,8 +2866,11 @@
         var e = []; for (var k in opts.env) e.push(k + '=' + opts.env[k]); ex.env = e;
       }
       if (cap.stdin) { var pi = os.pipe(); ex.stdin = pi[0]; mine.stdin = pi[1]; theirs.push(pi[0]); }
+      else if (stdioOf(opts, 0) === 'ignore') { var ni = devNull(os.O_RDONLY); if (ni >= 0) { ex.stdin = ni; theirs.push(ni); } }
       if (cap.stdout) { var po = os.pipe(); ex.stdout = po[1]; mine.stdout = po[0]; theirs.push(po[1]); }
+      else if (stdioOf(opts, 1) === 'ignore') { var no = devNull(os.O_WRONLY); if (no >= 0) { ex.stdout = no; theirs.push(no); } }
       if (cap.stderr) { var pe = os.pipe(); ex.stderr = pe[1]; mine.stderr = pe[0]; theirs.push(pe[1]); }
+      else if (stdioOf(opts, 2) === 'ignore') { var ne = devNull(os.O_WRONLY); if (ne >= 0) { ex.stderr = ne; theirs.push(ne); } }
       var pid = os.exec(argv, ex);
       for (var i = 0; i < theirs.length; i++) { try { os.close(theirs[i]); } catch (e) {} }
       return { pid: pid, fds: mine };
