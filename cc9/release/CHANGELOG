@@ -1,6 +1,18 @@
 cc9 — the C/C++ toolchain for 9front (clang -> ld.lld -> a.out, on the box). Changelog.
 (`pac9 changelog cc9` shows this; newest first.)
 
+0.2.1 — 2026-07-26
+  The shipped archive is built OPTIMIZED, with word-wise mem*. 0.2.0 was packed from
+  a tree five minutes older than that fix, so it still carried the -O0 runtime with
+  byte-at-a-time memcpy/memset/memcmp/memchr — every malloc, syscall wrapper and
+  string routine in every on-box-compiled binary. Measured on cirno with the on-box
+  cc: memcpy over 4 MiB buffers now runs at ~3.9 GB/s.
+  (poll.c, shm9.c, posix_llvm.c and pthread.c stay unoptimized on purpose — they
+  share plain struct fields between peer threads, which an optimizer may cache in a
+  register and spin on. Auditing that sharing is its own change.)
+  Re-verified on the box: pollfork_gate 6/6 PASS, C++/threads/regex/filesystem/
+  socket smoke 7/7 PASS, both compiled by the on-box cc.
+
 0.2.0 — 2026-07-26
   The on-box toolchain catches up with three weeks of runtime work. 0.1.0 shipped a
   runtime archive built before the poll layer, the socket layer and the shared-memory
@@ -10,9 +22,6 @@ cc9 — the C/C++ toolchain for 9front (clang -> ld.lld -> a.out, on the box). C
 
     - poll(2), sockets and shared memory are IN the shipped archive (poll.o, net9.o,
       netcompat.o, shm9.o were simply absent from 0.1.0's libcc9cxx.a).
-    - The archive is built optimized. 0.1.0's was accidentally built at -O0 with
-      memcpy/memset as byte-at-a-time loops — the single largest performance item in
-      the whole port, and it was in every binary compiled on the box.
     - fork() no longer kills the PARENT's threads. A child gets a copy of the worker
       thread registry whose pids belong to the parent; a child that exits without
       exec'ing posted "kill" notes to all of them, so a program that spawned a helper
