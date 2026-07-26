@@ -1,6 +1,20 @@
 cc9 — the C/C++ toolchain for 9front (clang -> ld.lld -> a.out, on the box). Changelog.
 (`pac9 changelog cc9` shows this; newest first.)
 
+0.2.2 — 2026-07-26
+  TIOCGWINSZ reports the terminal's CURRENT size, not the size it had at exec.
+
+    - ioctl(TIOCGWINSZ) read /env/LINES and /env/COLS, which is not a live
+      channel to a child here: fork is rfork(RFPROC|RFFDG|RFENVG), so the child
+      holds a COPY of the environment group from exec and never sees the
+      terminal's later writes. Measured under alacritty9: after resizing
+      1024x768 -> 620x660, a child's /env/COLS still read 113 while the
+      terminal's live size file read "68 38". Every TUI that asks the runtime
+      for its size therefore kept laying out at the startup width — lines wider
+      than the window get their tails clipped, and a streaming redraw that
+      counts rows for the wrong wrap width lands on the wrong rows and repeats
+      them. Now reads $A9_SIZE_FILE first and falls back to /env.
+
 0.2.1 — 2026-07-26
   The shipped archive is built OPTIMIZED, with word-wise mem*. 0.2.0 was packed from
   a tree five minutes older than that fix, so it still carried the -O0 runtime with

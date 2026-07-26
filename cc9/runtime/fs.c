@@ -415,6 +415,31 @@ int isatty(int fd){ return fd >= 0 && fd <= 2 && (getenv("TERM") != 0 || fd_is_c
 
 /* ioctl: the winsize pair is real (backed by the /env/LINES + /env/COLS files
  * alacritty9 publishes and updates live); everything else is ENOTTY. */
+/* Read "COLS LINES" out of the file named by $A9_SIZE_FILE, the live terminal
+ * size (see the TIOCGWINSZ comment for why /env cannot serve that role).
+ * Leaves *rows/*cols alone unless both parse. */
+static void size_file_size(int *rows, int *cols){
+	char path[256], buf[32];
+	long fd = n9_open("/env/A9_SIZE_FILE", 0);
+	if(fd < 0) return;
+	long n = n9_pread((int)fd, path, sizeof path - 1, 0);
+	n9_close((int)fd);
+	if(n <= 0) return;
+	while(n > 0 && (path[n-1] == '\n' || path[n-1] == 0)) n--;   /* rc list terminator */
+	if(n == 0) return;
+	path[n] = 0;
+	if((fd = n9_open(path, 0)) < 0) return;
+	n = n9_pread((int)fd, buf, sizeof buf - 1, 0);
+	n9_close((int)fd);
+	if(n <= 0) return;
+	buf[n] = 0;
+	char *s = buf;
+	int c = 0; while(*s >= '0' && *s <= '9') c = c*10 + (*s++ - '0');
+	while(*s == ' ' || *s == '\t') s++;
+	int r = 0; while(*s >= '0' && *s <= '9') r = r*10 + (*s++ - '0');
+	if(r > 0 && c > 0){ *rows = r; *cols = c; }
+}
+
 static int env_num(const char *name){
 	char path[64], buf[16];
 	char *d = path; const char *p = "/env/";
@@ -488,7 +513,20 @@ int ioctl(int fd, unsigned long req, ...){
 	}
 	if(req == 0x5413 /*TIOCGWINSZ*/){
 		struct { unsigned short r, c, xp, yp; } *ws = arg;
-		int rows = env_num("LINES"), cols = env_num("COLS");
+		int rows = 0, cols = 0;
+		/* $A9_SIZE_FILE first: /env is NOT live for a child here. fork is
+		 * rfork(RFPROC|RFFDG|RFENVG), so the child holds a COPY of the
+		 * environment group from exec and never sees the terminal's later
+		 * writes — /env/COLS stays frozen at the size the window had when
+		 * the program started. A terminal that publishes the size file
+		 * rewrites it on every resize, and the path in the environment
+		 * never changes, so the copy is enough to find it. Measured under
+		 * alacritty9: after 1024x768 -> 620x660, /env/COLS still read 113
+		 * while the file read "68 38", and a TUI laying out 113 columns
+		 * wide in a 68-column window has its lines clipped and its
+		 * cursor-up redraw land on the wrong rows. */
+		size_file_size(&rows, &cols);
+		if(rows <= 0 || cols <= 0){ rows = env_num("LINES"); cols = env_num("COLS"); }
 		ws->r = rows ? (unsigned short)rows : 24;
 		ws->c = cols ? (unsigned short)cols : 80;
 		ws->xp = ws->yp = 0;

@@ -1,6 +1,22 @@
 neovim9 — Neovim 0.12.4 for 9front (cc9). Changelog.
 (`pac9 changelog neovim9` shows this; newest first.)
 
+0.3.3 — 2026-07-26
+  Resizing the window reaches nvim.
+
+    - nvim took its size from $LINES/$COLUMNS, because a terminal here hosts it
+      on a PIPE (Plan 9 has no ptys), so out_isatty is false and the TIOCGWINSZ
+      step never ran. Those variables are frozen: fork is
+      rfork(RFPROC|RFFDG|RFENVG), so the process holds a COPY of the environment
+      group from exec. The SIGWINCH poller had the same problem — it watched
+      /env/LINES and /env/COLS, which never change, so it never fired.
+      Both now go through TIOCGWINSZ, which cc9 0.2.2 answers from the
+      terminal's live size file.
+      Measured on cirno, resizing 1024x768 -> 620x660 mid-session: 0.3.2 reports
+      `&columns`/`&lines` = 113/45 (the startup size), 0.3.3 reports 68/38.
+      Laying out at the old width is what put clipped lines and repeated rows
+      on screen.
+
 0.3.2 — 2026-07-26
   Relinked against the fixed cc9 runtime (see `pac9 changelog cc9` 0.2.1). Two
   things change, and both are in the runtime rather than in nvim:
