@@ -37,12 +37,18 @@ INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
 # cc9 program. That is a first-order cost on a 1.5 GHz Celeron (ladybird9 felt it
 # as slow scrolling and slow page loads).
 #
-# $OPT is applied to the files that are pure computation + syscalls. It is NOT
-# applied to poll.c, shm9.c, posix_llvm.c or pthread.c: those share plain
-# (non-volatile, non-atomic) struct fields between a thread and its reader/writer
-# peers, and an optimizer is entitled to cache such a field in a register and
-# spin forever. Making them -O2-safe means auditing that sharing and marking it
-# properly — worth doing, but not as a silent side effect of a build-flag change.
+# $OPT is NOT applied to posix_llvm.c or pthread.c: those share plain
+# (non-volatile, non-atomic) struct fields between a thread and its peers and are
+# UNAUDITED, and an optimizer is entitled to cache such a field in a register and
+# spin forever.
+#
+# poll.c and shm9.c WERE audited for exactly that and are now optimized. They do
+# share plain fields across threads, but neither contains a busy-wait loop: every
+# wait blocks inside an extern syscall wrapper (n9_semacquire / n9_tsemacquire /
+# n9_pread), which is an opaque call and therefore a mandatory reload point, and
+# `tab`'s address escapes to pthread_create so clang cannot assume otherwise.
+# That argument is load-bearing — see the invariants in poll.c before making any
+# of those wrappers inline or attribute-pure, or enabling LTO.
 OPT="${CC9_OPT:--O2}"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/n9libc.c" -o "$O/n9libc.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/posix_llvm.c" -o "$O/posix_llvm.o"  # POSIX surface LLVM's Unix .inc needs
@@ -53,8 +59,8 @@ OPT="${CC9_OPT:--O2}"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/pthread.c" -o "$O/pthread.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/wchar.c" -o "$O/wchar.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/poll.c" -o "$O/poll.o"   # poll(2)/fcntl/pipe2 readiness layer (libuv)
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/shm9.c" -o "$O/shm9.o"   # cross-process shared memory over #g named segments (ladybird9)
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/poll.c" -o "$O/poll.o"   # poll(2)/fcntl/pipe2 readiness layer (libuv)
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/shm9.c" -o "$O/shm9.o"   # cross-process shared memory over #g named segments (ladybird9)
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/netcompat.c" -o "$O/netcompat.o"  # inet_* for real; resolver/dgram honest stubs
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/net9.c" -o "$O/net9.o"  # BSD sockets over /net (dial/announce/cs)
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/fenv.c" -o "$O/fenv.o"

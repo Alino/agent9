@@ -26,6 +26,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <poll.h>
+#include <sys/select.h>
+#include <sys/ioctl.h>
+#include <sys/wait.h>
 
 static int pass, total;
 static void ck(int ok, const char *what)
@@ -132,6 +135,94 @@ static void table_capacity_case(void)
 	ck(setfl_fail == 0, "poll table holds 300 non-blocking fds without EMFILE");
 }
 
+
+/* Fifth gate: select() must not write past the caller's fd_set.
+ *
+ * fd_set is FD_SETSIZE(512) bits = 8 words = 64 bytes, but select() used to cap
+ * nfds at PFD_MAX*8 -- a count of fds THIS LAYER can track, unrelated to the size
+ * of the object the caller handed over. The result-clearing loops run
+ * (nfds+63)/64 words, so a caller passing nfds=1024 (libuv and CPython both do)
+ * wrote 128 bytes into 64, and raising PFD_MAX to 1024 made the worst case 1 KiB.
+ * Deterministic, and identical at -O0 and -O2: a wrong value, not a hang. */
+static void select_bound_case(void)
+{
+	struct { fd_set r; unsigned long canary[8]; } x;
+	int fds[2];
+	if (pipe(fds) != 0) { ck(0, "pipe for the select-bound gate"); return; }
+	FD_ZERO(&x.r);
+	for (int i = 0; i < 8; i++)
+		x.canary[i] = 0xA5A5A5A5A5A5A5A5UL;
+	FD_SET(fds[0], &x.r);
+	struct timeval tv = { 0, 1000 };
+	(void)select(1024, &x.r, 0, 0, &tv);      /* nfds > FD_SETSIZE, as real callers pass */
+	int smashed = 0;
+	for (int i = 0; i < 8; i++)
+		if (x.canary[i] != 0xA5A5A5A5A5A5A5A5UL)
+			smashed++;
+	close(fds[0]);
+	close(fds[1]);
+	if (smashed)
+		printf("   %d canary words past the fd_set were overwritten\n", smashed);
+	ck(smashed == 0, "select() does not write past the caller's fd_set");
+}
+
+/* Sixth gate: the read ring size must stay a POWER OF TWO.
+ *
+ * head/tail are absolute 32-bit counters indexed as `head % bufsz`, which is only
+ * continuous across the 2^32 wrap when bufsz divides 2^32. At any other size the
+ * index jumps at the wrap and the ring silently desyncs -- a long-lived streaming
+ * fd corrupts its own data after 4 GiB. Growth doubles, so the invariant only
+ * needs enforcing on the CC9_POLL_RING env value.
+ *
+ * Observed through FIONREAD (cc9_poll_pending -> ring_avail), which saturates at
+ * exactly bufsz once the reader parks on a full ring -- no duplicated logic.
+ * Run with CC9_POLL_RING=100000: unfixed reports 100000 and FAILS. */
+static void ring_pow2_case(void)
+{
+	int fds[2];
+	if (pipe(fds) != 0) { ck(0, "pipe for the ring-size gate"); return; }
+	int rd = fds[0], wr = fds[1];
+	if (fcntl(rd, F_SETFL, O_NONBLOCK) != 0) { ck(0, "F_SETFL for the ring-size gate"); return; }
+
+	pid_t kid = fork();
+	if (kid < 0) { ck(0, "fork for the ring-size gate"); return; }
+	if (kid == 0) {
+		close(rd);
+		unsigned char b[4096];
+		memset(b, 0x5A, sizeof b);
+		for (int i = 0; i < 512; i++)          /* 2 MiB: saturates any ring here */
+			if (write(wr, b, sizeof b) <= 0)
+				break;
+		close(wr);
+		_exit(0);
+	}
+	close(wr);
+
+	unsigned char probe[1];
+	(void)read(rd, probe, 0);
+	struct pollfd pfd = { rd, POLLIN, 0 };
+	(void)poll(&pfd, 1, 0);
+	sleep(3);                                   /* reader fills and parks */
+
+	int fill = 0;
+	(void)ioctl(rd, FIONREAD, &fill);
+	if (fill >= 65536) {
+		if ((fill & (fill - 1)) != 0)
+			printf("   ring saturated at %d, which is not a power of two\n", fill);
+		ck((fill & (fill - 1)) == 0, "read ring size is a power of two");
+	} else {
+		printf("   ring not saturated (%d); size check skipped\n", fill);
+		ck(1, "read ring size is a power of two (not saturated, skipped)");
+	}
+
+	/* Drain so the child can finish, then reap. */
+	unsigned char buf[4096];
+	while (read(rd, buf, sizeof buf) > 0)
+		;
+	close(rd);
+	waitpid(kid, 0, 0);
+}
+
 int main(void)
 {
 	int fds[2];
@@ -220,6 +311,8 @@ int main(void)
 
 	eof_drain_case();
 	table_capacity_case();
+	select_bound_case();
+	ring_pow2_case();
 
 	printf("pollring_gate %d/%d %s\n", pass, total, pass == total ? "PASS" : "FAIL");
 	return pass == total ? 0 : 1;

@@ -75,7 +75,18 @@ static void pfd_ring_init(void){
     char *e = getenv("CC9_POLL_RING");
     if(!e) return;
     unsigned long v = 0; for(char *p = e; *p >= '0' && *p <= '9'; p++) v = v*10 + (unsigned)(*p - '0');
-    if(v >= 4096 && v <= 64UL*1024*1024) pfd_max = (unsigned)v;
+    if(v >= 4096 && v <= 64UL*1024*1024){
+        /* Round DOWN to a power of two. head/tail are absolute 32-bit counters
+         * indexed as `head % bufsz`, which is only continuous across the 2^32
+         * wrap when bufsz divides 2^32 — i.e. when it is a power of two. At any
+         * other size the index jumps at the wrap and the ring silently
+         * desyncs: a long-lived streaming fd corrupts its own data after 4 GiB.
+         * The old fixed 64 KiB ring was a power of two by construction; growth
+         * doubles, so the invariant only needs enforcing on this env value. */
+        unsigned p2 = 4096;
+        while(p2 * 2 <= (unsigned)v && p2 < 64u*1024*1024) p2 *= 2;
+        pfd_max = p2;
+    }
     if(pfd_max < pfd_buf) pfd_buf = pfd_max;
 }
 #define PFD_BUF pfd_buf
@@ -806,7 +817,18 @@ int select(int nfds, unsigned long *rfds, unsigned long *wfds,
 	struct cc9_timeval_sel *tv = tvp;
 	int n = 0, i, r, timeout = -1;
 
-	if(nfds > PFD_MAX*8) nfds = PFD_MAX*8;   /* honest cap; PFD_MAX fds live here anyway */
+	/* Cap at FD_SETSIZE, which is what the CALLER's fd_set actually holds:
+	 * <sys/select.h> defines it as 512 bits = 8 words = 64 bytes. The old cap
+	 * was PFD_MAX*8 — a count of fds this layer can track, which has nothing to
+	 * do with the size of the object the caller handed us. The result-clearing
+	 * loops below run (nfds+63)/64 words, so a caller passing nfds=1024 (libuv
+	 * and CPython both do) wrote 128 bytes into that 64-byte fd_set, and raising
+	 * PFD_MAX to 1024 had quietly turned the worst case into 1 KiB of smash.
+	 * An fd >= FD_SETSIZE is unrepresentable in this fd_set anyway.
+	 * (Not #include'ing <sys/select.h> for the constant: its select() prototype
+	 * takes fd_set*, which conflicts with this file's unsigned long* definition.)
+	 * Gated by pollring_gate's select-bound canary. */
+	if(nfds > 512) nfds = 512;
 	for(i = 0; i < nfds && n < PFD_MAX; i++){
 		short ev = 0;
 		if(rfds && (rfds[i/64] & (1UL << (i%64)))) ev |= POLLIN;
