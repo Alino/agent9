@@ -514,7 +514,6 @@ long cc9_poll_write(int fd, const void *buf, long n){
 }
 
 void cc9_poll_onclose(int fd){
-	trace("onclose", fd, 0);
 	/* flush: close() must not drop ring bytes the caller was told were
 	 * written. Kick the writer and wait per drain pass. Ceiling: a peer that
 	 * never reads keeps us here until it dies (its death fails the pwrite ->
@@ -590,7 +589,6 @@ void cc9_poll_close_cloexec(void){
  * a slot left claiming reader=1 has nobody filling its ring, so the first read
  * would block forever. */
 void cc9_poll_child_reset(void){
-	trace("childreset", 0, 0);
 	if(!tab_inited) return;
 	for(int i = 0; i < PFD_MAX; i++){
 		if(tab[i].rfd >= 0 && tab[i].rfd != tab[i].fd) n9_close(tab[i].rfd);

@@ -245,6 +245,29 @@ static n9_thread *find_thread(unsigned long pid){
  * a "kill" note to each thread's /proc/PID/note. Lock-free scan (same TSO-safe
  * discipline as cur_pid) so a thread that died holding th_lock can't deadlock exit. */
 extern long n9_pwrite(int, const void *, long, long long);
+
+/* fork() child: forget the inherited thread registry.
+ *
+ * A fork()ed child is single-threaded — Plan 9 gives it none of the parent's
+ * rfork(RFMEM) workers — but it inherits a COPY of th_tab listing their kernel
+ * pids. If that child then exits through cc9_exit_common() (which every child
+ * whose exec FAILS does, falling through to _exit), cc9_kill_threads() posts
+ * "kill" to /proc/<pid>/note for each of those pids: the child kills its
+ * PARENT's threads. node9 lost its stdin reader exactly this way — pi probes
+ * for a shell with spawnSync("which","bash") on a box that has neither, so
+ * every tool call quietly killed the poll-layer thread feeding the keyboard,
+ * and typing stopped working for the rest of the session. */
+void cc9_threads_child_reset(void){
+	for(int i = 0; i < MAXTH; i++){
+		th_tab[i].used = 0;
+		th_tab[i].dead = 0;
+		th_tab[i].pid = 0;
+		th_tab[i].t = 0;
+	}
+	th_hi = 0;
+	th_lock = 1;
+}
+
 void cc9_kill_threads(void){
 	unsigned long self = cur_pid();
 	for(int i=0;i<MAXTH;i++){

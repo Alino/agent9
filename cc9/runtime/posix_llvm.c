@@ -800,6 +800,11 @@ int    fork(void) {
 		cc9_reap_child_reset();                  /* copied tables describe the parent's kids */
 		extern void cc9_poll_child_reset(void);  /* ...and the copied poll dups/threads */
 		cc9_poll_child_reset();
+		/* ...and the copied THREAD registry names the parent's workers: a child that
+		 * exits without exec'ing would post "kill" notes to them (see
+		 * cc9_threads_child_reset). */
+		{ extern void cc9_threads_child_reset(void) __attribute__((weak));
+		  if (cc9_threads_child_reset) cc9_threads_child_reset(); }
 	}
 	else if (lim < 0x7fffffff) __sync_fetch_and_sub(&cc9_live_children, 1);   /* rfork failed */
 	return pid;
