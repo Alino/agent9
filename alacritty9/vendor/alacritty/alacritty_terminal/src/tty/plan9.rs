@@ -118,6 +118,9 @@ fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signa
                             }
                         }
                         let mut buf = shared.buf.lock().unwrap();
+                        // Optionally strip the Kitty keyboard push from the child's
+                        // output before the parser sees it (see ALACRITTY9_NOKITTY).
+                        let nokitty = std::env::var_os("ALACRITTY9_NOKITTY").is_some();
                         for &byte in &chunk[..n] {
                             // Track alt-screen toggles for raw mode.
                             if tail.len() == 16 {
@@ -129,6 +132,9 @@ fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signa
                                     && tail.iter().rev().zip(pat.iter().rev()).all(|(a, b)| a == b)
                             };
                             // Kitty keyboard push: ESC [ > <digits> u
+                            // ALACRITTY9_NOKITTY=1: swallow the child's Kitty keyboard
+                            // push so the terminal never enables that encoding and the
+                            // app falls back to legacy keys. Diagnostic switch.
                             let kitty_push = byte == b'u' && {
                                 let t: Vec<u8> = tail.iter().copied().collect();
                                 match t.iter().rposition(|&b| b == b'\x1b') {
@@ -176,6 +182,19 @@ fn spawn_reader(shared: Arc<Shared>, mut pipe: impl Read + Send + 'static, signa
                                 && !shared.raw.load(Ordering::Acquire)
                             {
                                 buf.push_back(b'\r');
+                            }
+                            if nokitty && kitty_push {
+                                // Drop the whole "ESC [ > flags u" from the stream so the
+                                // parser never enables the encoding: the bytes before this
+                                // one are already queued, so pop them back off.
+                                let t: Vec<u8> = tail.iter().copied().collect();
+                                if let Some(esc) = t.iter().rposition(|&b| b == b'\x1b') {
+                                    let seq_len = t.len() - esc; // includes the current byte
+                                    for _ in 0..seq_len.saturating_sub(1) {
+                                        buf.pop_back();
+                                    }
+                                }
+                                continue;
                             }
                             buf.push_back(byte);
                             last = byte;
@@ -269,6 +288,14 @@ impl io::Write for LineDiscipline {
                 data.len(),
                 data.first()
             );
+        }
+        // ALACRITTY9_INLOG=<path>: every byte sent TO the child, for comparing what a
+        // TUI receives before and after it changes keyboard modes.
+        if let Some(path) = std::env::var_os("ALACRITTY9_INLOG") {
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                let _ = writeln!(f, "{:?}", String::from_utf8_lossy(data));
+            }
         }
 
         // Raw mode (child is on the alternate screen): the child owns the
