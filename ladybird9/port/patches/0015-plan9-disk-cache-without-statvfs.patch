@@ -1,0 +1,37 @@
+diff --git a/Libraries/LibHTTP/Cache/CacheIndex.cpp b/Libraries/LibHTTP/Cache/CacheIndex.cpp
+index 26a473f251..a819c44592 100644
+--- a/Libraries/LibHTTP/Cache/CacheIndex.cpp
++++ b/Libraries/LibHTTP/Cache/CacheIndex.cpp
+@@ -182,11 +182,29 @@ ErrorOr<CacheIndex> CacheIndex::create(Database::Database& database, LexicalPath
+         FROM CacheIndex;
+     )#"sv));
+ 
+-    auto disk_space = TRY(FileSystem::compute_disk_space(cache_directory));
+-    auto maximum_disk_cache_size = compute_maximum_disk_cache_size(disk_space.free_bytes);
++#if defined(AK_OS_PLAN9)
++    // Plan 9 cannot report free space AT ALL: there is no statfs syscall, stat(5)'s
++    // Rstat carries only per-file fields, and 9front ships no df(1) as a result.
++    // cc9's statvfs() therefore fails with ENOSYS by design rather than inventing a
++    // number (a plausible lie is worse than an error — callers can branch on the
++    // error, not on a fabrication). Propagating it here cost the whole HTTP cache:
++    // CacheIndex::create failed, DiskCache::create failed with it, and every
++    // response was refetched forever.
++    //
++    // Sizing the cache from a fixed budget is not a claim about the disk, it is a
++    // policy choice for how much WE will use — which is all free_disk_space is
++    // actually used for.
++    static constexpr u64 PLAN9_ASSUMED_FREE_BYTES = 2ULL * 1024 * 1024 * 1024;
++    auto free_bytes = PLAN9_ASSUMED_FREE_BYTES;
++    if (auto disk_space = FileSystem::compute_disk_space(cache_directory); !disk_space.is_error())
++        free_bytes = disk_space.value().free_bytes;
++#else
++    auto free_bytes = TRY(FileSystem::compute_disk_space(cache_directory)).free_bytes;
++#endif
++    auto maximum_disk_cache_size = compute_maximum_disk_cache_size(free_bytes);
+ 
+     Limits limits {
+-        .free_disk_space = disk_space.free_bytes,
++        .free_disk_space = free_bytes,
+         .maximum_disk_cache_size = maximum_disk_cache_size,
+         .maximum_disk_cache_entry_size = compute_maximum_disk_cache_entry_size(maximum_disk_cache_size),
+     };

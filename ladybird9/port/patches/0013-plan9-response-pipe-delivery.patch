@@ -81,7 +81,7 @@ index ad9b71a5c1..ff8184ce0d 100644
          u64 delivered_size { 0 };
          Optional<NetworkError> network_error;
 diff --git a/Services/RequestServer/Request.cpp b/Services/RequestServer/Request.cpp
-index ddd7492357..e7c709030b 100644
+index ddd7492357..46a736354a 100644
 --- a/Services/RequestServer/Request.cpp
 +++ b/Services/RequestServer/Request.cpp
 @@ -11,6 +11,7 @@
@@ -92,7 +92,31 @@ index ddd7492357..e7c709030b 100644
  #include <LibHTTP/Cache/DiskCache.h>
  #include <LibHTTP/Cache/Utilities.h>
  #include <LibHTTP/Status.h>
-@@ -881,6 +882,13 @@ void Request::handle_connect_state()
+@@ -681,7 +682,22 @@ void Request::handle_read_cache_state()
+ 
+     transfer_headers_to_client_if_needed();
+ 
+-    if (m_cache_entry_reader->body_size() < static_cast<u64>(PAGE_SIZE)) {
++    // Upstream streams small cache hits through the pipe and hands big ones to the
++    // client as a body FILE (fd + offset + size) for it to mmap. On plan9 that
++    // second path cannot work: fds do not cross as real descriptors here, they are
++    // published by name through /srv and reopened by the receiver, and the reopened
++    // channel does not report the underlying file's size. MappedFile's bounds check
++    // (size > file_size - offset) then rejects EVERY hit with EINVAL — logged as
++    // "Failed to map body file: Invalid argument" — so enabling the disk cache
++    // turned warm loads into a page of failed subresources. Stream them all; it is
++    // the same upstream code path, just without the size threshold.
++#if defined(AK_OS_PLAN9)
++    constexpr bool stream_cache_hit_through_pipe = true;
++#else
++    bool const stream_cache_hit_through_pipe = m_cache_entry_reader->body_size() < static_cast<u64>(PAGE_SIZE);
++#endif
++
++    if (stream_cache_hit_through_pipe) {
+         if (inform_client_request_started().is_error())
+             return;
+ 
+@@ -881,6 +897,13 @@ void Request::handle_connect_state()
      set_option(CURLOPT_URL, m_url.to_byte_string().characters());
      set_option(CURLOPT_PORT, m_url.port_or_default());
      set_option(CURLOPT_CONNECTTIMEOUT, s_connect_timeout_seconds);
@@ -106,7 +130,7 @@ index ddd7492357..e7c709030b 100644
      set_option(CURLOPT_CONNECT_ONLY, 1L);
  
      // Pre-populate the multi's hostcache so libcurl skips its threaded resolver entirely.
-@@ -933,6 +941,13 @@ void Request::handle_fetch_state()
+@@ -933,6 +956,13 @@ void Request::handle_fetch_state()
      set_option(CURLOPT_URL, m_url.to_byte_string().characters());
      set_option(CURLOPT_PORT, m_url.port_or_default());
      set_option(CURLOPT_CONNECTTIMEOUT, s_connect_timeout_seconds);
@@ -120,7 +144,7 @@ index ddd7492357..e7c709030b 100644
  
      if (m_alt_svc_cache_path.has_value())
          set_option(CURLOPT_ALTSVC, m_alt_svc_cache_path->characters());
-@@ -1005,6 +1020,7 @@ void Request::handle_fetch_state()
+@@ -1005,6 +1035,7 @@ void Request::handle_fetch_state()
      set_option(CURLOPT_WRITEFUNCTION, &on_data_received);
      set_option(CURLOPT_WRITEDATA, this);
  
@@ -128,7 +152,7 @@ index ddd7492357..e7c709030b 100644
      if constexpr (REQUESTSERVER_WIRE_DEBUG) {
          set_option(CURLOPT_NOPROGRESS, 0L);
          set_option(CURLOPT_XFERINFOFUNCTION, &on_xferinfo);
-@@ -1341,6 +1357,19 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
+@@ -1341,6 +1372,19 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
          return {};
      }
  
@@ -148,7 +172,7 @@ index ddd7492357..e7c709030b 100644
      if (!m_client_writer_notifier) {
          m_client_writer_notifier = Core::Notifier::construct(m_client_request_pipe->writer_fd(), Core::NotificationType::Write);
          m_client_writer_notifier->set_enabled(false);
-@@ -1387,6 +1416,8 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
+@@ -1387,6 +1431,8 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
              }
  
              m_client_writer_notifier->set_enabled(true);
@@ -157,7 +181,7 @@ index ddd7492357..e7c709030b 100644
              return {};
          }
  
-@@ -1398,11 +1429,15 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
+@@ -1398,11 +1444,15 @@ ErrorOr<void> Request::write_queued_bytes_without_blocking()
  
          if (written < bytes.size()) {
              m_client_writer_notifier->set_enabled(true);

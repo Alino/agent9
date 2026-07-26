@@ -128,4 +128,16 @@ gen 0014-plan9-youtube-player.patch \
   Libraries/LibWeb/HTML/HTMLMediaElement.cpp \
   Libraries/LibWebView/Application.cpp
 
+# 0015 = keep the HTTP disk cache when the platform cannot report free space.
+# Plan 9 has NO way to answer statvfs (no statfs syscall, stat(5)'s Rstat has no
+# free-space field, 9front ships no df(1) for that reason), so cc9's statvfs
+# fails with ENOSYS by design rather than fabricating a number. CacheIndex::create
+# TRY'd it, so that ENOSYS killed DiskCache::create outright and every response
+# was refetched forever -- which also kept the JS BYTECODE cache dead, since it
+# is stored in the same cache. Falling back to a fixed budget is not a claim
+# about the disk; it is a policy choice about how much we will use, which is all
+# free_disk_space feeds.
+gen 0015-plan9-disk-cache-without-statvfs.patch \
+  Libraries/LibHTTP/Cache/CacheIndex.cpp
+
 echo "done."
