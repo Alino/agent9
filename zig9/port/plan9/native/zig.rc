@@ -11,4 +11,10 @@ if(~ $1 version env help fmt targets libc)
 	exec /amd64/bin/zig9 $*
 sub=$1
 shift
+# ponytail: a fresh (uncached) build/build-exe/run/test on cirno's CPU takes
+# minutes with ZERO progress output from the compiler itself — indistinguishable
+# from a hang unless we say so up front. Cached rebuilds are ~15s; only the
+# first compile of a given file is this slow. See zig9/port/plan9/NOTES.md
+# ("zig build natively — LANDED").
+echo 'zig9: compiling natively is slow on real hardware -- first build of a file can take a few minutes with NO progress output; cached rebuilds are ~15s. It is not stuck.' >[1=2]
 exec /amd64/bin/zig9 $sub --zig-lib-dir /sys/lib/zig9/lib --global-cache-dir $home/lib/zig9-cache $*
