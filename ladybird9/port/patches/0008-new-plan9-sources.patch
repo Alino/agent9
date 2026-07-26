@@ -713,10 +713,10 @@ index 0000000000..67d360f7ae
 +}
 diff --git a/UI/Plan9/Plan9WebView.cpp b/UI/Plan9/Plan9WebView.cpp
 new file mode 100644
-index 0000000000..a2d0b8b7b2
+index 0000000000..b97c0e66c1
 --- /dev/null
 +++ b/UI/Plan9/Plan9WebView.cpp
-@@ -0,0 +1,290 @@
+@@ -0,0 +1,373 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -726,6 +726,7 @@ index 0000000000..a2d0b8b7b2
 +#include <UI/Plan9/Plan9WebView.h>
 +
 +#include <AK/Utf16String.h>
++#include <LibCore/Environment.h>
 +#include <LibGfx/Bitmap.h>
 +#include <LibGfx/SharedImageBuffer.h>
 +#include <LibWeb/HTML/VisibilityState.h>
@@ -774,6 +775,7 @@ index 0000000000..a2d0b8b7b2
 +{
 +    // Stream every painted frame to the presenter.
 +    on_ready_to_paint = [this] { present(); };
++    m_present_stats = Core::Environment::has("LB9_PRESENT_STATS"sv);
 +}
 +
 +static void write_all(int fd, void const* buf, size_t n)
@@ -800,6 +802,14 @@ index 0000000000..a2d0b8b7b2
 +    write_all(fd, text.characters_without_null_termination(), len);
 +}
 +
++static void put32be(u8* p, u32 v)
++{
++    p[0] = static_cast<u8>(v >> 24);
++    p[1] = static_cast<u8>(v >> 16);
++    p[2] = static_cast<u8>(v >> 8);
++    p[3] = static_cast<u8>(v);
++}
++
 +void Plan9WebView::present()
 +{
 +    if (!m_active)
@@ -808,21 +818,91 @@ index 0000000000..a2d0b8b7b2
 +        return;
 +
 +    auto bitmap = m_client_state.front_bitmap.shared_image_buffer->bitmap();
-+    u32 w = static_cast<u32>(bitmap->width());
-+    u32 h = static_cast<u32>(bitmap->height());
++    // The CONTENT size, not the bitmap's: the compositor rounds backing-store
++    // allocations up (a 892x600 viewport arrives in a 1148x908 bitmap), and
++    // shipping bitmap dimensions sent up to ~2x the bytes — garbage padding
++    // included — and made gl9win2 loadimage the padding too. last_painted_size
++    // is the content rect the compositor actually painted this frame.
++    auto content = m_client_state.front_bitmap.last_painted_size;
++    u32 w = static_cast<u32>(min(content.width().value(), bitmap->width()));
++    u32 h = static_cast<u32>(min(content.height().value(), bitmap->height()));
++    if (w == 0 || h == 0)
++        return;
 +
-+    // GL9B: BGRA8888 full frame (== Plan 9 ARGB32; gl9win2 converts on blit).
-+    u8 hdr[12] = {
-+        'G', 'L', '9', 'B',
-+        static_cast<u8>(w >> 24), static_cast<u8>(w >> 16), static_cast<u8>(w >> 8), static_cast<u8>(w),
-+        static_cast<u8>(h >> 24), static_cast<u8>(h >> 16), static_cast<u8>(h >> 8), static_cast<u8>(h)
-+    };
-+    write_all(m_frame_fd, hdr, sizeof hdr);
++    // The compositor's damage rect for THIS frame (captured in
++    // did_accept_presented_backing_store just before we were called). A delta is
++    // only meaningful against the presenter's retained image, i.e. when the last
++    // frame it received had the same size; otherwise (first frame, resize, tab
++    // switch resets m_last_sent_size) fall back to a full frame. An empty rect is
++    // treated as full too — "no damage info" must never mean "send nothing", or a
++    // presenter that missed it would stay stale forever.
++    auto damage = m_pending_damage;
++    m_pending_damage = {};
++    if (m_present_stats && ++m_stat_damage_samples % 50 == 1)
++        warnln("LB9_PRESENT_STATS: damage sample {} (bitmap {}x{})", damage, w, h);
++    damage.intersect(Gfx::IntRect { 0, 0, static_cast<int>(w), static_cast<int>(h) });
 +
-+    // Row-by-row: the presenter reads w*h*4 contiguous bytes, and the bitmap's
-+    // pitch may exceed w*4 (padding), so send exactly the visible width.
-+    for (u32 y = 0; y < h; ++y)
-+        write_all(m_frame_fd, bitmap->scanline_u8(static_cast<int>(y)), static_cast<size_t>(w) * 4);
++    bool partial = Gfx::IntSize(static_cast<int>(w), static_cast<int>(h)) == m_last_sent_size
++        && !damage.is_empty()
++        && (damage.width() < static_cast<int>(w) || damage.height() < static_cast<int>(h));
++
++    // Stage the whole record and ship it as ONE write(2). The old row-by-row loop
++    // cost one syscall per scanline (620 for a default window) per frame; on this
++    // hardware the syscalls alone were a visible slice of every paint. The bitmap
++    // pitch may exceed w*4, so rows still copy individually — into the staging
++    // buffer, not into separate writes.
++    if (partial) {
++        // GL9D: BGRA sub-rect; gl9win2 loadimages only this rect into its
++        // retained image and draws just that area (~proportional cost), instead
++        // of a full-window loadimage (~70-135 ms) for every blink of a cursor.
++        u32 dx = static_cast<u32>(damage.x());
++        u32 dy = static_cast<u32>(damage.y());
++        u32 dw = static_cast<u32>(damage.width());
++        u32 dh = static_cast<u32>(damage.height());
++        size_t need = 20 + static_cast<size_t>(dw) * dh * 4;
++        if (m_staging.size() < need) {
++            if (m_staging.try_resize(need).is_error())
++                return;
++        }
++        u8* p = m_staging.data();
++        memcpy(p, "GL9D", 4);
++        put32be(p + 4, dx);
++        put32be(p + 8, dy);
++        put32be(p + 12, dw);
++        put32be(p + 16, dh);
++        p += 20;
++        for (u32 y = 0; y < dh; ++y, p += static_cast<size_t>(dw) * 4)
++            memcpy(p, bitmap->scanline_u8(static_cast<int>(dy + y)) + static_cast<size_t>(dx) * 4, static_cast<size_t>(dw) * 4);
++        write_all(m_frame_fd, m_staging.data(), need);
++        if (m_present_stats) {
++            ++m_stat_partial;
++            m_stat_bytes += need;
++        }
++    } else {
++        // GL9B: BGRA8888 full frame (== Plan 9 ARGB32; gl9win2 converts on blit).
++        size_t need = 12 + static_cast<size_t>(w) * h * 4;
++        if (m_staging.size() < need) {
++            if (m_staging.try_resize(need).is_error())
++                return;
++        }
++        u8* p = m_staging.data();
++        memcpy(p, "GL9B", 4);
++        put32be(p + 4, w);
++        put32be(p + 8, h);
++        p += 12;
++        for (u32 y = 0; y < h; ++y, p += static_cast<size_t>(w) * 4)
++            memcpy(p, bitmap->scanline_u8(static_cast<int>(y)), static_cast<size_t>(w) * 4);
++        write_all(m_frame_fd, m_staging.data(), need);
++        m_last_sent_size = { static_cast<int>(w), static_cast<int>(h) };
++        if (m_present_stats) {
++            ++m_stat_full;
++            m_stat_bytes += need;
++        }
++    }
++
++    if (m_present_stats && (m_stat_full + m_stat_partial) % 100 == 0)
++        warnln("LB9_PRESENT_STATS: {} full, {} partial, {} MiB on the wire",
++            m_stat_full, m_stat_partial, m_stat_bytes / (1024 * 1024));
 +}
 +
 +// Presenter modifier bitmask (bit0 shift, bit1 ctrl, bit2 alt, bit3 super) ->
@@ -983,6 +1063,9 @@ index 0000000000..a2d0b8b7b2
 +    m_active = active;
 +    if (m_active) {
 +        // Newly-active tab: push its current frame + chrome state to the presenter.
++        // Full frame, forcibly — the presenter's retained image holds the OTHER
++        // tab's pixels, so a GL9D delta would composite onto the wrong frame.
++        m_last_sent_size = {};
 +        present();
 +        emit_chrome_state();
 +    }
@@ -1009,10 +1092,10 @@ index 0000000000..a2d0b8b7b2
 +}
 diff --git a/UI/Plan9/Plan9WebView.h b/UI/Plan9/Plan9WebView.h
 new file mode 100644
-index 0000000000..b8d8a7a4fd
+index 0000000000..82d4a03a0b
 --- /dev/null
 +++ b/UI/Plan9/Plan9WebView.h
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,93 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -1070,8 +1153,31 @@ index 0000000000..b8d8a7a4fd
 +    void dispatch_mouse(Web::MouseEvent::Type, Web::UIEvents::MouseButton changed_button, u16 modifiers, double wheel_y = 0);
 +    void dispatch_key(bool down, u32 rune, u16 modifiers);
 +
++    // The compositor's damage rect for the frame that is ABOUT to be presented:
++    // ViewImplementation calls this immediately before on_ready_to_paint, and it
++    // is the only place the damage information still exists in the UI process.
++    // present() consumes it to decide GL9D (sub-rect) vs GL9B (full frame).
++    virtual void did_accept_presented_backing_store(i32, Gfx::IntRect damage_rect) override
++    {
++        m_pending_damage = damage_rect;
++    }
++
 +    int m_frame_fd { 1 };
 +    bool m_active { true };
++    Gfx::IntRect m_pending_damage;
++    // Size of the last frame the presenter actually received. A GL9D delta is
++    // only valid against a retained image of the SAME size; anything else (first
++    // frame, resize, tab switch) must resend a full GL9B.
++    Gfx::IntSize m_last_sent_size;
++    // Reused wire-staging buffer so a frame goes out as ONE write(2) instead of
++    // one syscall per scanline.
++    ByteBuffer m_staging;
++    // $LB9_PRESENT_STATS=1: count full/partial frames + bytes, report per 100.
++    bool m_present_stats { false };
++    u32 m_stat_full { 0 };
++    u32 m_stat_partial { 0 };
++    u32 m_stat_damage_samples { 0 };
++    u64 m_stat_bytes { 0 };
 +    Gfx::IntPoint m_mouse;
 +    Web::UIEvents::MouseButton m_buttons { Web::UIEvents::MouseButton::None };
 +
@@ -1085,10 +1191,10 @@ index 0000000000..b8d8a7a4fd
 +}
 diff --git a/UI/Plan9/main.cpp b/UI/Plan9/main.cpp
 new file mode 100644
-index 0000000000..1b721771bc
+index 0000000000..3d011d98ff
 --- /dev/null
 +++ b/UI/Plan9/main.cpp
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,208 @@
 +/*
 + * Copyright (c) 2026, the Ladybird developers.
 + *
@@ -1108,6 +1214,7 @@ index 0000000000..1b721771bc
 +#include <UI/Plan9/Plan9BrowserWindow.h>
 +
 +#include <fcntl.h>
++#include <sys/ioctl.h>
 +#include <unistd.h>
 +
 +// Read exactly n bytes from fd 0 (the presenter event stream); false on EOF.
@@ -1122,6 +1229,18 @@ index 0000000000..1b721771bc
 +        got += static_cast<size_t>(r);
 +    }
 +    return true;
++}
++
++// Bytes already buffered on the presenter event stream (0 when unknowable).
++// Drives the drain loop below: gl9win2 emits one 16-byte record per wheel
++// notch / mouse move with no coalescing of its own, so under a scroll flood
++// the pipe holds a queue of them.
++static size_t input_bytes_pending()
++{
++    int n = 0;
++    if (::ioctl(0, FIONREAD, &n) < 0 || n < 0)
++        return 0;
++    return static_cast<size_t>(n);
 +}
 +
 +ErrorOr<int> ladybird_main(Main::Arguments arguments)
@@ -1177,55 +1296,106 @@ index 0000000000..1b721771bc
 +    // 16-byte chrome commands (type 8; navigate/sub-8 has a trailing UTF-8 URL).
 +    auto input_notifier = Core::Notifier::construct(0, Core::Notifier::Type::Read);
 +    input_notifier->on_activation = [&window]() {
-+        u8 rec[16];
-+        if (!read_exact(rec, sizeof rec)) {
-+            if (window->on_quit)
-+                window->on_quit();
-+            return;
-+        }
-+        u8 type = rec[0];
-+        u8 state = rec[1];
-+        u16 mods = static_cast<u16>((rec[2] << 8) | rec[3]);
-+        u32 a = (static_cast<u32>(rec[4]) << 24) | (static_cast<u32>(rec[5]) << 16) | (static_cast<u32>(rec[6]) << 8) | rec[7];
-+        u32 b = (static_cast<u32>(rec[8]) << 24) | (static_cast<u32>(rec[9]) << 16) | (static_cast<u32>(rec[10]) << 8) | rec[11];
++        // Drain every record already buffered in ONE activation, coalescing as
++        // we go. gl9win2 writes one 16-byte record per wheel notch and per mouse
++        // move with no merging of its own, and reading a single record per
++        // event-loop turn (as this used to) meant a scroll flood queued behind
++        // full page repaints: each queued notch became its own 120-px wheel
++        // event, its own relayout, its own repaint. Merging a run of notches
++        // into one wheel event does one repaint for the lot; runs of mouse
++        // moves keep only the newest position. Ordering is preserved — any
++        // record of a different type flushes the pending coalesced state first.
++        i32 scroll_accum = 0;
++        u16 scroll_mods = 0;
++        bool have_move = false;
++        u32 move_x = 0, move_y = 0;
++        u16 move_mods = 0;
 +
-+        if (type == 8) {
-+            ByteString text;
-+            if (state == 8) { // navigate carries u32be len + UTF-8 URL
-+                u8 lenbuf[4];
-+                if (!read_exact(lenbuf, sizeof lenbuf)) {
-+                    if (window->on_quit)
-+                        window->on_quit();
-+                    return;
-+                }
-+                u32 len = (static_cast<u32>(lenbuf[0]) << 24) | (static_cast<u32>(lenbuf[1]) << 16) | (static_cast<u32>(lenbuf[2]) << 8) | lenbuf[3];
-+                // A URL longer than this is a corrupt/desynced stream, not a real
-+                // navigation. Once the length prefix is wrong we can't tell where
-+                // the next record begins, so tear the presenter connection down
-+                // rather than parse the following URL bytes as input events.
-+                static constexpr u32 max_url_length = 64 * 1024;
-+                if (len > max_url_length) {
-+                    if (window->on_quit)
-+                        window->on_quit();
-+                    return;
-+                }
-+                if (len > 0) {
-+                    auto payload_or_error = ByteBuffer::create_uninitialized(len);
-+                    // On a short read or alloc failure the len payload bytes are
-+                    // left (partly) unconsumed on fd 0, so the stream is desynced
-+                    // either way — quit instead of returning to misparse them.
-+                    if (payload_or_error.is_error() || !read_exact(payload_or_error.value().data(), len)) {
++        auto flush_scroll = [&]() {
++            if (scroll_accum != 0) {
++                window->feed_event(4, 0, scroll_mods, static_cast<u32>(scroll_accum), 0);
++                scroll_accum = 0;
++            }
++        };
++        auto flush_move = [&]() {
++            if (have_move) {
++                window->feed_event(2, 0, move_mods, move_x, move_y);
++                have_move = false;
++            }
++        };
++
++        for (;;) {
++            u8 rec[16];
++            if (!read_exact(rec, sizeof rec)) {
++                if (window->on_quit)
++                    window->on_quit();
++                return;
++            }
++            u8 type = rec[0];
++            u8 state = rec[1];
++            u16 mods = static_cast<u16>((rec[2] << 8) | rec[3]);
++            u32 a = (static_cast<u32>(rec[4]) << 24) | (static_cast<u32>(rec[5]) << 16) | (static_cast<u32>(rec[6]) << 8) | rec[7];
++            u32 b = (static_cast<u32>(rec[8]) << 24) | (static_cast<u32>(rec[9]) << 16) | (static_cast<u32>(rec[10]) << 8) | rec[11];
++
++            if (type == 8) {
++                flush_move();
++                flush_scroll();
++                ByteString text;
++                if (state == 8) { // navigate carries u32be len + UTF-8 URL
++                    u8 lenbuf[4];
++                    if (!read_exact(lenbuf, sizeof lenbuf)) {
 +                        if (window->on_quit)
 +                            window->on_quit();
 +                        return;
 +                    }
-+                    text = ByteString { payload_or_error.value().bytes() };
++                    u32 len = (static_cast<u32>(lenbuf[0]) << 24) | (static_cast<u32>(lenbuf[1]) << 16) | (static_cast<u32>(lenbuf[2]) << 8) | lenbuf[3];
++                    // A URL longer than this is a corrupt/desynced stream, not a real
++                    // navigation. Once the length prefix is wrong we can't tell where
++                    // the next record begins, so tear the presenter connection down
++                    // rather than parse the following URL bytes as input events.
++                    static constexpr u32 max_url_length = 64 * 1024;
++                    if (len > max_url_length) {
++                        if (window->on_quit)
++                            window->on_quit();
++                        return;
++                    }
++                    if (len > 0) {
++                        auto payload_or_error = ByteBuffer::create_uninitialized(len);
++                        // On a short read or alloc failure the len payload bytes are
++                        // left (partly) unconsumed on fd 0, so the stream is desynced
++                        // either way — quit instead of returning to misparse them.
++                        if (payload_or_error.is_error() || !read_exact(payload_or_error.value().data(), len)) {
++                            if (window->on_quit)
++                                window->on_quit();
++                            return;
++                        }
++                        text = ByteString { payload_or_error.value().bytes() };
++                    }
 +                }
++                window->handle_command(state, a, text);
++            } else if (type == 2) { // mouse move: keep only the newest position
++                flush_scroll();
++                have_move = true;
++                move_x = a;
++                move_y = b;
++                move_mods = mods;
++            } else if (type == 4) { // wheel notch: accumulate the run
++                flush_move();
++                scroll_accum += static_cast<i32>(a);
++                scroll_mods = mods;
++            } else {
++                flush_move();
++                flush_scroll();
++                window->feed_event(type, state, mods, a, b);
 +            }
-+            window->handle_command(state, a, text);
-+            return;
++
++            // Records are 16 bytes (the CMDNAV tail was consumed above); less
++            // than one full record buffered means the next activation owns it.
++            if (input_bytes_pending() < 16)
++                break;
 +        }
-+        window->feed_event(type, state, mods, a, b);
++        flush_move();
++        flush_scroll();
 +    };
 +
 +    auto initial_url = options.urls.is_empty() ? ByteString {} : options.urls.first().serialize().to_byte_string();

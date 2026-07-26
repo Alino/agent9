@@ -49,7 +49,7 @@ index 90dd9f2931..7f1da65d6c 100644
      // https://immersive-web.github.io/webxr/#navigator-xr-attribute
      [SecureContext, SameObject] readonly attribute XRSystem xr;
 diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
-index 2fcaff298a..1810eec1f4 100644
+index 2fcaff298a..d96cb44d5f 100644
 --- a/Libraries/LibWebView/Application.cpp
 +++ b/Libraries/LibWebView/Application.cpp
 @@ -32,6 +32,8 @@
@@ -61,7 +61,7 @@ index 2fcaff298a..1810eec1f4 100644
  #include <LibWebView/CookieJar.h>
  #include <LibWebView/HSTSStore.h>
  #include <LibWebView/HeadlessWebView.h>
-@@ -1088,6 +1090,45 @@ ErrorOr<void> Application::launch_services()
+@@ -1088,6 +1090,54 @@ ErrorOr<void> Application::launch_services()
          m_storage_jar = StorageJar::create();
      }
  
@@ -100,6 +100,15 @@ index 2fcaff298a..1810eec1f4 100644
 +                warnln("LB9_YT_CONSENT: seeded, Cookie header = {}", header);
 +            else
 +                warnln("LB9_YT_CONSENT: SEED REJECTED, Cookie header = '{}'", header);
++
++            // youtube builds the "Before you continue" dialog CLIENT-SIDE (the phrase
++            // appears nowhere in the served HTML), so what matters is what page JS
++            // sees through document.cookie — which reads with Source::NonHttp, not
++            // Http. Report both: an empty NonHttp view with a populated Http one
++            // means the cookie is being sent on the wire but hidden from the script
++            // that decides whether to show the wall.
++            auto script_visible = m_cookie_jar->get_cookie(*url, HTTP::Cookie::Source::NonHttp);
++            warnln("LB9_YT_CONSENT: document.cookie view = '{}'", script_visible);
 +        }
 +    }
 +#endif
