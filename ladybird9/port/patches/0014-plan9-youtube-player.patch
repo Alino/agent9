@@ -49,7 +49,7 @@ index 90dd9f2931..7f1da65d6c 100644
      // https://immersive-web.github.io/webxr/#navigator-xr-attribute
      [SecureContext, SameObject] readonly attribute XRSystem xr;
 diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
-index 2fcaff298a..093e560417 100644
+index 2fcaff298a..c0940318bc 100644
 --- a/Libraries/LibWebView/Application.cpp
 +++ b/Libraries/LibWebView/Application.cpp
 @@ -32,6 +32,8 @@
@@ -61,7 +61,7 @@ index 2fcaff298a..093e560417 100644
  #include <LibWebView/CookieJar.h>
  #include <LibWebView/HSTSStore.h>
  #include <LibWebView/HeadlessWebView.h>
-@@ -1088,6 +1090,28 @@ ErrorOr<void> Application::launch_services()
+@@ -1088,6 +1090,33 @@ ErrorOr<void> Application::launch_services()
          m_storage_jar = StorageJar::create();
      }
  
@@ -75,7 +75,12 @@ index 2fcaff298a..093e560417 100644
 +            HTTP::Cookie::ParsedCookie cookie;
 +            cookie.name = MUST(String::from_utf8(name));
 +            cookie.value = MUST(String::from_utf8(value));
-+            cookie.domain = MUST(String::from_utf8(".youtube.com"sv));
++            // NO leading dot. A Set-Cookie header's "Domain=.youtube.com" has its
++            // dot stripped during parsing, but this ParsedCookie is built by hand
++            // and skips that: domain_matches() then tests the character before the
++            // suffix, lands on 'w' of "www", and rejects the cookie outright — the
++            // consent wall came back every run with no diagnostic at all.
++            cookie.domain = MUST(String::from_utf8("youtube.com"sv));
 +            cookie.path = MUST(String::from_utf8("/"sv));
 +            cookie.expiry_time_from_max_age_attribute = UnixDateTime::now() + AK::Duration::from_seconds(60LL * 60 * 24 * 365);
 +            auto url = URL::Parser::basic_parse("https://www.youtube.com/"sv);
