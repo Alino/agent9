@@ -1,8 +1,16 @@
 diff --git a/Services/RequestServer/ConnectionFromClient.cpp b/Services/RequestServer/ConnectionFromClient.cpp
-index 4eec73ec9d..987a7c4f93 100644
+index 4eec73ec9d..61b9229d53 100644
 --- a/Services/RequestServer/ConnectionFromClient.cpp
 +++ b/Services/RequestServer/ConnectionFromClient.cpp
-@@ -107,6 +107,19 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
+@@ -7,6 +7,7 @@
+ #include <AK/IDAllocator.h>
+ #include <AK/NonnullOwnPtr.h>
+ #include <AK/WeakPtr.h>
++#include <LibCore/Environment.h>
+ #include <LibCore/EventLoop.h>
+ #include <LibCore/Proxy.h>
+ #include <LibCore/Socket.h>
+@@ -107,6 +108,19 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
      set_option(CURLMOPT_SOCKETDATA, this);
      set_option(CURLMOPT_TIMERFUNCTION, &on_timeout_callback);
      set_option(CURLMOPT_TIMERDATA, this);
@@ -22,14 +30,34 @@ index 4eec73ec9d..987a7c4f93 100644
  
      m_timer = Core::Timer::create_single_shot(0, [this] {
          note_event_tick("curl-timer-fired"sv);
-@@ -117,6 +130,31 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
+@@ -117,6 +131,51 @@ ConnectionFromClient::ConnectionFromClient(NonnullOwnPtr<IPC::Transport> transpo
          VERIFY(result == CURLM_OK);
          check_active_requests();
      });
 +
 +#if defined(AK_OS_PLAN9)
 +    // See m_progress_timer in the header: drive curl even if socket notifiers miss.
-+    m_progress_timer = Core::Timer::create_repeating(20, [this] {
++    //
++    // This is a SAFETY NET and must be priced like one. It used to run every 20 ms
++    // and, on every tick, call curl_multi_socket_action once per socket curl knew
++    // about. A youtube page holds a couple of hundred sockets, so that was ~10k
++    // curl calls a second plus a write-pump across every active request — on a
++    // two-core Celeron it ate the event loop it was supposed to rescue, and
++    // requests sat queued for minutes (durations of 200-600 s in the log).
++    //
++    // The socket notifiers are the primary mechanism and they work most of the
++    // time; this only has to catch the ones they miss, so a low rate is enough
++    // and the per-socket sweep is the expensive part to bound. Ticking at
++    // PROGRESS_TICK_MS keeps the worst-case stall short without spending the CPU
++    // that actually moves bytes. $LB9_PROGRESS_TICK_MS overrides it for tuning on
++    // a faster or slower box.
++    auto tick_ms = 250;
++    if (auto override_ms = Core::Environment::get("LB9_PROGRESS_TICK_MS"sv); override_ms.has_value()) {
++        if (auto parsed = override_ms->to_number<int>(); parsed.has_value() && *parsed >= 10)
++            tick_ms = *parsed;
++    }
++
++    m_progress_timer = Core::Timer::create_repeating(tick_ms, [this] {
 +        // cc9/plan9: re-drive every active request's queued writes (the writable
 +        // notifier on the client pipe is unreliable here). pump_writes() self-
 +        // guards on pipe-present + buffered-data.
