@@ -49,7 +49,7 @@ index 90dd9f2931..7f1da65d6c 100644
      // https://immersive-web.github.io/webxr/#navigator-xr-attribute
      [SecureContext, SameObject] readonly attribute XRSystem xr;
 diff --git a/Libraries/LibWebView/Application.cpp b/Libraries/LibWebView/Application.cpp
-index 2fcaff298a..d96cb44d5f 100644
+index 2fcaff298a..eb8b90795e 100644
 --- a/Libraries/LibWebView/Application.cpp
 +++ b/Libraries/LibWebView/Application.cpp
 @@ -32,6 +32,8 @@
@@ -61,7 +61,7 @@ index 2fcaff298a..d96cb44d5f 100644
  #include <LibWebView/CookieJar.h>
  #include <LibWebView/HSTSStore.h>
  #include <LibWebView/HeadlessWebView.h>
-@@ -1088,6 +1090,54 @@ ErrorOr<void> Application::launch_services()
+@@ -1088,6 +1090,68 @@ ErrorOr<void> Application::launch_services()
          m_storage_jar = StorageJar::create();
      }
  
@@ -87,8 +87,22 @@ index 2fcaff298a..d96cb44d5f 100644
 +            if (url.has_value())
 +                m_cookie_jar->set_cookie(*url, cookie, HTTP::Cookie::Source::Http);
 +        };
-+        seed("SOCS"sv, "CAISNQgDEitib3FfaWRlbnRpdHlodHRwc2Vzc2lvbmlkX3YxGgJlbiACGgYIgLC_pgY"sv);
-+        seed("CONSENT"sv, "YES+cb.20240101-00-p0.en+FX+000"sv);
++        // The VALUES matter and they are not guessable from first principles, so
++        // make them tunable without a rebuild: LB9_YT_CONSENT may be "1" (these
++        // defaults) or an explicit "NAME=VALUE;NAME2=VALUE2" list. SOCS=CAI is
++        // what yt-dlp plants to clear this same interstitial; the long
++        // consent-flow blob that used to be hardcoded here is session-shaped and
++        // did NOT dismiss the dialog even though it reached the page correctly.
++        auto spec = Core::Environment::get("LB9_YT_CONSENT"sv).value_or("1"sv);
++        if (spec == "1"sv || spec.is_empty()) {
++            seed("SOCS"sv, "CAI"sv);
++            seed("CONSENT"sv, "YES+cb.20240101-00-p0.en+FX+000"sv);
++        } else {
++            spec.for_each_split_view(';', SplitBehavior::Nothing, [&](StringView pair) {
++                if (auto eq = pair.find('='); eq.has_value())
++                    seed(pair.substring_view(0, *eq), pair.substring_view(*eq + 1));
++            });
++        }
 +
 +        // set_cookie() drops a cookie it dislikes without a word — a leading dot in
 +        // the domain silently cost several full runs. Read it straight back and say
