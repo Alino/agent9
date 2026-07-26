@@ -21,18 +21,42 @@ rustc hi.rs -o hi
 
 The package is **self-contained**: the `rustc` a.out (1.98-dev, cranelift
 backend), the plan9 std sysroot, the [`n9link`](../cc9/host/n9link.c) ELF→a.out
-linker, the `cargo9` mini-cargo (build/run/clean for local-path workspaces), and
-the cc9 runtime substrate it links against — all under `/usr/glenda/rust`, with
-`rustc`/`cargo9` wrappers in `/rc/bin`. It depends on **no other pac9 package**
-(you do not need `cc9`). `pac9 uninstall rust9` removes every installed file.
+linker, the `cargo9` mini-cargo (build/run/clean for local workspaces, plus
+`install` for crates.io — see below), and the cc9 runtime substrate it links
+against — all under `/usr/glenda/rust`, with `rustc`/`cargo9` wrappers in
+`/rc/bin`. It depends on **no other pac9 package** (you do not need `cc9`).
+`pac9 uninstall rust9` removes every installed file.
 
 rc gotcha: `=` is rc syntax, so quote flags that contain it —
 `rustc '--emit=metadata' x.rs` or use the space form `--emit metadata`.
 
-On-box limits (see `RUSTC-PORT.md`): no crates.io/proc-macros (single files and
-local-path deps via `cargo9`), one cranelift opt tier regardless of `-O`, no
+On-box limits (see `RUSTC-PORT.md`): no proc-macros (rustc itself can't load
+them — no dlopen), no build.rs, one cranelift opt tier regardless of `-O`, no
 `asm!`, empty backtraces. For anything heavier, cross-compile from the host
 (below) — it's the same std and linker.
+
+### `cargo9 install` — crates.io, on-box
+
+```
+cargo9 install catr             # latest non-yanked version
+cargo9 install catr@0.1.2       # pinned
+```
+
+Fetches the crate + its full dependency graph from crates.io (real feature
+activation, dev/build/target-cfg deps correctly excluded), sha256-verifies
+each `.crate` against the sparse index's `cksum` (the only integrity check —
+`hget` has no TLS chain trust, so this raises the bar from "tamper the
+tarball" to "tamper the index and the tarball consistently," not airtight),
+vendors under `/usr/glenda/rust/registry/`, builds leaves-first, and installs
+the resulting binary onto `$PATH` the same way `rustc`/`cargo9` themselves are
+installed. A crate needing proc-macros, a build script, or anything else this
+port permanently can't do gets refused with a specific error naming the
+offending crate — not a confusing rustc failure or a silent bad build.
+Real cargo itself can't be ported (hard-links libgit2/libcurl/openssl/
+libssh2, all unported to plan9); `cargo9 install` is the pragmatic stand-in,
+not a drop-in replacement — no workspaces, no non-default features, no git
+dependencies, no full semver range resolution (see `rust9/cargo9/src/
+registry.rs` for the exact heuristics and their stated limits).
 
 ## How it works
 

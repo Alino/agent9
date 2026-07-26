@@ -12,7 +12,12 @@
 # Prereqs (see rust9/RUSTC-PORT.md):
 #   - rustc a.out:  x.py build --stage 2 --host x86_64-unknown-plan9 compiler/rustc
 #   - sysroot:      x.py build --stage 1 library --target x86_64-unknown-plan9
-#   - n9link/cargo9: prebuilt/ (fetched from the box; sources cc9/host/n9link.c)
+#   - n9link:       prebuilt/ (fetched from the box; source at cc9/host/n9link.c)
+#   - cargo9:       prebuilt/ — rebuild via `cd rust9/cargo9 && cargo +nightly build
+#                   --release`, then copy target/x86_64-unknown-plan9/release/cargo9
+#                   over prebuilt/cargo9. Source at rust9/cargo9/ (registry install
+#                   support added 2026-07-26 — the original was a since-deleted
+#                   scratchpad file with no registry/install feature).
 #
 # Publish as the GitHub release `rust9` asset:
 #   gh release create rust9 rust9-amd64.tar.gz -t 'rust9 — Rust for 9front'

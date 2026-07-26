@@ -776,6 +776,7 @@ extern void n9_exits(const char *);
 static void cc9_reap_forked(int pid);      /* below: child bookkeeping + reaper */
 static void cc9_reap_child_reset(void);
 int waitpid(int, int *, int);
+void cc9_register_child(int pid);          /* below: for spawners that bypass fork() */
 
 /* RLIMIT_NPROC over the process axis: live fork()ed children not yet reaped.
  * cc9 threads are already capped in pthread_create; this is the OTHER way a page
@@ -1115,6 +1116,30 @@ static void cc9_reap_forked(int childpid)
 	}
 	n9_semrelease(&zlock, 1);
 	n9_semrelease(&sigchld_kick, 1);
+}
+
+/* Public entry point for a spawner that rforks a child WITHOUT going through
+ * this file's own fork() (e.g. rust9's std::process, which does its own raw
+ * n9_rfork()+exec in library/std/src/sys/process/plan9.rs). Without this,
+ * waitpid() below has no record of the child (nkids==0) and immediately
+ * fails ECHILD even though the child ran and exited normally — the wait,
+ * not the spawn, was broken. Any spawner that bypasses fork() must call
+ * this once, in the parent, right after a successful rfork.
+ *
+ * Also credits cc9_live_children: cc9_await_one() (below) unconditionally
+ * decrements it for ANY reaped pid, fork()'d or not — without a matching
+ * increment here, every child a bypassing spawner reaps drives the counter
+ * negative, permanently weakening the RLIMIT_NPROC ceiling fork() enforces
+ * for the WHOLE process (this counter isn't per-spawn-path, it's global).
+ * NOTE: this restores correct accounting, it does NOT add enforcement for
+ * THIS path — the child already exists by the time this runs, there's
+ * nothing left to reject. A spawner that needs the cap enforced up front
+ * would need its own pre-rfork check against cc9_get_nproc_limit(), same as
+ * fork() does. */
+void cc9_register_child(int pid) {
+	long lim = cc9_get_nproc_limit();
+	if (lim < 0x7fffffff) __sync_add_and_fetch(&cc9_live_children, 1);
+	cc9_reap_forked(pid);
 }
 
 static void cc9_reap_child_reset(void)

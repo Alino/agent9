@@ -17,6 +17,13 @@ unsafe extern "C" {
     fn n9_exec(path: *const u8, argv: *const *const u8) -> i64;
     fn n9_exits(msg: *const u8);
     fn waitpid(pid: i32, status: *mut i32, opts: i32) -> i32;
+    // Register a raw-rfork'd child with cc9's own reap bookkeeping — waitpid()
+    // above (cc9's, in posix_llvm.c) only knows about children forked through
+    // cc9's OWN fork(), which this spawn path bypasses. Without this call every
+    // wait() on a child spawned here fails ECHILD even though the child ran and
+    // exited cleanly (confirmed live: the child's own stdout/exit came through
+    // fine, only the parent's wait() was wrong).
+    fn cc9_register_child(pid: i32);
     #[link_name = "getpid"]
     fn c_getpid() -> i32;
     fn chdir(path: *const u8) -> i32;
@@ -58,7 +65,6 @@ pub enum Stdio {
     ParentStdout,
     ParentStderr,
     Fd(i32), // a raw fd to dup onto the child's descriptor (e.g. a piped ChildPipe)
-    #[allow(dead_code)]
     InheritFile(File),
 }
 
@@ -196,11 +202,16 @@ impl Command {
                         _ => sp.stderr = Some(p1),
                     }
                 }
-                Stdio::InheritFile(_) => {
-                    return Err(io::const_error!(
-                        io::ErrorKind::Unsupported,
-                        "file stdio not yet supported on plan9"
-                    ));
+                Stdio::InheritFile(file) => {
+                    // Same shape as Stdio::Fd: dup2 the file's fd onto the
+                    // child's std_fd, then close the source dup in the child.
+                    // The caller's File is untouched in the parent (theirs to
+                    // drop) — this is what `Command::stdout(Stdio::from(file))`
+                    // needs, e.g. redirecting a fetch straight to disk.
+                    use crate::os::fd::AsRawFd;
+                    let fd = file.as_raw_fd();
+                    child_dups[idx] = (fd, std_fd);
+                    child_close.push(fd);
                 }
             }
         }
@@ -234,7 +245,9 @@ impl Command {
                 loop {}
             }
         }
-        // PARENT: close the child's ends so EOF works.
+        // PARENT: register the child so waitpid() can find it, then close our
+        // copies of its pipe ends so EOF works.
+        unsafe { cc9_register_child(pid as i32) };
         for &fd in &parent_close {
             unsafe { close(fd) };
         }

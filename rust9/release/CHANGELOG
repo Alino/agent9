@@ -1,6 +1,58 @@
 rust9 — Rust for 9front (self-hosted rustc). Changelog.
 (`pac9 changelog rust9` shows this; newest first.)
 
+0.3.0 — 2026-07-26
+  cargo9 gets crates.io registry support: `cargo9 install <crate>[@version]`.
+  Previously cargo9 was offline-only (local path deps); now it fetches, resolves
+  a real dependency graph (feature-closure activation, dev/build/target-cfg
+  deps correctly excluded), checksum-verifies (sha256 against the sparse
+  index's cksum — the only integrity check, since `hget` gives no TLS chain
+  trust), vendors under /usr/glenda/rust/registry/, builds leaves-first, and
+  installs the result onto $PATH (mirroring the existing rustc/cargo9 wrapper
+  convention). Cleanly refuses (naming the offending crate, not a confusing
+  compiler error) anything needing proc-macros, build.rs, or other permanent
+  rust9 limits. Verified end-to-end on cirno: `cargo9 install catr` (a real,
+  2-hop crates.io dependency chain) builds and runs; `cargo9 install choose`
+  (pulls structopt, a proc-macro) and `cargo9 install bitflags@1.2.1` (has a
+  build.rs) both refuse cleanly instead of silently misbuilding or ICEing.
+
+  cargo9's own source was lost (a since-deleted session scratchpad) — rewritten
+  from scratch at rust9/cargo9/, this time committed. Also fixed along the way,
+  all three found live while getting `install` working, none specific to the
+  registry feature:
+    - std::process::Command spawn/wait was fully broken (ECHILD on every
+      child, even ones that ran and exited cleanly) — the plan9 spawn path
+      does its own raw rfork, bypassing the registration cc9's own waitpid()
+      needs to find the child at all. Fixed in cc9 (new cc9_register_child)
+      + the plan9 process backend.
+    - `Stdio::from(file)` ("file stdio") was entirely unimplemented on plan9
+      (explicit Unsupported error) — now dup2's the file's fd like Stdio::Fd
+      already did.
+    - A package with BOTH src/lib.rs and src/main.rs (common in real published
+      crates, e.g. catr) was previously handled as either/or by the local
+      build orchestrator; now lib.rs builds first and links into main.rs.
+
+  Post-implementation code review (before this release) found and fixed
+  several real defects, most importantly two path-traversal/command-injection
+  holes: an unvalidated crate/bin name from a compromised index response could
+  have escaped the vendor directory or embedded shell metacharacters into the
+  generated `/bin/rc` wrapper script. Every crate name, version string, and
+  bin name is now charset-validated before touching any filesystem path or
+  script. Also fixed: the RLIMIT_NPROC fork-bomb counter was silently driven
+  negative by every subprocess `install` spawns (missing accounting in the
+  new cc9_register_child, not enforcement — a spawn via this path still
+  isn't capped up front); `select_latest_nonyanked` could panic on a
+  malformed index version; the asm!/build.rs static pre-check never actually
+  scanned real source files (wrong directory); `cargo9 build`'s vendored-dep
+  lookup ignored the version requirement entirely (naive prefix match, could
+  silently link the wrong crate); build artifacts had no killed-mid-compile
+  guard (a truncated binary could get "cached" and shipped to $PATH); and a
+  `chmod +x`-based install left binaries missing their READ bit under some
+  conditions (chmod +x is additive, not absolute — fixed by using chmod 755).
+  25 unit tests added (json.rs/toml.rs/registry.rs) covering the parsers, the
+  semver/caret matching (including the live `^0` bug), and the validation
+  fixes above.
+
 0.2.0 — 2026-07-17
   First versioned release, and the one where the std port stops lying.
 

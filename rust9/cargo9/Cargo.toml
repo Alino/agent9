@@ -1,0 +1,14 @@
+[package]
+name = "cargo9"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "cargo9"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = { version = "0.10", default-features = false }
+
+[profile.release]
+opt-level = "z"
