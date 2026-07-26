@@ -1,6 +1,26 @@
 alacritty9 — Alacritty 0.17.0 for 9front. Changelog.
 (`pac9 changelog alacritty9` shows this; newest first.)
 
+0.2.2 — 2026-07-26
+  A frame that updates two separate regions now presents BOTH of them.
+
+    - The presenter ships damage as sub-rects, and the shim shipped them one
+      call at a time. Each call flushes the GL buffer, but only the FIRST flush
+      of a frame actually copies anything out — so every rect after the first
+      carried the PREVIOUS frame's pixels. On screen that is a region that
+      silently stops repainting. pi9 draws its transcript and its input box in
+      the same frame, so after Enter the transcript updated while the input box
+      kept displaying the prompt that had just been sent; reversing the rect
+      order moved the stale region, which is what pinned it down.
+      Now one flush per frame covering the union, then each rect is shipped out
+      of the fresh buffer (gl9egl_swap_damage_rects) — same bytes on the wire.
+    - Gate: test/tworect.js updates a top line and a bottom line in one frame;
+      capture it twice, once with ALACRITTY9_FULLFRAME=1, and compare. Before:
+      34 rows differ between the two paths. After: pixel-identical.
+    - ALACRITTY9_DAMAGELOG=<path> logs each frame's damage rect list (and the
+      cell rows it covers), which is what separates "the row was never damaged"
+      from "the row was damaged and still not repainted".
+
 0.2.1 — 2026-07-26
   Every TUI in an alacritty9 window drew duplicated lines with their tails missing,
   and keystroke-driven apps could not submit input at all. Both are fixed.

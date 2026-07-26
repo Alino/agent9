@@ -91,6 +91,11 @@ pub mod egl {
                 w: c_int,
                 h: c_int,
             ) -> c_int;
+            pub fn gl9egl_swap_damage_rects(
+                surface: EGLSurface,
+                rects: *const c_int,
+                n: c_int,
+            ) -> c_int;
             pub fn gl9egl_scroll(surface: EGLSurface, y0: c_int, y1: c_int, dy: c_int) -> c_int;
         }
     }
@@ -281,19 +286,26 @@ pub mod egl {
                 if rects.is_empty() {
                     return self.swap_buffers(context);
                 }
-                for r in rects {
-                    let ok = unsafe {
-                        ffi::gl9egl_swap_damage(
-                            self.raw as ffi::EGLSurface,
-                            r.x,
-                            r.y,
-                            r.width,
-                            r.height,
-                        )
-                    };
-                    if ok == 0 {
-                        return Err(super::last_egl_error());
-                    }
+                // ONE call for the whole frame, never one per rect: each present
+                // call flushes the GL buffer, and only the first flush of a frame
+                // actually copies anything out — looping shipped every rect after
+                // the first as the PREVIOUS frame's pixels, which is why pi9's
+                // input box kept the prompt that had just been sent.
+                let flat: Vec<std::ffi::c_int> = rects
+                    .iter()
+                    .flat_map(|r| {
+                        [r.x, r.y, r.width, r.height].map(|v| v as std::ffi::c_int)
+                    })
+                    .collect();
+                let ok = unsafe {
+                    ffi::gl9egl_swap_damage_rects(
+                        self.raw as ffi::EGLSurface,
+                        flat.as_ptr(),
+                        rects.len() as std::ffi::c_int,
+                    )
+                };
+                if ok == 0 {
+                    return Err(super::last_egl_error());
                 }
                 Ok(())
             }

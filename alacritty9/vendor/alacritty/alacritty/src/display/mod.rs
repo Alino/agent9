@@ -870,6 +870,41 @@ impl Display {
             let damage = self.damage_tracker.shape_frame_damage(self.size_info.into());
             let full = damage.is_empty()
                 || damage.iter().any(|r| r.width >= width && r.height >= height);
+            /* ALACRITTY9_DAMAGELOG=<path>: the rect list this frame renders and
+               presents. When the screen keeps a stale fragment, this says
+               whether the row was never damaged (bookkeeping) or was damaged
+               and still not repainted (renderer). */
+            if let Some(path) = std::env::var_os("ALACRITTY9_DAMAGELOG") {
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    let cell_h = self.size_info.cell_height() as i32;
+                    let pad_y = self.size_info.padding_y() as i32;
+                    let rows: Vec<String> = damage
+                        .iter()
+                        .map(|r| {
+                            // GL rects are bottom-up; report the cell rows they cover.
+                            let top = height - (r.y + r.height);
+                            let bottom = height - r.y;
+                            format!(
+                                "{},{} {}x{} rows {}..{}",
+                                r.x,
+                                r.y,
+                                r.width,
+                                r.height,
+                                (top - pad_y) / cell_h,
+                                (bottom - pad_y) / cell_h
+                            )
+                        })
+                        .collect();
+                    let _ = writeln!(
+                        f,
+                        "full={full} n={} scroll={:?} [{}]",
+                        damage.len(),
+                        plan9_scroll.map(|h| (h.top, h.bottom, h.delta)),
+                        rows.join(" | ")
+                    );
+                }
+            }
             if full { None } else { Some(damage) }
         };
 

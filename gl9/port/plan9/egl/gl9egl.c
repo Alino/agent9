@@ -487,12 +487,92 @@ eglSwapBuffers(EGLDisplay dpy, EGLSurface surf)
 	return EGL_TRUE;
 }
 
+/* gl9 extension: present SEVERAL damaged regions from one frame.
+ *
+ * Callers used to loop gl9egl_swap_damage() once per rect, and that is wrong:
+ * each call sets a one-shot damage hint and calls glFinish(), but only the
+ * FIRST glFinish of a frame actually runs OSMesa's flush_front — afterwards
+ * the framebuffer has nothing new to flush, so every later rect was copied out
+ * of a stale staging buffer and shipped as the PREVIOUS frame's pixels. On
+ * screen that is a region that never repaints: pi9 draws its transcript and
+ * its input box in one frame, so after Enter the transcript updated and the
+ * input box kept showing the prompt the user had just sent. Reversing the rect
+ * order moved the stale region, which is what pinned this down.
+ *
+ * So: flush ONCE for the union of the rects, then ship each rect out of the
+ * now-fresh buffer. Same bytes on the wire as before, one glFinish per frame.
+ * `rects` is n quadruples x,y,w,h in EGL convention (origin bottom-left). */
+int gl9egl_swap_damage(EGLSurface surf, int x, int y, int w, int h);
+
+int
+gl9egl_swap_damage_rects(EGLSurface surf, const int *rects, int n)
+{
+	struct gl9_surf *s = surf;
+	unsigned char *rows;
+	int i, j, ux0, uy0, ux1, uy1;
+
+	if (!s || !s->window || !rects || n <= 0) return 0;
+	if (n == 1)
+		return gl9egl_swap_damage(surf, rects[0], rects[1], rects[2], rects[3]);
+
+	/* flip + clamp every rect to top-left origin, and union them */
+	ux0 = s->w; uy0 = s->h; ux1 = 0; uy1 = 0;
+	int *r = malloc((unsigned long)n * 4 * sizeof(int));
+	if (!r) return 0;
+	for (i = 0, j = 0; i < n; i++) {
+		int x = rects[i*4+0], y = rects[i*4+1];
+		int w = rects[i*4+2], h = rects[i*4+3];
+		y = s->h - (y + h);
+		if (x < 0) { w += x; x = 0; }
+		if (y < 0) { h += y; y = 0; }
+		if (x + w > s->w) w = s->w - x;
+		if (y + h > s->h) h = s->h - y;
+		if (w <= 0 || h <= 0) continue;
+		r[j*4+0] = x; r[j*4+1] = y; r[j*4+2] = w; r[j*4+3] = h; j++;
+		if (x < ux0) ux0 = x;
+		if (y < uy0) uy0 = y;
+		if (x + w > ux1) ux1 = x + w;
+		if (y + h > uy1) uy1 = y + h;
+	}
+	if (j == 0) { free(r); glFinish(); return 1; }   /* nothing visible changed */
+	if (ux1 - ux0 == s->w && uy1 - uy0 == s->h) {    /* union is the whole window */
+		free(r);
+		return eglSwapBuffers(GL9_DISPLAY, surf);
+	}
+
+	OSMesaGL9SetDamage(ux0, uy0, ux1 - ux0, uy1 - uy0);
+	glFinish();
+	OSMesaGL9ClearDamage();
+
+	for (i = 0; i < j; i++) {
+		int x = r[i*4+0], y = r[i*4+1], w = r[i*4+2], h = r[i*4+3];
+		int k;
+		rows = malloc((unsigned long)w * h * 4);
+		if (!rows) { free(r); return eglSwapBuffers(GL9_DISPLAY, surf); }
+		for (k = 0; k < h; k++)
+			memcpy(rows + (unsigned long)k * w * 4,
+			       s->buf + ((unsigned long)(y + k) * s->w + x) * 4,
+			       (unsigned long)w * 4);
+		write(s->fd, "GL9D", 4);
+		put32(s->fd, x);
+		put32(s->fd, y);
+		put32(s->fd, w);
+		put32(s->fd, h);
+		write(s->fd, rows, (long)w * h * 4);
+		free(rows);
+	}
+	free(r);
+	return 1;
+}
+
 /* gl9 extension (no dlopen'able EGL ext mechanism here): present only a
  * damaged region. Coordinates arrive in EGL convention (origin bottom-left,
  * KHR_swap_buffers_with_damage); we flip to the top-left rows OSMesa's
  * Y_UP=0 buffer uses and emit "GL9D" | x | y | w | h | w*h*4 RGBA to the
  * window host. A full-window blit to a real framebuffer costs 100x a small
- * one, so this is the interactive-latency path (typing = a few rows). */
+ * one, so this is the interactive-latency path (typing = a few rows).
+ * ONE rect per frame only — see gl9egl_swap_damage_rects for why looping this
+ * per rect ships stale pixels. */
 int
 gl9egl_swap_damage(EGLSurface surf, int x, int y, int w, int h)
 {
