@@ -32,20 +32,32 @@ base=(--target=x86_64-unknown-none -nostdlib -fexceptions -frtti -funwind-tables
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/test/n9syscall.s" -o "$O/n9syscall.o"
 "$LLVM/clang" -target x86_64-unknown-none -c "$CC9/runtime/setjmp.s" -o "$O/setjmp.o"
 INSTR="${CC9_INSTRUMENT:+-finstrument-functions}"
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/n9libc.c" -o "$O/n9libc.o"
+# OPT: the runtime used to build with NO -O flag at all, i.e. -O0 — every
+# malloc, every mem*/str* byte loop, every syscall wrapper, unoptimized, in every
+# cc9 program. That is a first-order cost on a 1.5 GHz Celeron (ladybird9 felt it
+# as slow scrolling and slow page loads).
+#
+# $OPT is applied to the files that are pure computation + syscalls. It is NOT
+# applied to poll.c, shm9.c, posix_llvm.c or pthread.c: those share plain
+# (non-volatile, non-atomic) struct fields between a thread and its reader/writer
+# peers, and an optimizer is entitled to cache such a field in a register and
+# spin forever. Making them -O2-safe means auditing that sharing and marking it
+# properly — worth doing, but not as a silent side effect of a build-flag change.
+OPT="${CC9_OPT:--O2}"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/n9libc.c" -o "$O/n9libc.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/posix_llvm.c" -o "$O/posix_llvm.o"  # POSIX surface LLVM's Unix .inc needs
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -O2 -c "$CC9/runtime/complex_builtins.c" -o "$O/complex_builtins.o"
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/xlocale.c" -o "$O/xlocale.o"
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/stdio.c" -o "$O/stdio.o"
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/printf.c" -o "$O/printf.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/xlocale.c" -o "$O/xlocale.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/stdio.c" -o "$O/stdio.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/printf.c" -o "$O/printf.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/pthread.c" -o "$O/pthread.o"
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/wchar.c" -o "$O/wchar.o"
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/wchar.c" -o "$O/wchar.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/fs.c" -o "$O/fs.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/poll.c" -o "$O/poll.o"   # poll(2)/fcntl/pipe2 readiness layer (libuv)
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/shm9.c" -o "$O/shm9.o"   # cross-process shared memory over #g named segments (ladybird9)
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/netcompat.c" -o "$O/netcompat.o"  # inet_* for real; resolver/dgram honest stubs
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/net9.c" -o "$O/net9.o"  # BSD sockets over /net (dial/announce/cs)
-"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -fno-builtin -c "$CC9/runtime/fenv.c" -o "$O/fenv.o"
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/netcompat.c" -o "$O/netcompat.o"  # inet_* for real; resolver/dgram honest stubs
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/net9.c" -o "$O/net9.o"  # BSD sockets over /net (dial/announce/cs)
+"$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" $OPT -fno-builtin -c "$CC9/runtime/fenv.c" -o "$O/fenv.o"
 "$LLVM/clang" "${base[@]}" $INSTR -isystem "$INC" -O2 -c "$CC9/runtime/int128.c" -o "$O/int128.o"
 "$LLVM/clang++" "${base[@]}" $INSTR -std=c++23 -isystem "$LIBCXX" -isystem "$INC" -c "$CC9/runtime/cxxrt.cpp" -o "$O/cxxrt.o"
 "$LLVM/clang" "${base[@]}" ${CC9_INSTRUMENT:+-DCC9_FAULT_FILE -DCC9_PAUSE_ATTACH} -c "$CC9/runtime/crt0.c" -o "$O/crt0.o"  # crt0 NOT instrumented (naked _start); fault->file + pause-for-acid when debugging

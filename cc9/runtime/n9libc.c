@@ -254,6 +254,12 @@ void *malloc(size_t n){
 #ifdef CC9_RECURSE_PROBE
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
+	/* malloc(0) hands back a unique 1-byte block, not NULL. C leaves the choice
+	 * open, but every mainstream libc returns non-NULL and real code reads a
+	 * NULL as out-of-memory: luv's fs_read allocates stat.size bytes, so reading
+	 * any EMPTY file died with "Failure to allocate buffer" — which is what
+	 * telescope's <CR> hit on a fresh (0-byte) telescope_history. */
+	if(n == 0) n = 1;
 	if(n && n <= MC_MAX){
 		mcache *mc = mc_get();
 		if(mc){
@@ -525,14 +531,47 @@ void cc9_run_sigalrm(void){ n9_sigh h=n9_sigtab[14]; if(h&&h!=(n9_sigh)1&&h!=(n9
  * on amd64. Builtin name, so define via an __asm__ label (see __atomic_* below). */
 int cc9_atomic_is_lock_free(size_t n, const volatile void *p) __asm__("__atomic_is_lock_free");
 int cc9_atomic_is_lock_free(size_t n, const volatile void *p){ (void)p; return n<=16; }
+/* The mem* family is the hottest code in any cc9 program — a browser runs it for
+ * every Skia blit, bitmap clear and string copy — and it used to be a BYTE loop
+ * per function. On amd64 an unaligned 8-byte access is cheap, so step a word at
+ * a time and let the tail finish byte-wise. may_alias keeps this legal against
+ * char buffers. (n9libc.c is compiled -fno-builtin, so clang cannot turn these
+ * loops back into calls to themselves.) */
+typedef unsigned long long __attribute__((may_alias)) cc9_word;
+
 void *memcpy(void*d,const void*s,size_t n){
 #ifdef CC9_RECURSE_PROBE
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
-	char*a=d; const char*b=s; for(size_t i=0;i<n;i++)a[i]=b[i]; return d; }
-void *memmove(void*d,const void*s,size_t n){ char*a=d; const char*b=s; if(a<b)for(size_t i=0;i<n;i++)a[i]=b[i]; else for(size_t i=n;i>0;i--)a[i-1]=b[i-1]; return d; }
-void *memset(void*d,int c,size_t n){ char*a=d; for(size_t i=0;i<n;i++)a[i]=(char)c; return d; }
-int memcmp(const void*x,const void*y,size_t n){ const unsigned char*a=x,*b=y; for(size_t i=0;i<n;i++) if(a[i]!=b[i]) return a[i]-b[i]; return 0; }
+	unsigned char*a=d; const unsigned char*b=s;
+	while(n >= 8){ *(cc9_word*)a = *(const cc9_word*)b; a+=8; b+=8; n-=8; }
+	while(n--) *a++ = *b++;
+	return d; }
+void *memmove(void*d,const void*s,size_t n){
+	unsigned char*a=d; const unsigned char*b=s;
+	if(a == b || n == 0) return d;
+	if(a < b){
+		while(n >= 8){ *(cc9_word*)a = *(const cc9_word*)b; a+=8; b+=8; n-=8; }
+		while(n--) *a++ = *b++;
+	}else{
+		a += n; b += n;
+		while(n >= 8){ a-=8; b-=8; n-=8; *(cc9_word*)a = *(const cc9_word*)b; }
+		while(n--) *--a = *--b;
+	}
+	return d; }
+void *memset(void*d,int c,size_t n){
+	unsigned char*a=d, v=(unsigned char)c;
+	cc9_word w = (cc9_word)0x0101010101010101ULL * v;
+	while(n >= 8){ *(cc9_word*)a = w; a+=8; n-=8; }
+	while(n--) *a++ = v;
+	return d; }
+int memcmp(const void*x,const void*y,size_t n){
+	const unsigned char*a=x,*b=y;
+	/* Skip 8 equal bytes at a time, then let the byte loop find the exact
+	 * differing byte inside the first unequal word (n still covers it). */
+	while(n >= 8 && *(const cc9_word*)a == *(const cc9_word*)b){ a+=8; b+=8; n-=8; }
+	for(size_t i=0;i<n;i++) if(a[i]!=b[i]) return (int)a[i]-(int)b[i];
+	return 0; }
 size_t strlen(const char*s){ size_t n=0; while(s[n])n++; return n; }
 char *strcpy(char*d,const char*s){ char*r=d; while((*d++=*s++)); return r; }
 char *strncpy(char*d,const char*s,size_t n){ char*r=d; while(n&&(*d=*s)){d++;s++;n--;} while(n--)*d++=0; return r; }
@@ -896,7 +935,18 @@ unsigned long long strtoull(const char *s, char **e, int b){ int neg; unsigned l
 long long strtoll(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return n9_clamp_signed(r,neg,(unsigned long long)__LONG_LONG_MAX__); }
 unsigned long strtoul(const char *s, char **e, int b){ int neg; unsigned long long r=n9_ustrto(s,e,b,&neg); return neg?(unsigned long)-r:(unsigned long)r; }
 
-void *memchr(const void *s, int c, size_t n){ const unsigned char *p=s; for(size_t i=0;i<n;i++) if(p[i]==(unsigned char)c) return (void*)(p+i); return 0; }
+void *memchr(const void *s, int c, size_t n){
+	const unsigned char *p=s; unsigned char v=(unsigned char)c;
+	/* Classic word-at-a-time search: XOR against a broadcast byte, then the
+	 * has-zero-byte test picks out the word containing a match. */
+	cc9_word pat = (cc9_word)0x0101010101010101ULL * v;
+	while(n >= 8){
+		cc9_word w = *(const cc9_word*)p ^ pat;
+		if((w - (cc9_word)0x0101010101010101ULL) & ~w & (cc9_word)0x8080808080808080ULL) break;
+		p += 8; n -= 8;
+	}
+	for(size_t i=0;i<n;i++) if(p[i]==v) return (void*)(p+i);
+	return 0; }
 /* <inttypes.h> intmax helpers */
 long imaxabs(long x){ return x<0?-x:x; }
 typedef struct { long quot, rem; } n9_imaxdiv_t;
