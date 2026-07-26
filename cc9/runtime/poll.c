@@ -42,10 +42,16 @@ extern void *malloc(unsigned long);
 extern void free(void *);
 extern void *memcpy(void *, const void *, unsigned long);
 
-/* 256 fds / 64K rings: sized for a multi-process browser (UI process at a few
- * tabs polls ~45 fds; IPC messages are framed in 64K windows). Rings are
- * malloc'd on first use so the static table stays small. */
-#define PFD_MAX 256
+/* The poll table is the real ceiling on how many fds a process can poll, and
+ * running out of it surfaces as EMFILE from fcntl/ioctl — "Too many open files"
+ * with the OS nowhere near its own limit. At 256 Ladybird's RequestServer ran
+ * out on a youtube watch page (a socket plus a pipe pair per in-flight request,
+ * plus readers that linger on closed fds until their pread returns): 44 of 300
+ * F_SETFL calls failed and every later request then failed to create its
+ * response pipe. Slots are cheap now that the ring is bought by the reader
+ * rather than by the claim, so the table is sized for a browser.
+ * Gated by pollring_gate case 4. */
+#define PFD_MAX 1024
 /* Read rings START at 64 KiB and GROW ON DEMAND, doubling up to CC9_POLL_RING
  * (default: no growth at all, so a plain cc9 program behaves exactly as before).
  * A big read ring lets the per-fd reader thread buffer a whole large transfer,
@@ -282,7 +288,7 @@ static void *reader_main(void *arg){
 		if(was_empty || r <= 0)
 			poll_wake();
 		n9_semrelease(&p->data, 1);
-		if(r <= 0) break;
+		if(r <= 0) { trace("rdend", p->fd, r); break; }
 	}
 	/* dead (fd closed under us): the slot is freed by whoever set dead once
 	 * BOTH threads are gone; here just drop our claim. eof/err: keep the slot
@@ -343,10 +349,11 @@ static cc9_pfd *ensure(int fd, int start_reader){
 			/* Slots are recycled across fds. Hand a grown ring back rather than
 			 * letting it become the slot's permanent size — otherwise every slot
 			 * that ever carried one big body keeps pfd_max reserved forever, which
-			 * is the fixed-size allocation this growth scheme exists to avoid. */
-			if(p->buf && p->bufsz > PFD_BUF){ free(p->buf); p->buf = 0; }
-			if(!p->buf){ p->buf = malloc(PFD_BUF); p->bufsz = PFD_BUF; }
-			if(!p->buf){ p->bufsz = 0; n9_semrelease(&tab_lock, 1); return 0; }
+			 * is the fixed-size allocation this growth scheme exists to avoid.
+			 * The fresh ring is NOT allocated here: most slots are claimed by a
+			 * bare fcntl(F_SETFL)/F_SETFD and never grow a reader, so buying a
+			 * ring per claim would cost PFD_MAX * 64 KiB for nothing. */
+			if(p->buf && p->bufsz > PFD_BUF){ free(p->buf); p->buf = 0; p->bufsz = 0; }
 			p->fd = fd; p->flags = 0; p->reader = 0; p->rfd = -1; p->dead = 0;
 			p->eof = p->err = 0; p->lock = 1; p->space = 0; p->data = 0;
 			p->head = p->tail = 0;
@@ -354,7 +361,11 @@ static cc9_pfd *ensure(int fd, int start_reader){
 			p->wdrain = 0; p->whead = p->wtail = 0;
 		}
 	}
-	if(p && start_reader && !p->reader){
+	if(p && start_reader && !p->reader && !p->buf){
+		p->buf = malloc(PFD_BUF);          /* the ring is the reader's, so buy it here */
+		p->bufsz = p->buf ? PFD_BUF : 0;
+	}
+	if(p && start_reader && !p->reader && p->buf){
 		p->rfd = (int)n9_dup(fd, -1);      /* reader preads this private dup, not the app fd */
 		if(p->rfd < 0) p->rfd = fd;        /* dup exhausted: fall back to the app fd (old behavior) */
 		pthread_t t;
@@ -499,6 +510,7 @@ long cc9_poll_write(int fd, const void *buf, long n){
 }
 
 void cc9_poll_onclose(int fd){
+	trace("onclose", fd, 0);
 	/* flush: close() must not drop ring bytes the caller was told were
 	 * written. Kick the writer and wait per drain pass. Ceiling: a peer that
 	 * never reads keeps us here until it dies (its death fails the pwrite ->
@@ -574,6 +586,7 @@ void cc9_poll_close_cloexec(void){
  * a slot left claiming reader=1 has nobody filling its ring, so the first read
  * would block forever. */
 void cc9_poll_child_reset(void){
+	trace("childreset", 0, 0);
 	if(!tab_inited) return;
 	for(int i = 0; i < PFD_MAX; i++){
 		if(tab[i].rfd >= 0 && tab[i].rfd != tab[i].fd) n9_close(tab[i].rfd);

@@ -97,6 +97,41 @@ static void eof_drain_case(void)
 	ck(got == EOFN && bad == 0, "ring still drains after the reader thread hit EOF");
 }
 
+/* Fourth gate: the poll TABLE must not be the thing that runs out first.
+ * ensure() reports a full table as EMFILE from fcntl/ioctl — "Too many open
+ * files" while the OS is nowhere near its own limit. Ladybird's RequestServer
+ * hit that on a youtube watch page (a socket plus a pipe pair per in-flight
+ * request) and every later request then failed to create its response pipe.
+ * 300 non-blocking pipe ends is well past the old 256-slot table and well under
+ * what Plan 9 itself allows. */
+#define NPIPE 150
+static void table_capacity_case(void)
+{
+	static int rd[NPIPE], wr[NPIPE];
+	int made = 0, setfl_fail = 0;
+
+	for (int i = 0; i < NPIPE; i++) {
+		int fds[2];
+		if (pipe(fds) != 0)
+			break;                       /* a real OS fd limit, not the table */
+		rd[made] = fds[0]; wr[made] = fds[1];
+		/* Both ends non-blocking: each claims its own poll-table slot. */
+		if (fcntl(rd[made], F_SETFL, O_NONBLOCK) != 0) setfl_fail++;
+		if (fcntl(wr[made], F_SETFL, O_NONBLOCK) != 0) setfl_fail++;
+		made++;
+	}
+
+	if (setfl_fail)
+		printf("   %d of %d F_SETFL calls failed (errno %d = %s)\n",
+		       setfl_fail, made * 2, errno, strerror(errno));
+	if (made < NPIPE)
+		printf("   only %d of %d pipes created\n", made, NPIPE);
+
+	for (int i = 0; i < made; i++) { close(rd[i]); close(wr[i]); }
+
+	ck(setfl_fail == 0, "poll table holds 300 non-blocking fds without EMFILE");
+}
+
 int main(void)
 {
 	int fds[2];
@@ -184,6 +219,7 @@ int main(void)
 	ck(bad == 0, "bytes are intact and in order across the grow");
 
 	eof_drain_case();
+	table_capacity_case();
 
 	printf("pollring_gate %d/%d %s\n", pass, total, pass == total ? "PASS" : "FAIL");
 	return pass == total ? 0 : 1;
