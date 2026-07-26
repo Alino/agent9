@@ -2079,7 +2079,9 @@
       var server = new EventEmitter();
       if (handler) server.on('request', handler);
       server._running = false;
-      server.listen = function (port, cb) {
+      server.listen = function (port) {
+        var cb;
+        for (var i = arguments.length - 1; i >= 1; i--) if (typeof arguments[i] === 'function') { cb = arguments[i]; break; }
         var s = net.announce(port);
         if (!s) { server.emit('error', new Error('announce failed on ' + port)); return server; }
         server._running = true;
