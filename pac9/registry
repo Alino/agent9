@@ -80,6 +80,15 @@ neovim9	-	.	tarball https://github.com/Alino/agent9/releases/download/neovim9-v0
 # full privilege escalation. Opt-in only, never a default, never on a shared box.
 gpu9	https://github.com/Alino/agent9	gpu9	-
 mxio	https://github.com/Alino/agent9	src/mxio	-
+# tile9 — Magnet/yabai-style keyboard window tiling for 9front. Ctrl+Alt+arrows
+# snap the focused window to half the screen, Ctrl+Alt+Enter maximizes,
+# Alt+1..6 launch apps. Not a window manager and not a patched rio: it opens
+# rio's /dev/kbdtap (rio routes every key to it and delivers only what it
+# writes back) and resizes through /dev/wsys/<id>/wctl. Works on stock rio and
+# on mxio. Builds on-box from one kencc file, so no tarball and no version
+# column — a git clone tracks HEAD. Start it from riostart; it must live
+# inside the window system's namespace. `pac9 changelog tile9` after install.
+tile9	https://github.com/Alino/agent9	src/tile9	-
 vts	https://github.com/Alino/agent9	src/vts	-
 vtwin	https://github.com/Alino/agent9	src/vtwin	-
 xena-panel	https://github.com/Alino/agent9	src/xena-panel	-

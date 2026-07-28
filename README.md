@@ -98,6 +98,7 @@ Either way, `pac9` is now on your path.
 | `pac9 install neovim9` | real Neovim 0.12.4 — run `nvim` inside alacritty9 (treesitter, jobs, `:terminal`, LSP) |
 | `pac9 install netsurf` | the NetSurf web browser |
 | `pac9 install mxio` | the window manager |
+| `pac9 install tile9` | Magnet-style keyboard window tiling — `Ctrl+Alt+arrows` snap, `Alt+1..6` launch |
 | `pac9 install vts vtwin` | the terminal server and its window |
 | `pac9 install xena-panel launcher` | the taskbar and Start menu |
 
@@ -138,6 +139,7 @@ bootstrapped through Zig's C backend and cc9. The full workflow works on-box:
 | **mxio** | Window manager. A rio fork with Luna titlebars, decorations, drag, z-order, and minimize/maximize/close. | C / libdraw |
 | **xena-panel** | Taskbar daemon: Start button, window list, clock. | C / libdraw |
 | **launcher** | The Start menu popup, launching apps through the plumber. | C |
+| **tile9** | Global window-management hotkeys. `Ctrl+Alt+arrows` tile the focused window, `Alt+1..6` launch apps. Not a window manager — it uses rio's own keyboard tap, so it works on stock rio too. | C |
 | **vts** | Terminal session server. A 9P file server that multiplexes VT100 sessions into one filesystem at `/srv/vts`. | C |
 | **vtwin** | The libdraw front end for vts. Reads cell diffs and paints them into a rio window. | C / libdraw |
 | **pi9** | Plan 9-native LLM coding agent. Bubble Tea TUI, streaming, tool calling, session trees, skills and memory, headless modes, OAuth to Anthropic, GitHub Copilot, and OpenAI. At feature parity with upstream [pi](https://pi.dev). | Go |

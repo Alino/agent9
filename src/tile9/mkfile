@@ -1,0 +1,23 @@
+< /$objtype/mkfile
+
+BIN=/$objtype/bin
+TARG=tile9
+
+# Not mkone: install has to ship the CHANGELOG for `pac9 changelog tile9`
+# as well as the binary, and mkone owns the install target.
+
+all:V: $O.out
+
+$O.out: tile9.$O
+	$LD -o $O.out tile9.$O
+
+tile9.$O: tile9.c
+	$CC $CFLAGS tile9.c
+
+install:V: $O.out
+	cp $O.out $BIN/$TARG
+	mkdir -p /sys/lib/pac9/changelog
+	cp CHANGELOG /sys/lib/pac9/changelog/tile9
+
+clean:V:
+	rm -f *.[568] $O.out

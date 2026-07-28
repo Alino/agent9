@@ -1,0 +1,49 @@
+tile9 — global window-management hotkeys for 9front (rio and mxio).
+
+0.1.0  2026-07-28  first release
+
+	What it does: gives 9front Magnet/yabai-style keyboard window tiling.
+	Hold Ctrl+Alt and press an arrow to snap the focused window to half
+	the screen; Ctrl+Alt+Enter maximizes it; Alt+1..6 launches an app.
+
+	    Ctrl+Alt+Left  / j    left half
+	    Ctrl+Alt+Right / l    right half
+	    Ctrl+Alt+Up           top half
+	    Ctrl+Alt+Down  / k    bottom half
+	    Ctrl+Alt+Enter        maximize (not fullscreen)
+	    Alt+1..6              launch an app
+
+	10px padding on every screen edge and a 10px gap between tiles.
+
+	How global hotkeys work at all: Plan 9 delivers keys only to the
+	focused window, so nothing outside it can normally see a chord. rio
+	serves /dev/kbdtap — open it and rio routes every keyboard message to
+	you and delivers only what you write back. tile9 acts on its chords
+	and swallows them; everything else passes through untouched. Geometry
+	goes to /dev/wsys/<id>/wctl as "resize -r". No patched window manager
+	and no kernel support: it is an ordinary program.
+
+	Runs on stock 9front rio and on mxio (the agent9 desktop). The strip
+	reserved along the bottom of the screen is discovered, not assumed —
+	if an xena-panel taskbar is present its height is kept clear, and on a
+	bare rio tiles run to the screen edge.
+
+	Alt+digit defaults to mothra / rc / acme / sam / pi9 / stats. Override
+	any of them in $home/lib/tile9, one "<digit> <rc command>" per line:
+
+	    1 window mothra
+	    2 window /bin/rc
+	    3 window acme
+
+	Start it from your riostart (it must run inside the window system's
+	namespace, so a plain ssh or listen1 shell will not do):
+
+	    /amd64/bin/tile9 >/dev/null >[2]/dev/null &
+
+	`tile9 -t` runs the grid self-test. `tile9 -d` dumps every keyboard
+	message it sees and every resize it writes.
+
+	Known limits: Ctrl+Alt+I is not a chord — Ctrl+I is TAB, and mxio's
+	Alt+Tab handler consumes it before tile9 can see it. Use Ctrl+Alt+Up.
+	Only one program can hold the keyboard tap, so a second tile9 exits
+	with "file in use".

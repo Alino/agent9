@@ -7,6 +7,7 @@
 - [[draw-api]] — Plan 9 /dev/draw interface: how programs get a canvas
 - [[rio-architecture]] — Rio WM internals: wind.c, xfid.c, mouse/keyboard handling
 - [[mxio-design]] — mxio design + verified status: titlebars, hit-testing, right-click menu
+- [[tile9-hotkeys]] — tile9: global hotkeys via /dev/kbdtap, yabai-style tiling via wctl
 - [[winxp-visual-spec]] — WinXP Luna color values, dimensions, button shapes
 - [[xena-panel-design]] — Taskbar daemon — verified v0.1 with Start, window list, clock + launcher
 - [[build-toolchain]] — Cross-build Mac→9front: hget over HTTP, mk, rc shell gotchas

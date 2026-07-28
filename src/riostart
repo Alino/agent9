@@ -13,6 +13,10 @@ echo 'key proto=dp9ik dom=agent9 user=glenda !password=agent9agent9' >/mnt/facto
 aux/listen1 -t 'tcp!*!567' /rc/bin/service.auth/tcp567 >/dev/null >[2]/dev/null &
 aux/listen1 -t 'tcp!*!17019' /rc/bin/service/tcp17019 >/dev/null >[2]/dev/null &
 
+# Global window-management hotkeys (Ctrl+Alt+arrows, Alt+digit). Holds
+# /dev/kbdtap open for the whole session, so it must outlive this script.
+/amd64/bin/tile9 >/dev/null >[2]/dev/null &
+
 window 0,0,161,117 stats -lmisce
 window 0,738,1024,768 xena-panel
 window 100,130,800,500 rc
