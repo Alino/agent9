@@ -90,6 +90,7 @@ typedef struct {
 	char name[CC9_SHM_NAMELEN];
 	unsigned long va, len;
 	int refs;
+	int pinned;          /* attached for slot-refcount access, not for an mmap */
 	unsigned long lru;   /* tick of last use; 0 = never idle-reclaimable */
 } shm_map;
 #define SHM_MAXMAP 512
@@ -134,10 +135,84 @@ static unsigned long shm_seek_off(int fd) {
 	return (unsigned long)ret;
 }
 
-typedef struct { int fd; unsigned long off, len; int gen; } shm_buf;   /* guarded by shm_lock */
+typedef struct {
+	int fd;
+	unsigned long off, len;
+	int gen;
+	unsigned long base;   /* VA this buffer's POOL is attached at, for slot_refs */
+} shm_buf;   /* guarded by shm_lock */
 #define SHM_MAXBUF 4096
 static shm_buf bufs[SHM_MAXBUF];
 static int bufs_live;   /* fast-path: skip the O(N) scan in close() when 0 */
+
+/* ---- per-slot CROSS-PROCESS refcount ----
+ *
+ * A pool slot's lifetime is not the creator's business alone. POSIX keeps an
+ * anonymous buffer alive while ANY process holds an fd or a mapping of it; here
+ * the buffer is a sub-range of one shared segment, and the peer's fd refers to
+ * the whole pool, so the kernel cannot tell us when a slot goes unreferenced.
+ *
+ * Without that, the free-list below recycled a slot the moment the CREATOR
+ * closed its fd — while the receiver was still mapping it. The receiver's
+ * pointer then aliased whatever was carved there next, and the two buffers
+ * silently shared memory. That is what made github.com's 404 page render every
+ * one of its images as the same picture at seven different strides (each <img>
+ * read one buffer through its own width) — visible as horizontal streaks.
+ *
+ * So count references where all parties CAN see them: in the pool itself. The
+ * first SHM9_HDR bytes of every pool are a u32 per pool page; a slot's count
+ * lives at its first page's index. Every process that touches the slot has the
+ * pool attached, so the counter is genuinely shared, and the updates are atomic.
+ *
+ * Counted: each fd (create, import) and each mmap. Released: each close of a
+ * table fd, each munmap. A slot returns to the free-list only at zero.
+ *
+ * A count alone is not enough, because there is a moment when NOBODY holds the
+ * buffer and it is still very much alive: after the sender has written the
+ * message naming it and dropped its own fd, but before the receiver has read
+ * that message and imported. SCM_RIGHTS keeps an fd alive in exactly that gap;
+ * here nothing did, and the allocator handed the slot straight out again (seen
+ * in a CC9_SHM_TRACE: the same offset created twice, then imported twice).
+ * So export MARKS the slot in flight, and import clears the mark once it holds
+ * its own reference. The mark is the counter's top bit, so "unreferenced" is
+ * simply the whole word being zero.
+ *
+ * ponytail: a process that dies or execs without closing leaks its counts, and
+ * a message that is never decoded leaks its in-flight mark, so those slots are
+ * never reused — the pool fills and a new one is minted, exactly today's
+ * behaviour. Leaking a slot is the safe direction; aliasing is not. */
+#define SHM9_HDR (SHM9_POOL / SHM9_PAGE * sizeof(unsigned))   /* 256 KiB of a 256 MiB pool */
+#define SLOT_INFLIGHT 0x80000000u
+
+static unsigned *slot_refs(unsigned long base, unsigned long off) {
+	if (!base) return 0;
+	return (unsigned *)(base + (off / SHM9_PAGE) * sizeof(unsigned));
+}
+static void slot_ref(unsigned long base, unsigned long off) {
+	unsigned *p = slot_refs(base, off);
+	if (p) __atomic_fetch_add(p, 1u, __ATOMIC_SEQ_CST);
+}
+static void slot_unref(unsigned long base, unsigned long off) {
+	unsigned *p = slot_refs(base, off);
+	if (p && (__atomic_load_n(p, __ATOMIC_SEQ_CST) & ~SLOT_INFLIGHT) > 0)
+		__atomic_fetch_sub(p, 1u, __ATOMIC_SEQ_CST);
+}
+static void slot_mark_inflight(unsigned long base, unsigned long off) {
+	unsigned *p = slot_refs(base, off);
+	if (p) __atomic_fetch_or(p, SLOT_INFLIGHT, __ATOMIC_SEQ_CST);
+}
+static void slot_clear_inflight(unsigned long base, unsigned long off) {
+	unsigned *p = slot_refs(base, off);
+	if (p) __atomic_fetch_and(p, ~SLOT_INFLIGHT, __ATOMIC_SEQ_CST);
+}
+/* Nonzero while ANYONE holds this slot — a reference or a message in flight. */
+static unsigned slot_count(unsigned long base, unsigned long off) {
+	unsigned *p = slot_refs(base, off);
+	return p ? __atomic_load_n(p, __ATOMIC_SEQ_CST) : 0;
+}
+/* Attach a pool just to reach that header (defined with the mmap path below). */
+static unsigned long pool_pin(const char *name);
+static unsigned long pool_pin_locked(const char *name);
 
 /* Per-pool free-list: freed [off,len) slots in the CURRENT pool, reused before
  * bumping pool_off. Without this the bump cursor climbs forever across a long
@@ -145,7 +220,10 @@ static int bufs_live;   /* fast-path: skip the O(N) scan in close() when 0 */
  * per-test canvas backing stores churned pool after 256 MiB pool until the 1 GiB
  * pid VA slab exhausted -> cc9_shm_create returned -1 -> a fatal VERIFY -> the
  * Compositor crashed ~100 tests in). First-fit + tail-split, no coalescing; the
- * "Phase B pool" the create/free comments below defer. All under shm_lock. */
+ * "Phase B pool" the create/free comments below defer. All under shm_lock.
+ *
+ * An entry here is a CANDIDATE, not a free slot: it is only handed out once its
+ * cross-process refcount above reads zero. */
 #define SHM_FREEMAX 512
 typedef struct { unsigned long off, len; } shm_free;
 static shm_free freelist[SHM_FREEMAX];
@@ -161,7 +239,7 @@ static int pool_gen;   /* bumped on every new-pool mint; each buffer carries its
 /* len/gen record what cc9_shm_forget_fd needs to return the slot to the pool
  * free-list: len = the buffer's page-rounded size, gen = the pool it was carved
  * from. Imports pass gen=-1 (NOT ours — never reclaimed into our pool). */
-static void shm_set_off_both(int fd, unsigned long off, unsigned long len, int gen) {
+static void shm_set_off_both(int fd, unsigned long off, unsigned long len, int gen, unsigned long base) {
 	shm_set_off(fd, off);                       /* seek: outside the lock (syscall) */
 	n9_semacquire(&shm_lock, 1);
 	shm_buf *b = 0, *slot = 0;
@@ -170,7 +248,7 @@ static void shm_set_off_both(int fd, unsigned long off, unsigned long len, int g
 		if (!bufs[i].fd && !slot) slot = &bufs[i];
 	}
 	if (!b && slot) { slot->fd = fd + 1; b = slot; bufs_live++; }
-	if (b) { b->off = off; b->len = len; b->gen = gen; }
+	if (b) { b->off = off; b->len = len; b->gen = gen; b->base = base; }
 	n9_semrelease(&shm_lock, 1);
 }
 /* offset for an fd: table first (reliable), then the dup-shared seek position. */
@@ -190,13 +268,18 @@ void cc9_shm_forget_fd(int fd) {
 	n9_semacquire(&shm_lock, 1);
 	for (int i = 0; i < SHM_MAXBUF; i++)
 		if (bufs[i].fd == fd + 1) {
-			/* Return this buffer's slot to the current pool's free-list so its
+			/* This fd's reference is gone, whichever side of the pool it was
+			 * on — created here or imported from a peer. */
+			slot_unref(bufs[i].base, bufs[i].off);
+			/* Offer this buffer's slot to the current pool's free-list so its
 			 * offset is reused instead of leaked. Only OUR pool buffers (gen>=0
 			 * from create; imports carry gen=-1) belonging to the CURRENT pool
 			 * (an already-superseded pool self-releases via its own attach
 			 * refcount when its last buffer's fd closes). Recorded exactly once:
 			 * only the create fd is in the table; the IPC layer's export dup and
-			 * imported fds are either absent or gen=-1. */
+			 * imported fds are either absent or gen=-1. The slot is a CANDIDATE
+			 * from here: cc9_shm_create hands it out only once every other
+			 * process has dropped it too (slot_count == 0). */
 			if (bufs[i].gen == pool_gen && bufs[i].len && free_n < SHM_FREEMAX) {
 				freelist[free_n].off = bufs[i].off;
 				freelist[free_n].len = bufs[i].len;
@@ -210,6 +293,7 @@ void cc9_shm_forget_fd(int fd) {
 #define SHM9_POOL (256ul << 20)     /* 256 MiB per pool; demand-paged, so cheap */
 static char pool_name[CC9_SHM_NAMELEN];  /* "" until the current pool is created */
 static unsigned long pool_off;           /* bump cursor within the current pool */
+static unsigned long pool_base;          /* VA our own pool is attached at (slot refcounts live there) */
 static int pool_fd = -1;                 /* held open process-lifetime: keeps the #g dir + memory alive */
 static int pool_pid;                     /* pid that owns pool_*: detects a fork WITHOUT exec */
 
@@ -350,13 +434,17 @@ static int pool_ensure(void) {
 	fcntl(fd, F_SETFD, FD_CLOEXEC);
 	pool_fd = fd;
 	strcpy(pool_name, name);
-	pool_off = 0;
+	pool_off = SHM9_HDR;   /* the slot-refcount table lives in the first pages */
 	pool_pid = getpid();
 	/* New pool: bump the generation and drop the free-list (its slots were
 	 * offsets into the pool we just left; those buffers self-release via their
 	 * own refcount). Buffers minted from here carry this gen. */
 	pool_gen++;
 	free_n = 0;
+	/* Attach our own pool now, not at the first mmap: cc9_shm_create has to read
+	 * and write slot refcounts in the pool header, and a create can precede any
+	 * mmap of this pool. Pinned, so idle-reclaim never detaches it under us. */
+	pool_base = pool_pin_locked(pool_name);
 	shm_trace("pool", pool_name, va, SHM9_POOL, fd, 0);
 	return 0;
 }
@@ -368,7 +456,10 @@ int cc9_shm_create(unsigned long size) {
 	 * #g segment + fd to hand over IPC. */
 	unsigned long len = page_round(size);
 	if (len == 0) len = SHM9_PAGE;
-	if (len > SHM9_POOL) { errno = ENOMEM; return -1; }   /* one buffer bigger than a whole pool: genuinely too big */
+	/* Bigger than a whole pool's USABLE space (the pool opens with the slot
+	 * refcount table) is genuinely too big: minting a fresh pool would not help,
+	 * and the bump path below assumes a fresh pool can always fit the request. */
+	if (len > SHM9_POOL - SHM9_HDR) { errno = ENOMEM; return -1; }
 
 	n9_semacquire(&shm_lock, 1);
 	if (pool_ensure() < 0) { n9_semrelease(&shm_lock, 1); return -1; }
@@ -377,9 +468,14 @@ int cc9_shm_create(unsigned long size) {
 	/* Reuse a freed slot from the current pool first (first-fit). This is what
 	 * bounds the pool to PEAK-live buffers instead of TOTAL-ever-allocated, so a
 	 * long churny session (per-test canvas backing stores) stops filling pool_off
-	 * and never mints pool #2 -> no VA-slab exhaustion -> no downstream crash. */
+	 * and never mints pool #2 -> no VA-slab exhaustion -> no downstream crash.
+	 *
+	 * Only slots nobody else still references: our close put the slot here, but
+	 * a peer we exported it to may still hold an fd or a mapping (see the
+	 * slot-refcount comment above). Reusing one of those would alias two
+	 * unrelated buffers onto the same memory. */
 	for (int i = 0; i < free_n; i++) {
-		if (freelist[i].len >= len) {
+		if (freelist[i].len >= len && slot_count(pool_base, freelist[i].off) == 0) {
 			off = freelist[i].off;
 			unsigned long rem_off = off + len, rem_len = freelist[i].len - len;
 			freelist[i] = freelist[--free_n];       /* swap-remove */
@@ -407,6 +503,7 @@ int cc9_shm_create(unsigned long size) {
 	int cur_gen = pool_gen;
 	char name[CC9_SHM_NAMELEN];
 	strcpy(name, pool_name);
+	unsigned long base = pool_base;
 	n9_semrelease(&shm_lock, 1);
 
 	/* A fresh fd per buffer (the AnonymousBuffer owns and closes it); its
@@ -416,7 +513,11 @@ int cc9_shm_create(unsigned long size) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_set_off_both((int)fd, off, len, cur_gen);   /* len+gen so close() can reclaim the slot */
+	/* This fd is the slot's first reference. Safe to take outside the lock: the
+	 * slot is already ours (removed from the free-list / past the bump cursor),
+	 * so no other allocation can pick it. */
+	slot_ref(base, off);
+	shm_set_off_both((int)fd, off, len, cur_gen, base);   /* len+gen so close() can reclaim the slot */
 	shm_trace("create", name, off, len, fd, 0);
 	return (int)fd;
 }
@@ -429,6 +530,12 @@ int cc9_shm_export(int fd, char *name, unsigned long *offset, unsigned long *len
 	}
 	*offset = shm_get_off(fd);           /* dup-safe: reads the shared file offset */
 	*len = 0;                            /* Phase B: unused on the wire (receiver's mmap size drives it) */
+	/* From here the buffer is IN FLIGHT: its name+offset are about to be written
+	 * into a message, and the sender is free to drop its own reference the
+	 * moment the write returns. Nothing else holds the slot until the receiver
+	 * imports, so mark it — otherwise the very next allocation carves the buffer
+	 * the peer is still on its way to read. */
+	slot_mark_inflight(pool_pin(name), *offset);
 	return 0;
 }
 
@@ -439,7 +546,16 @@ int cc9_shm_import(const char *name, unsigned long offset, unsigned long len) {
 	long fd = n9_open(path, ORDWR);
 	if (fd < 0) { errno = cc9_errno_from_errstr(); shm_trace("import", name, offset, len, -1, "open-failed"); return -1; }
 	fcntl((int)fd, F_SETFD, FD_CLOEXEC);
-	shm_set_off_both((int)fd, offset, 0, -1);  /* gen=-1: imported, NOT carved from our pool -> never reclaimed */
+	/* Take a reference the EXPORTER can see, before it possibly closes its own:
+	 * the slot must not be recycled under us between here and our mmap. This is
+	 * the whole point of putting the count inside the pool. */
+	unsigned long base = pool_pin(name);
+	slot_ref(base, offset);
+	/* Our own reference is in place, so the message that carried this buffer has
+	 * been consumed: release the in-flight mark export took. Order matters —
+	 * ref first, then clear, or the slot is briefly unreferenced again. */
+	slot_clear_inflight(base, offset);
+	shm_set_off_both((int)fd, offset, 0, -1, base);  /* gen=-1: imported, NOT carved from our pool -> never reclaimed */
 	shm_trace("import", name, offset, len, fd, 0);
 	return (int)fd;
 }
@@ -490,28 +606,32 @@ static int va_matches_shared_segment(unsigned long va, unsigned long len) {
 	return 0;
 }
 
-void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
-	char path[128], name[CC9_SHM_NAMELEN];
-	*handled = 0;
-	if (n9_fd2path(fd, path, sizeof path) < 0 || !path_to_name(path, name))
-		return 0;                /* not ours: mmap falls through to pread-copy */
-	*handled = 1;
-
-	unsigned long segva, seglen;
-	if (read_ctl(name, &segva, &seglen) < 0) { errno = EBADF; return (void *)-1; }
-
-	unsigned long off = shm_get_off(fd);  /* pool offset, from the fd position */
-	/* The offset is the fragile part of the pool scheme (fd table OR seek
-	 * position; the IPC layer dups the fd, so neither alone is sufficient). A
-	 * wrong offset hands the caller the pool BASE instead of its buffer, which
-	 * reads as truncated/garbage image data and can fault past the end. */
-	shm_trace("map", name, off, len, (long)fd, 0);
-	n9_semacquire(&shm_lock, 1);
-	if (off + page_round(len) > seglen) { n9_semrelease(&shm_lock, 1); errno = EINVAL; return (void *)-1; }
-
+/* Attach the pool named `name` in THIS process — or find it already attached —
+ * and return its base VA (0 on failure, errno set). Caller holds shm_lock.
+ *
+ * mode POOL_MAP: an mmap. Bumps the attach refcount, as every mmap always did.
+ * mode POOL_PIN: the caller only needs the pool ADDRESSABLE, to read or update
+ *   a slot refcount that lives in the pool header. Pinning takes one permanent
+ *   attach reference so idle-reclaim can never detach the pool out from under a
+ *   counter update; the pool is one this process is about to use anyway (its own
+ *   pool, or a peer's it just imported a buffer from), so nothing extra is
+ *   retained in practice.
+ *
+ * `need` (0 to skip) is the end offset the caller intends to use: it is checked
+ * against the pool's real length BEFORE any reference is taken, so a bogus
+ * request fails without leaving an attach reference behind. */
+enum { POOL_MAP = 0, POOL_PIN = 1 };
+static unsigned long pool_attach_locked(const char *name, int mode, unsigned long need)
+{
 	/* One segattach per POOL (keyed by name, refcounted); every buffer in the
 	 * pool shares it and returns base + its own offset. This is what keeps a
-	 * process under the Plan 9 NSEG cap. */
+	 * process under the Plan 9 NSEG cap.
+	 *
+	 * The already-attached case is the common one — every mmap, export and
+	 * import of a pool this process has seen before — so answer it from maps[]
+	 * alone. read_ctl below is three syscalls (open/pread/close of the segment's
+	 * ctl file) and is only needed to attach a pool for the first time; an
+	 * attached entry already knows the length. */
 	shm_map *free_slot = 0;
 	for (int i = 0; i < SHM_MAXMAP; i++) {
 		/* A named entry is ATTACHED, whatever its refcount: unmap never
@@ -520,19 +640,26 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 		 * would miss an attached pool sitting at zero and segattach it a
 		 * second time, which the kernel refuses with "segments overlap". */
 		if (maps[i].name[0] && strcmp(maps[i].name, name) == 0) {
-			maps[i].refs++;
-			maps[i].lru = ++shm_tick;
-			unsigned long base = maps[i].va;
-			n9_semrelease(&shm_lock, 1);
-			return (void *)(base + off);
+			if (need > maps[i].len) { errno = EINVAL; return 0; }
+			if (mode == POOL_PIN) {
+				if (!maps[i].pinned) { maps[i].pinned = 1; maps[i].refs++; }
+			} else {
+				maps[i].refs++;
+				maps[i].lru = ++shm_tick;
+			}
+			return maps[i].va;
 		}
 		if (!maps[i].name[0] && !free_slot) free_slot = &maps[i];
 	}
 	if (!free_slot) {
-		n9_semrelease(&shm_lock, 1);
 		errno = ENOMEM;
-		return (void *)-1;
+		return 0;
 	}
+	/* Not attached yet: now the segment's own VA/length are needed, both to
+	 * bound-check the request and to recognise an already-mapped range below. */
+	unsigned long segva, seglen;
+	if (read_ctl(name, &segva, &seglen) < 0) { errno = EBADF; return 0; }
+	if (need > seglen) { errno = EINVAL; return 0; }
 	/* attr 0, not SG_CEXEC: the kernel ignores attach attrs for #g segments
 	 * (verified on 9front — inherited attaches survive exec either way).
 	 * Exec-clean semantics come from cc9_shm_detach_all() in execve. */
@@ -560,19 +687,55 @@ void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
 			goto adopted;
 		}
 		n9_errstr(eb, sizeof eb);          /* swap back so the map below sees it */
-		n9_semrelease(&shm_lock, 1);
 		errno = cc9_errno_from_errstr();
-		return (void *)-1;
+		return 0;
 	}
 adopted:
 	shm_trace("attach", name, segva, seglen, (long)got, 0);
 	strcpy(free_slot->name, name);
 	free_slot->va = (unsigned long)got;
 	free_slot->len = seglen;
-	free_slot->refs = 1;
+	free_slot->refs = 1;                        /* this mmap, or the pin */
+	free_slot->pinned = (mode == POOL_PIN);
 	free_slot->lru = ++shm_tick;
+	return (unsigned long)got;
+}
+
+/* Attach a pool purely to reach its slot-refcount header. Takes shm_lock. */
+static unsigned long pool_pin(const char *name)
+{
+	n9_semacquire(&shm_lock, 1);
+	unsigned long base = pool_attach_locked(name, POOL_PIN, 0);
 	n9_semrelease(&shm_lock, 1);
-	return (void *)((unsigned long)got + off);
+	return base;
+}
+/* Same, for a caller that already holds shm_lock. */
+static unsigned long pool_pin_locked(const char *name)
+{
+	return pool_attach_locked(name, POOL_PIN, 0);
+}
+
+void *cc9_shm_try_map(int fd, unsigned long len, int *handled) {
+	char path[128], name[CC9_SHM_NAMELEN];
+	*handled = 0;
+	if (n9_fd2path(fd, path, sizeof path) < 0 || !path_to_name(path, name))
+		return 0;                /* not ours: mmap falls through to pread-copy */
+	*handled = 1;
+
+	unsigned long off = shm_get_off(fd);  /* pool offset, from the fd position */
+	/* The offset is the fragile part of the pool scheme (fd table OR seek
+	 * position; the IPC layer dups the fd, so neither alone is sufficient). A
+	 * wrong offset hands the caller the pool BASE instead of its buffer, which
+	 * reads as truncated/garbage image data and can fault past the end. */
+	shm_trace("map", name, off, len, (long)fd, 0);
+	n9_semacquire(&shm_lock, 1);
+	unsigned long base = pool_attach_locked(name, POOL_MAP, off + page_round(len));
+	n9_semrelease(&shm_lock, 1);
+	if (!base) return (void *)-1;
+	/* This mapping is a reference to the slot, not just to the pool: the
+	 * creator may close its fd while we still hold these pages. */
+	slot_ref(base, off);
+	return (void *)(base + off);
 }
 
 /* Lazy fault-attach — the fix for the cross-sibling #g read fault.
@@ -648,6 +811,7 @@ static void shm_reclaim_idle_locked(void) {
 		if (dr < 0) n9_errstr(eb, sizeof eb);
 		shm_trace("evict", maps[victim].name, maps[victim].va, maps[victim].len, dr, eb);
 		maps[victim].name[0] = 0;
+		maps[victim].pinned = 0;
 		maps[victim].lru = 0;
 	}
 }
@@ -686,6 +850,11 @@ int cc9_shm_unmap(void *p, unsigned long len) {
 			 * so ~6 here. If that ever binds, the failure is a loud ENOMEM from
 			 * segattach, never corruption; the fix would be refcounting the
 			 * buffers rather than the pool. */
+			/* Drop this mapping's reference to the SLOT it points into, so the
+			 * creator can eventually recycle that slot. Distinct from the pool
+			 * attach refcount below, which only decides when a pool may be
+			 * detached. */
+			slot_unref(maps[i].va, va - maps[i].va);
 			if (maps[i].refs > 0)
 				maps[i].refs--;
 			if (maps[i].refs == 0) {
@@ -736,6 +905,7 @@ void cc9_shm_detach_all(void) {
 		if (maps[i].name[0]) {
 			n9_segdetach((void *)maps[i].va);
 			maps[i].refs = 0;
+			maps[i].pinned = 0;
 			maps[i].name[0] = 0;
 		}
 	}
@@ -766,6 +936,7 @@ void cc9_shm_fork_child_reset(void) {
 			n9_segdetach((void *)maps[i].va);
 			maps[i].name[0] = 0;
 			maps[i].refs = 0;
+			maps[i].pinned = 0;
 			maps[i].lru = 0;
 		}
 	}
@@ -773,6 +944,7 @@ void cc9_shm_fork_child_reset(void) {
 	pool_fd = -1;
 	pool_name[0] = 0;
 	pool_off = 0;
+	pool_base = 0;
 	pool_pid = 0;
 	pool_gen++;              /* invalidate any inherited buffer's pool generation */
 	slab_base = 0;

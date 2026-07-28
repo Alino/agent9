@@ -31,12 +31,22 @@ static void die(const char *what) {
 
 #define MB (1024ul * 1024ul)
 
+/* Create a buffer and report its pool offset, having taken it through a FULL
+ * send/receive cycle. Reading the offset means calling cc9_shm_export, and
+ * export is not a getter: it marks the slot in flight, because from that point
+ * a peer may be on its way to import a buffer nobody else still holds (see the
+ * slot-refcount comment in shm9.c). A gate that exported and never imported
+ * would leave every slot marked, and nothing would ever be reused — which is
+ * the correct behaviour for a message in flight, and the wrong thing to measure
+ * here. So take delivery, exactly as a receiver does. */
 static unsigned long create_off(unsigned long size, int *out_fd) {
 	int fd = cc9_shm_create(size);
 	if (fd < 0) die("cc9_shm_create");
 	char name[64];
 	unsigned long off = 0, len = 0;
 	if (cc9_shm_export(fd, name, &off, &len) < 0) die("cc9_shm_export");
+	int rfd = cc9_shm_import(name, off, size);   /* the peer receives it... */
+	if (rfd >= 0) close(rfd);                    /* ...and is done with it */
 	*out_fd = fd;
 	return off;
 }

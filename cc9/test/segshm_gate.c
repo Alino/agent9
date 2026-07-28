@@ -61,8 +61,10 @@ static void print_own_segments(const char *tag) {
 	if (n > 0) { buf[n] = 0; fprintf(stderr, "-- %s %s:\n%s", tag, path, buf); }
 }
 
-static int child_main(const char *name) {
-	int fd = cc9_shm_import(name, 0, SEGSZ);
+/* The pool offset is passed in, not assumed: a buffer no longer starts at
+ * offset 0 (the pool opens with shm9's slot-refcount table). */
+static int child_main(const char *name, unsigned long off) {
+	int fd = cc9_shm_import(name, off, SEGSZ);
 	if (fd < 0) die("child: import");
 	unsigned char *p = mmap(0, SEGSZ, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (p == MAP_FAILED) die("child: mmap");
@@ -75,8 +77,8 @@ static int child_main(const char *name) {
 }
 
 int main(int argc, char **argv) {
-	if (argc == 3 && strcmp(argv[1], "child") == 0)
-		return child_main(argv[2]);
+	if (argc == 4 && strcmp(argv[1], "child") == 0)
+		return child_main(argv[2], strtoul(argv[3], 0, 0));
 
 	/* 1: create + map + fill */
 	int fd = cc9_shm_create(SEGSZ);
@@ -90,9 +92,13 @@ int main(int argc, char **argv) {
 	char name[CC9_SHM_NAMELEN];
 	unsigned long off, len;
 	if (cc9_shm_export(fd, name, &off, &len) < 0) die("export");
-	/* Phase B pool model (cc9 702e3b9): the first buffer sits at pool offset 0,
-	 * and len is receiver-driven (export leaves it 0 on the wire). */
-	if (off != 0) die("export triple");
+	/* Phase B pool model (cc9 702e3b9): the offset is the buffer's place in the
+	 * pool and len is receiver-driven (export leaves it 0 on the wire). The
+	 * offset is OPAQUE — this used to assert off==0 because the first buffer sat
+	 * at the very start of the pool, but the pool now opens with a slot-refcount
+	 * table (see shm9.c), so the first buffer starts after it. Assert what the
+	 * wire format actually promises: a page-aligned offset inside the pool. */
+	if ((off & (4096 - 1)) != 0 || off >= (256ul << 20)) die("export triple");
 	ok("export wire triple");
 
 	/* 9 (early, format probe for the sweeper): our own segment table */
@@ -104,7 +110,9 @@ int main(int argc, char **argv) {
 	int kid = fork();
 	if (kid < 0) die("fork");
 	if (kid == 0) {
-		char *cargv[] = { argv[0], "child", name, 0 };
+		char offarg[32];
+		snprintf(offarg, sizeof offarg, "%lu", off);
+		char *cargv[] = { argv[0], "child", name, offarg, 0 };
 		execv(argv[0], cargv);
 		_exit(127);
 	}
@@ -124,7 +132,7 @@ int main(int argc, char **argv) {
 	/* 6: full unmap -> re-import -> data persists (name still present) */
 	munmap(p, SEGSZ);
 	close(fd);
-	fd = cc9_shm_import(name, 0, SEGSZ);
+	fd = cc9_shm_import(name, off, SEGSZ);
 	if (fd < 0) die("re-import");
 	p = mmap(0, SEGSZ, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (p == MAP_FAILED) die("re-map");
@@ -159,7 +167,7 @@ int main(int argc, char **argv) {
 	extern long n9_remove(const char *);
 	if (n9_remove(gpath) < 0) die("remove name");
 	if (!check(p, SEGSZ, 0x5A)) die("contents died with the name");
-	if (cc9_shm_import(name, 0, SEGSZ) >= 0) die("import after remove should fail");
+	if (cc9_shm_import(name, off, SEGSZ) >= 0) die("import after remove should fail");
 	ok("remove-while-attached: contents persist, new attaches blocked");
 	munmap(p, SEGSZ);
 	close(fd);
