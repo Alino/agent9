@@ -79,6 +79,7 @@ static void chromemouse(int x, int y);
 static int chromekey(Rune r);
 static int chromeshortcut(Rune r);
 static int ischromechord(Rune r);
+static int ctrlchord(Rune r);
 static void focusaddr_locked(int sel);
 
 /* Emit a chrome command. For CMDNAV the 16-byte record is followed by a
@@ -208,6 +209,14 @@ kbdmsg(char *buf)
 					/* ours (Super-L/T/R/W): swallow it entirely so the
 					 * page never sees a stray keypress. Acted on from
 					 * the 'c' message, which has the correct case. */
+					nemit[i] = 0;
+				}else if(haschrome && (mods & MODCTL) && ctrlchord(new[i])){
+					/* Ctrl-Tab / Ctrl-Shift-Tab / Ctrl-1..9 / Ctrl-L|T|W.
+					 * Acted on HERE, not from 'c': with Ctrl held those keys
+					 * do not arrive as composed characters. Swallowed so the
+					 * page never sees a stray Tab or digit. Only when the
+					 * chrome exists — alacritty9 and dosbox9 send no chrome
+					 * records and must keep every Ctrl chord for themselves. */
 					nemit[i] = 0;
 				}else if((mods & (MODCTL|MODALT|MODSUPER)) && !isspecial(new[i])){
 					/* chorded base rune: Alacritty gets V+ctl, not ^V */
@@ -633,6 +642,54 @@ ischromechord(Rune r)
 	if(r >= 'A' && r <= 'Z')
 		r += 'a' - 'A';
 	return r == 'l' || r == 't' || r == 'r' || r == 'w';
+}
+
+/* Ctrl chords: tab navigation and the address bar.
+ *
+ * These live on CTRL, not Super, on purpose. Super (Kmod4) is what a local rio
+ * keyboard delivers for the "windows"/Command key, but drawterm -G from a Mac
+ * does not reliably deliver Kmod4 at all — so a Super-only binding is unusable
+ * over the exact remote setup this port is normally driven from. Ctrl is what
+ * every other browser uses for these anyway (Ctrl-Tab, Ctrl-1..9, Ctrl-L), and
+ * it is what drawterm passes through faithfully.
+ *
+ * Handled from the 'k' (key-state) message rather than 'c' (composed): with
+ * Ctrl held, Tab and the digits do not arrive as composed characters, and Tab is
+ * a control rune that 'c' would not report with the modifier intact.
+ *
+ * Returns 1 if the chord was consumed (the page must not see it). */
+static int
+ctrlchord(Rune r)
+{
+	if(r >= 'A' && r <= 'Z')
+		r += 'a' - 'A';
+
+	if(r == '\t'){			/* Ctrl-Tab / Ctrl-Shift-Tab: cycle tabs */
+		if(ntabs <= 1)
+			return 1;	/* consumed either way: never type a tab into the page */
+		if(mods & MODSHIFT)
+			emitcmd(CMDSWITCH, (activetab + ntabs - 1) % ntabs, nil);
+		else
+			emitcmd(CMDSWITCH, (activetab + 1) % ntabs, nil);
+		return 1;
+	}
+	if(r >= '1' && r <= '9'){	/* Ctrl-1..8 by index; Ctrl-9 = LAST tab, as in
+					 * firefox/chrome, which is why 9 is special-cased */
+		int idx = (r == '9') ? ntabs - 1 : r - '1';
+		if(idx >= 0 && idx < ntabs)
+			emitcmd(CMDSWITCH, idx, nil);
+		return 1;
+	}
+	if(r == 'l'){			/* Ctrl-L: focus the address bar, select all */
+		qlock(&displock);
+		focusaddr_locked(1);
+		drawchrome_locked();
+		qunlock(&displock);
+		return 1;
+	}
+	if(r == 't'){ emitcmd(CMDNEWTAB, 0, nil); return 1; }
+	if(r == 'w'){ emitcmd(CMDCLOSE, activetab, nil); return 1; }
+	return 0;
 }
 
 static int
