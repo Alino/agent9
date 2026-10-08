@@ -35,6 +35,7 @@ extern long n9_close(int);
 extern void n9_semacquire(int *, int);
 extern void n9_semrelease(int *, int);
 extern long n9_tsemacquire(int *, long);
+extern int cc9_errno_from_errstr_or(int);
 extern long n9_errstr(char *, unsigned long);
 extern int strncmp(const char *, const char *, unsigned long);
 extern char *strstr(const char *, const char *);
@@ -678,8 +679,9 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout){
 		if(ready || timeout == 0) return ready;
 		if(timeout < 0){
 			__sync_fetch_and_add(&poll_waiters, 1);
-			n9_tsemacquire(&poll_sem, POLL_RESCAN_MS);  /* bounded: re-scan even if an edge wake was missed */
+			long got = n9_tsemacquire(&poll_sem, POLL_RESCAN_MS);  /* bounded: re-scan even if an edge wake was missed */
 			__sync_fetch_and_sub(&poll_waiters, 1);
+			if(got < 0){ errno = cc9_errno_from_errstr_or(EIO); return -1; }
 		} else {
 			long left = deadline - now_ms();       /* stale tokens re-loop; keep the true deadline */
 			if(left <= 0) return 0;
@@ -692,6 +694,7 @@ int poll(struct pollfd *fds, nfds_t nfds, int timeout){
 			__sync_fetch_and_add(&poll_waiters, 1);
 			long got = n9_tsemacquire(&poll_sem, nap);
 			__sync_fetch_and_sub(&poll_waiters, 1);
+			if(got < 0){ errno = cc9_errno_from_errstr_or(EIO); return -1; }
 			if(got != 1 && nap >= left) return 0;  /* the real deadline passed */
 			if(got != 1) continue;                 /* nap expired: re-scan the fds */
 		}
