@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <malloc.h>
+#include <errno.h>
 
 typedef unsigned long n9size_t;
 extern void *malloc(n9size_t);
@@ -850,6 +851,8 @@ int    getsid(int p) { (void)p; return -1; }
  * protocol depends on close-on-exec actually happening. */
 /* errno is hoisted to the top of this file (mprotect needs it). */
 extern int cc9_poll_cloexec(int);
+extern int cc9_errno_from_errstr_or(int);
+extern char *getenv(const char *);
 extern long n9_create(const char *, int, unsigned int);
 extern long n9_close(int);
 extern long n9_pwrite(int, const void *, long, long long);
@@ -887,18 +890,37 @@ int    execve(const char *p, char *const a[], char *const e[]) {
 		cc9_shm_detach_all();
 	}
 	n9_exec(p, (char **)a);
-	errno = 2 /*ENOENT*/;
+	errno = cc9_errno_from_errstr_or(EIO);
 	return -1;
 }
 int    execv(const char *p, char *const a[]) { return execve(p, a, 0); }
 int    execvp(const char *p, char *const a[]) {
+	if (!*p) { errno = ENOENT; return -1; }
 	for (const char *s = p; *s; s++)
 		if (*s == '/') return execve(p, a, 0);
-	char b[256]; char *d = b;
-	const char *pre = "/bin/"; while (*pre) *d++ = *pre++;
-	const char *s = p; while (*s && d < b + sizeof b - 1) *d++ = *s++;
-	*d = 0;
-	return execve(b, a, 0);
+	const char *path = getenv("PATH");
+	if (!path) path = "/bin";
+	n9size_t plen = strlen(p), pathlen = strlen(path);
+	char *file = malloc(pathlen + plen + 2);
+	if (!file) { errno = ENOMEM; return -1; }
+	int denied = 0, error;
+	for (const char *entry = path;;) {
+		const char *end = entry;
+		while (*end && *end != ':') end++;
+		n9size_t len = end - entry;
+		memcpy(file, entry, len);
+		if (len) file[len++] = '/';  /* Empty entries mean the current directory. */
+		memcpy(file + len, p, plen + 1);
+		execve(file, a, 0);
+		error = errno;
+		if (error == EACCES) denied = 1;
+		else if (error != ENOENT && error != ENOTDIR) break;
+		if (!*end) { error = denied ? EACCES : ENOENT; break; }
+		entry = end + 1;
+	}
+	free(file);
+	errno = error;
+	return -1;
 }
 /* --- libgen.h: POSIX path splitting ---------------------------------------
  * Both may modify the argument and return a pointer into it. The edge cases

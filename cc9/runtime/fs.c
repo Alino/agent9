@@ -264,6 +264,7 @@ int cc9_errno_from_errstr_or(int dflt){
 	int r = dflt;
 	if(e[0] == 0) ;
 	else if(cc9_contains(e, "permission")) r = EACCES;
+	else if(cc9_contains(e, "does not exist") || cc9_contains(e, "not found")) r = ENOENT;
 	else if(cc9_contains(e, "exists"))     r = EEXIST;
 	else if(cc9_contains(e, "not empty"))  r = ENOTEMPTY;
 	else if(cc9_contains(e, "not a directory") || cc9_contains(e, "not a dir")) r = ENOTDIR;
