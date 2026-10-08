@@ -870,8 +870,10 @@ int    execve(const char *p, char *const a[], char *const e[]) {
 			for (int j = 0; j <= n; j++) *d++ = name[j];
 			int fd = (int)n9_create(path, 1 /*OWRITE*/, 0666);
 			if (fd >= 0) {
+				/* rc's word form (value + NUL): the child's getenv() returns
+				 * it verbatim, newlines included (see fs.c). */
 				const char *v = eq + 1; long vl = 0; while (v[vl]) vl++;
-				n9_pwrite(fd, v, vl, -1);
+				n9_pwrite(fd, v, vl + 1, -1);
 				n9_close(fd);
 			}
 		}

@@ -791,10 +791,20 @@ int futimens(int fd, const struct timespec *t){
 int statvfs(const char *p, void *vp){ (void)p; (void)vp; errno = ENOSYS; return -1; }
 int fstatvfs(int fd, void *vp){ (void)fd; (void)vp; errno = ENOSYS; return -1; }
 
-/* getenv/setenv via Plan 9 /env/<name> (the per-process environment namespace). */
-static void env_path(const char *name, char *path, int n){
-	const char *pfx="/env/"; int i=0; while(pfx[i]){ path[i]=pfx[i]; i++; }
-	int j=0; while(name[j] && i<n-1){ path[i++]=name[j++]; } path[i]=0;
+/* getenv/setenv via Plan 9 /env/<name> (the per-process environment namespace).
+ * A name must be a plain file name inside /env: not empty, not "." or "..",
+ * no '/' and no '=' (EINVAL). A name that does not fit the path buffer is
+ * ENAMETOOLONG. */
+static int env_path(const char *name, char *path, int n){
+	if(!name || !*name || streq(name, ".") || streq(name, "..")){ errno=EINVAL; return -1; }
+	size_t len=strlen(name);
+	if(len >= (size_t)n-5){ errno=ENAMETOOLONG; return -1; }
+	for(size_t i=0; i<len; i++)
+		if(name[i]=='/' || name[i]=='='){ errno=EINVAL; return -1; }
+	const char *pfx="/env/";
+	for(int i=0; i<5; i++) path[i]=pfx[i];
+	for(size_t i=0; i<=len; i++) path[5+i]=name[i];
+	return 0;
 }
 /* POSIX-compat defaults for vars Plan 9 spells differently ($path is a NUL-
  * separated rc list; there is no $SHELL). POSIX code (nvim jobstart/'shell',
@@ -805,42 +815,63 @@ static const char *env_default(const char *name){
 	if(name[0]=='S'&&name[1]=='H'&&name[2]=='E'&&name[3]=='L'&&name[4]=='L'&&!name[5]) return "/bin/rc";
 	return 0;
 }
+/* Value encoding. rc writes a variable as NUL-terminated words: "w\0", or
+ * "w1\0w2\0" for a list. setenv() and execve() write the same form. A value
+ * that ends in NUL is therefore exact and is returned verbatim up to that NUL,
+ * newlines included. A value with no terminating NUL came from a raw writer
+ * such as `echo x > /env/X`, and its trailing newlines are stripped. Both
+ * rules give the same result for an rc list, since the C string ends at the
+ * first NUL ("/bin\0.\0" -> "/bin"). An empty value is "", not NULL.
+ * env_default() applies only when the file does not exist. */
 char *getenv(const char *name){
-	/* Per-thread buffer (__thread → emutls): getenv returns a pointer into this,
-	 * and std::env::var copies out of it AFTER the call returns, so a shared static
-	 * let a concurrent getenv on another thread overwrite the value mid-copy (torn
-	 * read). Per-thread storage removes that race. Buffer is 8K (was 1K) so typical
-	 * PATH/RUSTFLAGS/LS_COLORS values no longer silently truncate; larger values
-	 * still cap here (getenv's contract is a pointer to fixed internal storage).
-	 * TRADEOFF: cc9's emutls never frees per-thread objects at thread exit, so the
-	 * first getenv on each thread leaks 8K for that thread's lifetime+ (the same
-	 * leak every __thread var has here). Bounded for the common FIXED-pool model
-	 * (rayon/tokio: 8K × workers, one-time); a thread-per-request server that calls
-	 * getenv is the pathological case. The torn-read + truncation it fixes are real;
-	 * this is the accepted cost until emutls learns to free. */
-	static __thread char val[8192]; char path[300];
-	env_path(name, path, sizeof path);
-	long fd=n9_open(path, 0); if(fd<0) return (char*)env_default(name);
-	long n=n9_pread((int)fd, val, sizeof val - 1, -1); n9_close((int)fd);
-	if(n<=0) return (char*)env_default(name);
-	while(n>0 && (val[n-1]=='\n'||val[n-1]==0)) n--;   /* /env values may be NUL/NL-terminated */
-	val[n]=0; return val;
+	/* Per-thread buffer (__thread, emutls): getenv returns a pointer into it,
+	 * and callers such as std::env::var copy from it after the call returns, so
+	 * it cannot be shared between threads. The buffer grows to the largest
+	 * value this thread has read and is never freed (emutls does not free
+	 * per-thread objects). */
+	static __thread char *val;
+	static __thread size_t cap;
+	char path[300];
+	if(env_path(name, path, sizeof path) < 0) return 0;
+	long fd=n9_open(path, 0);
+	if(fd<0) return (char*)env_default(name);
+	size_t used=0;
+	for(;;){
+		if(used+1 >= cap){
+			size_t next = cap ? cap*2 : 256;
+			char *nb = malloc(next);
+			if(!nb){ n9_close((int)fd); errno=ENOMEM; return 0; }
+			for(size_t i=0; i<used; i++) nb[i]=val[i];
+			free(val); val=nb; cap=next;
+		}
+		long r = n9_pread((int)fd, val+used, (long)(cap-used-1), (long long)used);
+		if(r<0){ errno=cc9_errno_from_errstr(); n9_close((int)fd); return 0; }
+		if(r==0) break;
+		used += (size_t)r;
+	}
+	n9_close((int)fd);
+	if(used>0 && val[used-1]==0) used--;                 /* rc word form: drop the NUL only */
+	else while(used>0 && val[used-1]=='\n') used--;      /* raw writer: drop trailing newlines */
+	val[used]=0;
+	return val;
 }
 /* setenv/unsetenv write the /env file so getenv() round-trips (the libc++
  * temp_directory_path test sets TMPDIR then expects it back). create() truncates
- * an existing /env file, giving overwrite semantics. */
+ * an existing /env file, giving overwrite semantics. The value is written in
+ * rc's word form (value + NUL) so getenv returns it verbatim. */
 int setenv(const char *n, const char *v, int overwrite){
-	if(!n || !*n){ errno=EINVAL; return -1; }
-	char path[300]; env_path(n, path, sizeof path);
+	char path[300];
+	if(env_path(n, path, sizeof path) < 0) return -1;
 	if(!overwrite){ long e=n9_open(path,0); if(e>=0){ n9_close((int)e); return 0; } }
-	long fd=n9_create(path, 1/*OWRITE*/, 0666); if(fd<0){ errno=EACCES; return -1; }
-	long len = v ? (long)strlen(v) : 0;
-	if(len>0 && n9_pwrite((int)fd, v, len, 0) < len){ n9_close((int)fd); errno=EIO; return -1; }
+	long fd=n9_create(path, 1/*OWRITE*/, 0666); if(fd<0){ errno=cc9_errno_from_errstr_or(EACCES); return -1; }
+	if(!v) v="";
+	long len = (long)strlen(v) + 1;                      /* include the terminating NUL */
+	if(n9_pwrite((int)fd, v, len, 0) < len){ n9_close((int)fd); errno=cc9_errno_from_errstr_or(EIO); return -1; }
 	n9_close((int)fd); return 0;
 }
 int unsetenv(const char *n){
-	if(!n || !*n){ errno=EINVAL; return -1; }
-	char path[300]; env_path(n, path, sizeof path);
+	char path[300];
+	if(env_path(n, path, sizeof path) < 0) return -1;
 	n9_remove(path);   /* removing an absent var is not an error */
 	return 0;
 }
