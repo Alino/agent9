@@ -8,6 +8,7 @@ typedef unsigned long size_t;
 #include <dirent.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdarg.h>
 
 extern long n9_open(const char *, int);
 extern long n9_create(const char *, int, unsigned long);
@@ -111,7 +112,14 @@ int open(const char *path, int flags, ...){
 	if(streq(path,"/dev/urandom")) path="/dev/random";   /* Plan 9 entropy source */
 	int omode = flags & O_ACCMODE;        /* OREAD/OWRITE/ORDWR == 0/1/2 */
 	if(flags & O_TRUNC) omode |= OTRUNC;
-	unsigned long perm = (flags & O_DIRECTORY) ? (DMDIR|0777) : 0666;
+	unsigned long perm = 0;
+	if(flags & O_CREAT){
+		va_list args;
+		va_start(args, flags);
+		perm = va_arg(args, mode_t) & 0777;
+		va_end(args);
+		if(flags & O_DIRECTORY) perm |= DMDIR;
+	}
 	long fd;
 	if(flags & O_CREAT){
 		/* Plan 9 create() ALWAYS truncates an existing file, so using it for a
@@ -152,7 +160,17 @@ int open(const char *path, int flags, ...){
 	}
 	return (int)fd;
 }
-int openat(int dfd, const char *path, int flags, ...){ char b[1024]; return open(at_path(dfd,path,b,sizeof b), flags); }
+int openat(int dfd, const char *path, int flags, ...){
+	char b[1024];
+	mode_t mode = 0;
+	if(flags & O_CREAT){
+		va_list args;
+		va_start(args, flags);
+		mode = va_arg(args, mode_t);
+		va_end(args);
+	}
+	return open(at_path(dfd,path,b,sizeof b), flags, mode);
+}
 /* poll.c readiness layer (libuv): fds with a reader thread or O_NONBLOCK are
  * served from its ring buffer; everything else takes the direct path. */
 extern int cc9_poll_owned(int);
