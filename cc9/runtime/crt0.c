@@ -12,6 +12,7 @@ extern cc9_fn __fini_array_start[];
 extern cc9_fn __fini_array_end[];
 extern int main(int, char **);
 extern void n9_exits(const char *);
+extern const char *cc9_exitstr(int);
 void cc9_exit_common(const char *status);
 
 /* atexit registry (libc++ and user code register destructors here). Each entry
@@ -433,7 +434,7 @@ void __cc9_run(void)
 	{ extern void cc9_prof_arm(void); cc9_prof_arm(); }   /* CC9_PROF: start sampling this (main) proc */
 	int rc = main(argc, argv);
 	STAGE('h');
-	cc9_exit_common(rc == 0 ? (char *)0 : (char *)"cc9: nonzero exit");
+	cc9_exit_common(cc9_exitstr(rc));
 }
 
 /* Shared process-exit epilogue — the ONLY correct way off the process.

@@ -301,7 +301,11 @@ void free(void *p){
 	{ char probe; if (cc9_probe_armed && (unsigned long)&probe < (unsigned long)__cc9_main_stack + (unsigned long)CC9_STACK_BYTES - 64UL*1024*1024) cc9_dump_chain_malloc(); }
 #endif
 	if(!p) return;
-	/* aligned_alloc blocks carry a sentinel and a different base — never cache. */
+	/* aligned_alloc block: free the malloc base through the normal paths. */
+	if(((unsigned long *)p)[-1] == CC9_ALIGN_MAGIC){
+		free(*(void **)((char *)p - 16));
+		return;
+	}
 	if(((unsigned long *)p)[-1] != CC9_ALIGN_MAGIC){
 		size_t nu = ((Header *)p - 1)->s.size;
 		if(nu >= 2 && nu <= MC_CLASSES + 1){    /* fits a class: c = nu-2 */
@@ -377,16 +381,13 @@ void *realloc(void*old,size_t n){
 	if(!old) return malloc(n);
 	if(n==0){ free(old); return 0; }
 	/* An aligned_alloc'd pointer carries the sentinel at old[-1] and its real
-	 * malloc base at old[-2]; size/free must use the base, not old-1. Rare path,
-	 * kept on the K&R allocator under one lock. */
+	 * malloc base at old[-2]; size/free must use the base, not old-1. */
 	if(((unsigned long*)old)[-1] == CC9_ALIGN_MAGIC){
 		void *base = *(void**)((char*)old - 16);
 		Header *bp=(Header*)base-1; size_t blk=(bp->s.size-1)*sizeof(Header);
 		size_t oldsz = blk - (size_t)((char*)old - (char*)base);
-		mlock();
-		char *np=malloc_u(n);
-		if(np){ size_t c=oldsz<n?oldsz:n, i; char*o=old; for(i=0;i<c;i++) np[i]=o[i]; free_u(base); }
-		munlock();
+		char *np=malloc(n);
+		if(np){ size_t c=oldsz<n?oldsz:n; memcpy(np, old, c); free(base); }
 		return np;
 	}
 	/* Common path (plain block): go through the fast malloc/free (bump/g_class/

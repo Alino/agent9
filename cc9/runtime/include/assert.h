@@ -3,8 +3,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-void abort(void);
-void __cc9_assert(const char *, const char *, int);
+__attribute__((__noreturn__)) void abort(void);
+__attribute__((__noreturn__)) void __cc9_assert(const char *, const char *, int);
 #ifdef __cplusplus
 }
 #endif
