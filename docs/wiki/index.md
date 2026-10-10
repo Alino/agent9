@@ -1,7 +1,7 @@
 # Wiki Index
 
 > plan9-winxp knowledge base. Every wiki page listed with one-line summary.
-> Last updated: 2026-07-01 | Total pages: 41
+> Last updated: 2026-10-10 | Total pages: 42
 
 ## Concepts
 - [[draw-api]] — Plan 9 /dev/draw interface: how programs get a canvas
@@ -54,4 +54,4 @@
 (none yet)
 
 ## References
-(none yet)
+- [[log]] — Local native build compatibility and optional serialized VTS startup changes.

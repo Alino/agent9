@@ -25,6 +25,11 @@ typedef struct VTerm VTerm;
 typedef struct VTermState VTermState;
 typedef struct VTermScreen VTermScreen;
 
+/* Private structures have different visibility in library and client code. */
+#pragma incomplete VTerm
+#pragma incomplete VTermState
+#pragma incomplete VTermScreen
+
 typedef struct {
   int row;
   int col;
@@ -594,6 +599,9 @@ typedef enum {
 int vterm_screen_get_attrs_extent(const VTermScreen *screen, VTermRect *extent, VTermPos pos, VTermAttrMask attrs);
 
 int vterm_screen_get_cell(const VTermScreen *screen, VTermPos pos, VTermScreenCell *cell);
+
+/* Native opaque-pointer adapter; see screen.c. */
+int vterm_screen_get_cell_p9(VTermScreen *screen, VTermPos pos, VTermScreenCell *cell);
 
 int vterm_screen_is_eol(const VTermScreen *screen, VTermPos pos);
 
