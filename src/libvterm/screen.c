@@ -1187,3 +1187,11 @@ void vterm_screen_set_default_colors(VTermScreen *screen, const VTermColor *defa
   if(screen->buffers[1])
     reset_default_colours(screen, screen->buffers[1]);
 }
+
+/* kencc drops pragma incomplete when const qualifies an opaque type.
+ * Keep the const API intact; native clients use this checked adapter. */
+int
+vterm_screen_get_cell_p9(VTermScreen *screen, VTermPos pos, VTermScreenCell *cell)
+{
+  return vterm_screen_get_cell(screen, pos, cell);
+}

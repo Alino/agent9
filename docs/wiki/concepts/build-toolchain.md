@@ -1,7 +1,7 @@
 ---
 title: Build Toolchain
 created: 2026-05-15
-updated: 2026-05-16
+updated: 2026-10-10
 type: reference
 tags: [toolchain, cross-compile, qemu, plan9, build]
 status: done
@@ -233,3 +233,20 @@ Recommended for longer work on Plan 9 — integrated with the plumber, mouse-dri
 - [[draw-api]] — include headers and linking
 - [[testing-harness]] — QMP/screendump/vision loop to verify after build
 - [[9fans-ecosystem]] — acme-lsp for LSP in acme
+
+## Local installation on current 9front (2026-10-10)
+
+The pac9 registry does not install libvterm before vts. Build it with
+`mk install installheaders` in `src/libvterm` first. The public vterm.h
+also requires `#pragma incomplete VTerm`, `VTermState`, and `VTermScreen`:
+their private structure definitions are visible to the library but not
+its clients, so kencc otherwise produces incompatible type signatures.
+These pragmas preserve opacity without changing data layout or behavior.
+Rebuild libvterm and vts after changing the header. See [[vt-architecture]]
+and [[vt-9p-namespace]] for the terminal interface.
+
+kencc's const qualifier overwrites the incomplete-type flag. Added a
+vterm_screen_get_cell_p9 adapter in screen.c and its public declaration;
+engine.c calls that adapter. The original const-qualified API, ABI, data
+layout, ownership, and locking are unchanged. Link type checking remains
+enabled; no linker-signature checks were suppressed.

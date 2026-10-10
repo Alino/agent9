@@ -86,7 +86,7 @@ cb_damage(VTermRect rect, void *user)
 
 	for(pos.row = rect.start_row; pos.row < rect.end_row; pos.row++){
 		for(pos.col = rect.start_col; pos.col < rect.end_col; pos.col++){
-			if(!vterm_screen_get_cell(vs, pos, &cell))
+			if(!vterm_screen_get_cell_p9(vs, pos, &cell))
 				continue;
 			rune = cell.chars[0];
 			/* 0 = blank, (uint32_t)-1 = right half of a wide glyph */

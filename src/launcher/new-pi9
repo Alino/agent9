@@ -14,6 +14,9 @@
 # vts/vtwin support today, and it keeps the rc shell alive after
 # pi9 exits so the user can re-run with /quit or tweak env.
 
+if(test -x $home/bin/rc/agent9-vts)
+	$home/bin/rc/agent9-vts || exit no-vts
+
 mount /srv/vts /n/vts >[2]/dev/null
 
 sess=pi9-$pid
